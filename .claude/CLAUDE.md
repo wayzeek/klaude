@@ -55,7 +55,7 @@ Wait for it to be ready before pushing code. If in doubt later, `curl http://loc
 
 ## Quick Reference
 
-All REPL control — pushing code, play/stop, and the JSON escaping rules — lives in the `/api` skill. Load it and follow it exactly; don't improvise curl payloads from memory.
+All REPL control lives in the `/api` skill — load it and follow it exactly. The short version: write code to a file, push with `node scripts/push.mjs <file> --play`, and trust its verdict (it waits for the browser's eval result). Never assume a push worked without that verdict or a fresh `lastEval` from `/api/status`. Don't improvise curl payloads from memory.
 
 **Bash Commands:** NEVER chain commands with `&&` (e.g., `sleep 5 && say "text"`). Each command must be a separate Bash tool call.
 

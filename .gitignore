@@ -43,5 +43,12 @@ next-env.d.ts
 # claude code local settings
 .claude/settings.local.json
 
-# personal compositions stay local
-tracks/
+# personal compositions stay local (root tracks/ only - NOT .claude/skills/tracks)
+/tracks/
+
+# runtime state + audio bounces
+/.klaude/
+/recordings/
+
+# browser automation residue
+/.playwright-mcp/

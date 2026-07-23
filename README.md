@@ -64,31 +64,54 @@ Capture your Strudel output to WAV:
 3. **Click again to stop** - A preview toast appears
 4. **Listen, then Download or Discard**
 
-Recording is independent from playback - stop recording anytime without stopping the music.
+Recording can also be driven by the agent over the API (`/api/record/start`, `/api/record/stop`) - those bounces are saved into `recordings/`. If playback stops mid-recording, the recording finishes instead of capturing silence.
 
 ## API for Agents
 
-The REST API allows AI agents to read and write Strudel code, enabling autonomous music composition. **Real-time sync** via Server-Sent Events means the browser updates instantly when you push code or trigger playback.
+The REST API allows AI agents to read and write Strudel code, enabling autonomous music composition. **Real-time sync** via Server-Sent Events means the browser updates instantly when you push code or trigger playback - and the browser reports back, so agents know whether a push actually evaluated or threw.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/code` | `GET` | Get current code and playing state |
-| `/api/code` | `POST` | Push new code `{ "code": "..." }` |
-| `/api/play` | `POST` | Start playback |
+| `/api/code` | `GET` | Current code and revision (browser edits sync back, so this never lies) |
+| `/api/code` | `POST` | Push code `{ "code": "...", "play": true? }` - atomic push-and-play |
+| `/api/play` | `POST` | Start playback (repeat POSTs force a re-evaluation) |
 | `/api/stop` | `POST` | Stop playback |
-| `/api/status` | `GET` | Get current state |
+| `/api/status` | `GET` | Full state: eval results, connected clients, audio readiness, recording |
+| `/api/gain` | `POST` | Master volume with ramp `{ "level": 0..1, "rampMs": 4000 }` - fades |
+| `/api/nowplaying` | `POST` | Now-playing HUD `{ "title", "artist", "section" }` |
+| `/api/history` | `GET`/`POST` | List pushed revisions / restore one (undo, survives restarts) |
+| `/api/record/start` | `POST` | Start recording in the browser |
+| `/api/record/stop` | `POST` | Stop recording; the WAV is saved to `recordings/` |
+| `/api/recordings` | `GET` | List saved recordings |
 | `/api/events` | `GET` | SSE stream for real-time updates |
 
 ### Example: AI Composing Music
 
 ```bash
-# Push new code and play
+# Push a code file and play it - no shell escaping, reports the eval verdict
+node scripts/push.mjs my-track.js --play
+```
+
+The push script waits for the browser to evaluate the code and prints `OK: playing`, the evaluation error, or a warning that no browser tab is connected. Raw curl works too:
+
+```bash
 curl -X POST http://localhost:3000/api/code \
   -H "Content-Type: application/json" \
-  -d '{"code": "$: s(\"bd*4, cp*2\").bank(\"RolandTR909\")"}'
-
-curl -X POST http://localhost:3000/api/play
+  -d '{"code": "$: s(\"bd*4, cp*2\").bank(\"RolandTR909\")", "play": true}'
 ```
+
+### Scripts
+
+| Command | What it does |
+|---------|--------------|
+| `pnpm push <file> [--play]` | Push a code file; `--play` waits for the eval verdict |
+| `pnpm share [file]` | Print a strudel.cc share link for a file or the current code |
+| `pnpm smoke` | API smoke test against the running server |
+| `pnpm validate:tracks` | Check every saved track's structure, tempo, and duration |
+
+## Local Samples
+
+Drop WAV/MP3 files into `public/samples/` and register them in your patterns with `samples({ name: '/samples/file.wav' })` - real instruments, field recordings, your own hits. See `public/samples/README.md`.
 
 ## Project Structure
 
@@ -96,30 +119,41 @@ curl -X POST http://localhost:3000/api/play
 src/
 ├── app/
 │   ├── api/                # REST API for agents
-│   │   ├── code/           # GET/POST code
+│   │   ├── code/           # GET/POST code (revisioned)
+│   │   ├── eval/           # Browser reports eval results
+│   │   ├── clients/        # Browser reports readiness
 │   │   ├── events/         # SSE stream
-│   │   ├── play/           # POST play
-│   │   ├── stop/           # POST stop
-│   │   ├── status/         # GET status
-│   │   └── state.ts        # Shared state + event emitter
+│   │   ├── gain/           # Master volume ramps
+│   │   ├── history/        # Revision history + restore
+│   │   ├── nowplaying/     # HUD metadata
+│   │   ├── play|stop/      # Playback control
+│   │   ├── record/         # Remote recording control
+│   │   ├── recordings/     # WAV upload + listing
+│   │   ├── status/         # Full state for agents
+│   │   ├── guard.ts        # Same-origin check for mutating routes
+│   │   └── state.ts        # Shared state + event emitter + persistence
 │   ├── layout.tsx          # Root layout
 │   ├── page.tsx            # Home page
 │   └── globals.css         # Styles + CodeMirror theme
 ├── components/
-│   └── strudel-editor.tsx  # Main editor
+│   └── strudel-editor.tsx  # Main editor + HUD + overlays
 ├── hooks/
-│   ├── use-strudel.ts      # Strudel lifecycle + SSE sync
+│   ├── use-strudel.ts      # Strudel lifecycle + revision sync protocol
 │   └── use-audio-recorder.ts # Audio recording to WAV
 └── lib/
     ├── constants.ts        # Shared constants
     └── wav-encoder.ts      # Pure JS WAV encoder
+scripts/                    # push / share / smoke / validate-tracks
+public/samples/             # Your local samples, served to Strudel
 ```
+
+Server code and revision history persist to `.klaude/state.json`, so a restart doesn't lose the working track (playback intentionally never auto-resumes).
 
 ## Tech Stack
 
 - Next.js
 - Tailwind CSS
-- Strudel REPL
+- Strudel REPL (`@strudel/repl` bundled locally, pinned CDN fallback)
 
 ## Voice Feedback (macOS only)
 

@@ -21,7 +21,7 @@ type AudioRecorderState = {
 /**
  * Hook for recording Strudel audio to WAV.
  */
-export function useAudioRecorder(_getEditor: () => any) {
+export function useAudioRecorder() {
   const [state, setState] = useState<AudioRecorderState>({
     isRecording: false,
     duration: 0,
@@ -39,10 +39,47 @@ export function useAudioRecorder(_getEditor: () => any) {
   const recordedUrlRef = useRef<string | null>(null)
 
   /**
-   * Start recording.
+   * Remove the capture processor and restore Strudel's direct audio path.
+   * Every exit from a recording (stop, failed start, unmount) must run this,
+   * or the destination gain can stay wired to a dead processor - muting
+   * everything.
    */
-  const startRecording = useCallback(async () => {
-    if (state.isRecording) return
+  const restoreRouting = useCallback(() => {
+    if (processorRef.current) {
+      try {
+        processorRef.current.onaudioprocess = null
+        processorRef.current.disconnect()
+      } catch {}
+      processorRef.current = null
+    }
+    if (destinationGainRef.current) {
+      const getAudioContextFn = (window as any).getAudioContext
+      const audioContext = getAudioContextFn?.() as AudioContext | undefined
+      try {
+        destinationGainRef.current.disconnect()
+      } catch {}
+      if (audioContext) {
+        try {
+          destinationGainRef.current.connect(audioContext.destination)
+        } catch (e) {
+          console.error('Error restoring audio routing:', e)
+        }
+      }
+      destinationGainRef.current = null
+    }
+  }, [])
+
+  /**
+   * Start recording. Returns { ok, error } so remote (API-driven) recording
+   * can acknowledge success or failure to the server.
+   */
+  const startRecording = useCallback(async (): Promise<{ ok: boolean; error: string | null }> => {
+    if (state.isRecording) return { ok: true, error: null }
+
+    const fail = (error: string) => {
+      setState(prev => ({ ...prev, error }))
+      return { ok: false, error }
+    }
 
     // Dismiss any previous recording using ref (avoids stale closure)
     if (recordedUrlRef.current) {
@@ -55,14 +92,12 @@ export function useAudioRecorder(_getEditor: () => any) {
     // Get AudioContext from Strudel
     const getAudioContextFn = (window as any).getAudioContext
     if (typeof getAudioContextFn !== 'function') {
-      setState(prev => ({ ...prev, error: 'Start playback first' }))
-      return
+      return fail('Start playback first')
     }
 
     const audioContext = getAudioContextFn() as AudioContext
     if (!audioContext) {
-      setState(prev => ({ ...prev, error: 'No audio context' }))
-      return
+      return fail('No audio context')
     }
 
     sampleRateRef.current = audioContext.sampleRate
@@ -70,14 +105,12 @@ export function useAudioRecorder(_getEditor: () => any) {
     // Get the audio controller
     const getController = (window as any).getSuperdoughAudioController
     if (typeof getController !== 'function') {
-      setState(prev => ({ ...prev, error: 'Audio controller not found' }))
-      return
+      return fail('Audio controller not found')
     }
 
     const controller = getController()
     if (!controller?.output?.destinationGain) {
-      setState(prev => ({ ...prev, error: 'destinationGain not found' }))
-      return
+      return fail('destinationGain not found')
     }
 
     const destinationGain = controller.output.destinationGain as GainNode
@@ -102,17 +135,17 @@ export function useAudioRecorder(_getEditor: () => any) {
     }
 
     // Insert processor in the audio chain
+    processorRef.current = processor
     try {
       destinationGain.disconnect()
       destinationGain.connect(processor)
       processor.connect(audioContext.destination)
     } catch (e) {
       console.error('Failed to connect recording chain:', e)
-      setState(prev => ({ ...prev, error: 'Failed to connect' }))
-      return
+      // Tear down the half-built chain so a failed insert can't silence everything
+      restoreRouting()
+      return fail('Failed to connect')
     }
-
-    processorRef.current = processor
 
     // Start timer
     setState({ isRecording: true, duration: 0, error: null, recordedBlob: null, recordedUrl: null })
@@ -125,13 +158,15 @@ export function useAudioRecorder(_getEditor: () => any) {
     }, 500)
 
     console.log('Recording started')
+    return { ok: true, error: null }
   }, [state.isRecording])
 
   /**
-   * Stop recording and download WAV.
+   * Stop recording. Returns the encoded WAV blob (also kept in state for the
+   * preview toast), or null if nothing was captured.
    */
-  const stopRecording = useCallback(() => {
-    if (!state.isRecording) return
+  const stopRecording = useCallback((): Blob | null => {
+    if (!state.isRecording) return null
 
     // Stop timer
     if (timerRef.current) {
@@ -139,21 +174,8 @@ export function useAudioRecorder(_getEditor: () => any) {
       timerRef.current = null
     }
 
-    // Get audio context to restore routing
-    const getAudioContextFn = (window as any).getAudioContext
-    const audioContext = getAudioContextFn?.() as AudioContext
-
-    // Disconnect processor and restore direct routing
-    if (processorRef.current && destinationGainRef.current && audioContext) {
-      try {
-        processorRef.current.disconnect()
-        destinationGainRef.current.disconnect()
-        destinationGainRef.current.connect(audioContext.destination)
-      } catch (e) {
-        console.error('Error restoring audio routing:', e)
-      }
-      processorRef.current = null
-    }
+    // Disconnect the processor and restore the direct audio path
+    restoreRouting()
 
     // Merge chunks and encode WAV
     const mergeChunks = (chunks: Float32Array[]): Float32Array => {
@@ -182,15 +204,15 @@ export function useAudioRecorder(_getEditor: () => any) {
 
       // Reset recording state but keep the blob for preview
       chunksRef.current = [[], []]
-      destinationGainRef.current = null
       setState({ isRecording: false, duration: 0, error: null, recordedBlob: wavBlob, recordedUrl: url })
-    } else {
-      recordedUrlRef.current = null
-      chunksRef.current = [[], []]
-      destinationGainRef.current = null
-      setState({ isRecording: false, duration: 0, error: null, recordedBlob: null, recordedUrl: null })
+      return wavBlob
     }
-  }, [state.isRecording])
+
+    recordedUrlRef.current = null
+    chunksRef.current = [[], []]
+    setState({ isRecording: false, duration: 0, error: null, recordedBlob: null, recordedUrl: null })
+    return null
+  }, [state.isRecording, restoreRouting])
 
   /**
    * Download the recorded audio.
@@ -213,18 +235,17 @@ export function useAudioRecorder(_getEditor: () => any) {
     setState(prev => ({ ...prev, recordedBlob: null, recordedUrl: null }))
   }, [])
 
-  // Cleanup on unmount
+  // Cleanup on unmount - restoring routing matters most: leaving the
+  // destination gain wired to a dead processor mutes Strudel entirely.
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
-      if (processorRef.current) {
-        try { processorRef.current.disconnect() } catch {}
-      }
+      restoreRouting()
       if (recordedUrlRef.current) {
         URL.revokeObjectURL(recordedUrlRef.current)
       }
     }
-  }, [])
+  }, [restoreRouting])
 
   return {
     isRecording: state.isRecording,

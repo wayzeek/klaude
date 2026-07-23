@@ -1,7 +1,7 @@
 ---
 name: dj-set
 description: Create and perform automated DJ sets with Strudel. Use when the user asks for a "set", "DJ set", "live performance", "mix", or wants music that evolves over time.
-allowed-tools: Bash(curl *), Bash(sleep *), Bash(say *)
+allowed-tools: Bash(curl *), Bash(sleep *), Bash(say *), Bash(node scripts/*), Bash(pnpm push*), Write
 ---
 
 # DJ Set Mode
@@ -127,24 +127,34 @@ Run as a separate Bash call (15-40 seconds typical).
 
 Run these two Bash calls in the SAME message (parallel execution):
 - `say "<announcement>"` with `run_in_background: true`
-- `curl -X POST http://localhost:3000/api/code ...`
+- `node scripts/push.mjs /tmp/phase.js --play` (write the phase code to the file first)
 
-This way voice plays while code updates simultaneously.
+This way voice plays while code updates simultaneously. The push script
+reports the eval verdict — if it prints an evaluation error, fix the code and
+re-push before the next phase; the crowd can hear a broken transition.
 
-**Step 4: Play (AFTER code completes)**
+**Step 4: Update the HUD (with the push, or right after)**
 ```bash
-curl -X POST http://localhost:3000/api/play
+curl -X POST http://localhost:3000/api/nowplaying -H "Content-Type: application/json" -d '{"section": "building"}'
 ```
-Run after the code curl completes.
+Set `title`/`artist` once at set start; update `section` each phase.
 
 **Key rules:**
 - NEVER use `&&`, `&`, or `;` to chain commands
 - `sleep` - separate Bash call
-- `say` - use `run_in_background: true` parameter, run PARALLEL with code
-- `curl /api/code` - run PARALLEL with say
-- `curl /api/play` - run AFTER code completes (separate call)
+- `say` - use `run_in_background: true` parameter, run PARALLEL with the push
+- Push script (`node scripts/push.mjs <file> --play`) - run PARALLEL with say
 
 **Voice setting:** If user selects "No" for voice announcements, simply omit the `say` command.
+
+**Smooth transitions with gain fades:** For a dramatic track-to-track cut,
+fade out (`POST /api/gain {"level": 0, "rampMs": 4000}`), sleep ~4s, push the
+new code with `--play`, fade back in (`{"level": 1, "rampMs": 2000}`). Use
+sparingly — most phase transitions should stay seamless pattern swaps.
+ALWAYS restore gain to 1 before the set ends.
+
+**Offer a bounce:** If the set is a banger, offer to record it — see the
+recording flow in `/api` (`/api/record/start` → `/api/record/stop`).
 
 ---
 

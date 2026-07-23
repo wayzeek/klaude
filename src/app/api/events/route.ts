@@ -6,11 +6,16 @@
  * Streams state changes to connected clients in real-time.
  *
  * ENDPOINT:
- *   GET /api/events - Opens an SSE stream
+ *   GET /api/events?clientId=<uuid> - Opens an SSE stream
+ *
+ * The clientId registers the browser tab in the client registry so
+ * /api/status can report who is connected and ready. Readiness details
+ * (editor loaded, audio unlocked) arrive separately via POST /api/clients.
  *
  * EVENTS:
- *   - state: Fired when code or isPlaying changes
- *     data: { code: string, isPlaying: boolean }
+ *   - message: fired on every state change
+ *     data: BroadcastState (code, revision, desiredPlaying, playEpoch,
+ *           gain, nowPlaying, command)
  */
 
 import { state } from '../state'
@@ -20,22 +25,30 @@ export const dynamic = 'force-dynamic'
 /** Interval between SSE heartbeat comments, keeps idle connections alive through proxies */
 const HEARTBEAT_MS = 25_000
 
-export async function GET() {
+export async function GET(request: Request) {
+  const clientId = new URL(request.url).searchParams.get('clientId')
+
   const encoder = new TextEncoder()
   let unsubscribe: (() => void) | null = null
   let heartbeat: ReturnType<typeof setInterval> | null = null
   let isClosed = false
 
+  if (clientId) {
+    state.registerClient(clientId)
+  }
+
   const cleanup = () => {
+    if (isClosed) return
     isClosed = true
     if (heartbeat) clearInterval(heartbeat)
     if (unsubscribe) unsubscribe()
+    if (clientId) state.unregisterClient(clientId)
   }
 
   const stream = new ReadableStream({
     start(controller) {
       // Send initial state
-      const initial = `data: ${JSON.stringify(state.state)}\n\n`
+      const initial = `data: ${JSON.stringify(state.broadcast)}\n\n`
       controller.enqueue(encoder.encode(initial))
 
       // Subscribe to state changes

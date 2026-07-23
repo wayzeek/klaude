@@ -3,27 +3,156 @@
  * STRUDEL EDITOR COMPONENT
  * =============================================================================
  *
- * Full-screen Strudel editor with floating playback controls.
+ * Full-screen Strudel editor with floating playback controls, a now-playing
+ * HUD, remote (API-driven) recording, and an unlock overlay for when the
+ * browser blocks audio before the first user gesture.
  */
 
 'use client'
 
-import { useStrudel } from '@/hooks/use-strudel'
+import { useRef, useEffect, useCallback } from 'react'
+import { useStrudel, type RemoteCommand } from '@/hooks/use-strudel'
 import { useAudioRecorder, formatDuration } from '@/hooks/use-audio-recorder'
 import { DEFAULT_CODE } from '@/lib/constants'
 import { Play, Square, RefreshCw, Circle, Download, Trash2 } from 'lucide-react'
 
 export function StrudelEditor() {
-  const { loaded, loadError, isPlaying, editorRef, play, stop } = useStrudel()
+  const {
+    loaded,
+    loadError,
+    isPlaying,
+    audioBlocked,
+    nowPlaying,
+    clientId,
+    editorRef,
+    play,
+    stop,
+    unlockAudio,
+    setOnStopCallback,
+    setCommandHandler,
+  } = useStrudel()
+
   const {
     isRecording,
     duration,
+    error: recorderError,
     recordedUrl,
     startRecording,
     stopRecording,
     downloadRecording,
     dismissRecording,
-  } = useAudioRecorder(() => null)
+  } = useAudioRecorder()
+
+  // Whether the active recording was started by the user (button) or the
+  // agent (API command). Remote recordings upload their WAV to the server.
+  const recordingModeRef = useRef<'manual' | 'remote' | null>(null)
+  const remoteCommandIdRef = useRef(0)
+
+  const ackRecord = useCallback(
+    (commandId: number, event: 'started' | 'stopped' | 'error', error?: string) => {
+      fetch('/api/record/ack', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId, commandId, event, error }),
+      }).catch(() => {})
+    },
+    [clientId],
+  )
+
+  const uploadRecording = useCallback(
+    async (blob: Blob, commandId: number) => {
+      try {
+        const res = await fetch('/api/recordings', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'audio/wav',
+            'X-Recording-Name': nowPlaying?.title ?? '',
+          },
+          body: blob,
+        })
+        if (!res.ok) throw new Error(`upload failed: ${res.status}`)
+      } catch (err) {
+        console.error('[klaude] recording upload failed:', err)
+        ackRecord(commandId, 'error', 'WAV upload to the server failed')
+      }
+    },
+    [nowPlaying, ackRecord],
+  )
+
+  /** Execute targeted record commands from the server. */
+  useEffect(() => {
+    setCommandHandler((command: RemoteCommand) => {
+      if (command.type === 'record-start') {
+        // A manual recording in progress must not be silently converted
+        // into a remote one (it would upload from the wrong start time).
+        if (isRecording) {
+          ackRecord(command.id, 'error', 'Already recording (started manually in the browser)')
+          return
+        }
+        recordingModeRef.current = 'remote'
+        remoteCommandIdRef.current = command.id
+        startRecording().then(({ ok, error }) => {
+          if (ok) {
+            ackRecord(command.id, 'started')
+          } else {
+            recordingModeRef.current = null
+            ackRecord(command.id, 'error', error ?? 'Recording failed to start')
+          }
+        })
+      } else {
+        const blob = stopRecording()
+        recordingModeRef.current = null
+        if (blob) {
+          ackRecord(command.id, 'stopped')
+          uploadRecording(blob, command.id)
+        } else {
+          ackRecord(command.id, 'error', 'Nothing was recorded')
+        }
+      }
+    })
+    return () => setCommandHandler(null)
+  }, [setCommandHandler, startRecording, stopRecording, ackRecord, uploadRecording, isRecording])
+
+  /**
+   * When playback stops while recording, finish the recording instead of
+   * capturing silence. Remote recordings still upload their bounce.
+   */
+  useEffect(() => {
+    setOnStopCallback(() => {
+      if (!isRecording) return
+      const mode = recordingModeRef.current
+      const commandId = remoteCommandIdRef.current
+      const blob = stopRecording()
+      recordingModeRef.current = null
+      if (mode === 'remote') {
+        if (blob) {
+          ackRecord(commandId, 'stopped')
+          uploadRecording(blob, commandId)
+        } else {
+          ackRecord(commandId, 'error', 'Nothing was recorded')
+        }
+      }
+    })
+    return () => setOnStopCallback(null)
+  }, [setOnStopCallback, isRecording, stopRecording, ackRecord, uploadRecording])
+
+  /**
+   * Intercept the documented shortcuts (Cmd+Enter play, Cmd+. stop) before
+   * the web component sees them, so playback always flows through the synced
+   * play()/stop() paths and the server never drifts from the browser.
+   */
+  const handleKeyDownCapture = (e: React.KeyboardEvent) => {
+    if (!(e.metaKey || e.ctrlKey)) return
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      e.stopPropagation()
+      play()
+    } else if (e.key === '.') {
+      e.preventDefault()
+      e.stopPropagation()
+      stop()
+    }
+  }
 
   if (loadError) {
     return (
@@ -39,19 +168,60 @@ export function StrudelEditor() {
 
   const handleRecordClick = () => {
     if (isRecording) {
-      stopRecording()
+      const mode = recordingModeRef.current
+      const commandId = remoteCommandIdRef.current
+      const blob = stopRecording()
+      recordingModeRef.current = null
+      if (mode === 'remote') {
+        if (blob) {
+          ackRecord(commandId, 'stopped')
+          uploadRecording(blob, commandId)
+        } else {
+          ackRecord(commandId, 'error', 'Nothing was recorded')
+        }
+      }
     } else {
-      startRecording()
+      recordingModeRef.current = 'manual'
+      startRecording().then(({ ok }) => {
+        if (!ok) recordingModeRef.current = null
+      })
     }
   }
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-background relative">
+    <div
+      className="h-screen w-screen flex flex-col bg-background relative"
+      onKeyDownCapture={handleKeyDownCapture}
+    >
       {/* Editor */}
       <div className="editor-container">
         {/* @ts-expect-error - strudel-editor is a custom web component */}
         <strudel-editor ref={editorRef} code={DEFAULT_CODE} lineWrapping />
       </div>
+
+      {/* Now Playing HUD */}
+      {nowPlaying && (nowPlaying.title || nowPlaying.artist || nowPlaying.section) && (
+        <div className="fixed top-6 left-6 bg-card/90 backdrop-blur-lg rounded-xl px-4 py-3 shadow-2xl border border-border/50 max-w-xs animate-in fade-in slide-in-from-top-2 duration-300">
+          {nowPlaying.title && (
+            <div className="text-sm font-semibold leading-tight">{nowPlaying.title}</div>
+          )}
+          {nowPlaying.artist && (
+            <div className="text-xs text-muted-foreground mt-0.5">{nowPlaying.artist}</div>
+          )}
+          {nowPlaying.section && (
+            <div className="text-[10px] text-primary mt-1.5 uppercase tracking-widest">
+              {nowPlaying.section}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Recorder error toast */}
+      {recorderError && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-card/95 backdrop-blur-lg rounded-lg px-4 py-2 shadow-xl border border-red-500/30 text-sm text-red-400">
+          {recorderError}
+        </div>
+      )}
 
       {/* Recording Preview Toast */}
       {recordedUrl && (
@@ -113,6 +283,19 @@ export function StrudelEditor() {
           <RefreshCw className="size-4" />
         </button>
       </div>
+
+      {/* Audio blocked overlay - browsers refuse sound before a user gesture */}
+      {audioBlocked && (
+        <button
+          onClick={unlockAudio}
+          className="fixed inset-0 z-50 bg-background/70 backdrop-blur-sm flex flex-col items-center justify-center gap-4 cursor-pointer"
+        >
+          <div className="w-20 h-20 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-2xl">
+            <Play className="size-8 ml-1 fill-current" />
+          </div>
+          <div className="text-sm text-muted-foreground">Tap anywhere to join the music</div>
+        </button>
+      )}
     </div>
   )
 }

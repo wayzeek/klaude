@@ -1,7 +1,7 @@
 ---
 name: api
-description: Control the Strudel REPL via REST APIs. Use when you need to push code, start/stop playback, or check status.
-allowed-tools: Bash(curl *)
+description: Control the Strudel REPL via REST APIs. Use when you need to push code, start/stop playback, check status, fade volume, update the now-playing HUD, record audio, or restore history.
+allowed-tools: Bash(curl *), Bash(node scripts/*), Bash(pnpm push*), Write
 ---
 
 # Strudel API
@@ -10,87 +10,122 @@ Talk to the REPL at `http://localhost:3000`.
 
 ---
 
+## Pushing Code - use the push script
+
+Write the code to a file, then push it. No JSON escaping, no quoting bugs:
+
+```bash
+node scripts/push.mjs /tmp/track.js --play
+```
+
+- `--play` starts playback AND waits for the browser's eval verdict:
+  - `OK: playing` - the code ran, you're done
+  - `FAIL: evaluation error: ...` - fix the code and push again
+  - `WARN: no browser tab connected` - ask the user to open http://localhost:3000
+- Without `--play` it just updates the editor.
+- Reading from stdin works too: `node scripts/push.mjs - --play`
+
+**The feedback loop is the point.** Never assume a push worked - the script's
+exit code and message tell you. If you use raw curl instead, you MUST check
+`/api/status` → `lastEval` yourself after pushing.
+
+---
+
 ## Endpoints
 
 | Endpoint | Method | What it does |
 |----------|--------|--------------|
-| `/api/code` | POST | Push new code |
-| `/api/code` | GET | Read current code |
-| `/api/play` | POST | Start playback |
-| `/api/stop` | POST | Stop playback |
-| `/api/status` | GET | Get current state |
-| `/api/events` | GET | SSE stream (real-time updates) |
-
-**Real-time sync:** The browser connects to `/api/events` via Server-Sent Events. When you push code or trigger play/stop, the browser updates automatically.
-
----
-
-## Push Code
-
-```bash
-curl -X POST http://localhost:3000/api/code \
-  -H "Content-Type: application/json" \
-  -d '{"code": "YOUR_CODE_HERE"}'
-```
-
-## JSON Escaping Rules (CRITICAL)
-
-The API uses `JSON.parse()`. Invalid escape sequences are rejected with a **400 error** (non-string or oversized `code` too) — the error message tells you what went wrong.
-
-**Valid JSON escapes (these work):**
-| Escape | Meaning |
-|--------|---------|
-| `\"` | Double quote |
-| `\\` | Backslash |
-| `\n` | Newline |
-| `\t` | Tab |
-| `\r` | Carriage return |
-| `\/` | Forward slash |
-
-**Invalid escapes (these BREAK the API):**
-- `\x`, `\a`, `\s`, `\d`, `\w`, or any backslash + letter not in the table above
-- Unescaped backslashes
-
-**Examples:**
-
-```bash
-# ✅ GOOD - properly escaped
-curl -X POST http://localhost:3000/api/code \
-  -H "Content-Type: application/json" \
-  -d '{"code": "$: s(\"bd sd hh hh\")"}'
-
-# ❌ BAD - \s is not a valid JSON escape (returns 400)
-curl -X POST http://localhost:3000/api/code \
-  -H "Content-Type: application/json" \
-  -d '{"code": "$: s(\"bd\sd\")"}'
-```
-
-**Rule of thumb:** If you need a literal backslash in the code, escape it as `\\`
+| `/api/code` | POST | Push code `{"code": "...", "play": true?}` - `play:true` = atomic push-and-play |
+| `/api/code` | GET | Current code + revision (this is what the browser truly shows - local edits sync back) |
+| `/api/play` | POST | Play. Repeat POSTs force re-evaluation (bumps `playEpoch`) |
+| `/api/stop` | POST | Stop. Also clears the now-playing HUD |
+| `/api/status` | GET | Full state - see field guide below |
+| `/api/gain` | POST | Master volume `{"level": 0..1, "rampMs": 4000?}` - smooth fades |
+| `/api/nowplaying` | POST/DELETE | HUD metadata `{"title", "artist", "section"}` - partial updates OK |
+| `/api/history` | GET/POST | List revisions / restore one: `{"revision": N}` |
+| `/api/record/start` | POST | Start recording in the browser |
+| `/api/record/stop` | POST | Stop; the WAV lands in `recordings/` |
+| `/api/recordings` | GET | List saved WAVs |
+| `/api/events` | GET | SSE stream (browsers use this; you don't need it) |
 
 ---
 
-## Play / Stop
+## Status Field Guide
 
-```bash
-curl -X POST http://localhost:3000/api/play
-curl -X POST http://localhost:3000/api/stop
+```
+desiredPlaying   what was requested        ─ these two disagreeing means
+actualPlaying    what the browser reports  ─ something needs attention
+lastEval         {revision, ok, error, fresh} - fresh:true means it refers to
+                 the CURRENT revision; fresh + ok:false = your push is broken
+browserConnected false = nothing can play; ask the user to open localhost:3000
+audioReady       false = tab open but audio locked; an overlay in the tab
+                 asks the user for one click - sound starts after that
+recording        {phase: idle|starting|recording|stopping|done|error, file?}
 ```
 
 ---
 
-## Typical Flow
+## Fades (DJ transitions)
 
-1. Push code
-2. Play
+```bash
+# Fade out over 4s, then swap tracks silently, then fade back in
+curl -X POST http://localhost:3000/api/gain -H "Content-Type: application/json" -d '{"level": 0, "rampMs": 4000}'
+# (wait ~4s, push new code with play, then:)
+curl -X POST http://localhost:3000/api/gain -H "Content-Type: application/json" -d '{"level": 1, "rampMs": 2000}'
+```
 
-That's it. The REPL handles the rest.
+Always restore gain to 1 before ending a session.
 
 ---
 
-## Multi-line Example
+## Now Playing HUD
+
+Keep the listener oriented during sets - update on every track/section change:
 
 ```bash
+curl -X POST http://localhost:3000/api/nowplaying -H "Content-Type: application/json" \
+  -d '{"title": "Loveland Sunrise", "artist": "SOLOMUN", "section": "building"}'
+```
+
+Later, updating just the section keeps title/artist. `/api/stop` clears it.
+
+---
+
+## Recording a Bounce
+
+```bash
+curl -X POST http://localhost:3000/api/record/start     # needs audioReady:true
+# ... let the track play ...
+curl -X POST http://localhost:3000/api/record/stop
+# poll /api/status until recording.phase is "done" - recording.file has the path
+```
+
+Stopping playback mid-recording finishes the bounce automatically.
+
+---
+
+## History (undo)
+
+```bash
+curl http://localhost:3000/api/history                   # list revisions
+curl -X POST http://localhost:3000/api/history -H "Content-Type: application/json" -d '{"revision": 12}'
+```
+
+Restoring never overwrites history - it creates a new revision. Survives
+server restarts. Use it when the user says "go back to how it was before".
+
+---
+
+## Raw curl JSON Escaping (fallback only)
+
+Prefer the push script. If you must inline code in curl, the API uses
+`JSON.parse()`: only `\"` `\\` `\n` `\t` `\r` `\/` are valid escapes.
+`\x`, `\s`, `\d` or any other backslash+letter **breaks the request** (400).
+A literal backslash in code must be `\\`.
+
+```bash
+# ✅ GOOD
 curl -X POST http://localhost:3000/api/code \
   -H "Content-Type: application/json" \
-  -d '{"code": "setcpm(130/4)\n\n$: s(\"bd*4, hh*8\").bank(\"RolandTR909\")\n\n$: note(\"<c2 g1 ab1 bb1>\").s(\"sawtooth\").lpf(400)"}'
+  -d '{"code": "$: s(\"bd sd hh hh\")", "play": true}'
 ```

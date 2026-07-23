@@ -13,7 +13,12 @@
       "Skill(visuals)",
       "Bash(sleep *)",
       "Bash(say *)",
-      "Bash(curl *)"
+      "Bash(curl *)",
+      "Bash(node scripts/*)",
+      "Bash(pnpm push*)",
+      "Bash(pnpm share*)",
+      "Bash(pnpm smoke*)",
+      "Bash(pnpm validate:tracks*)"
     ]
   },
   "hooks": {

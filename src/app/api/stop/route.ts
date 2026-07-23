@@ -3,22 +3,20 @@
  * STOP API ENDPOINT
  * =============================================================================
  *
- * Signals that playback should stop.
- * Change is broadcast to all connected SSE clients.
- *
- * ENDPOINT:
- *   POST /api/stop - Set the playing state to false
+ * POST /api/stop - Stop playback. Also clears the now-playing metadata.
  */
 
 import { NextResponse } from 'next/server'
 import { state } from '../state'
+import { rejectCrossOrigin } from '../guard'
 
-/**
- * POST /api/stop
- *
- * Sets isPlaying to false and broadcasts to connected clients.
- */
-export async function POST() {
-  state.isPlaying = false
-  return NextResponse.json({ isPlaying: state.isPlaying })
+export async function POST(request: Request) {
+  const rejected = rejectCrossOrigin(request)
+  if (rejected) return rejected
+
+  state.stop()
+  return NextResponse.json({
+    desiredPlaying: state.desiredPlaying,
+    revision: state.revision,
+  })
 }

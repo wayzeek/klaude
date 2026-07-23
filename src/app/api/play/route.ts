@@ -3,22 +3,24 @@
  * PLAY API ENDPOINT
  * =============================================================================
  *
- * Signals that playback should start.
- * Change is broadcast to all connected SSE clients.
+ * POST /api/play - Request playback of the current code.
  *
- * ENDPOINT:
- *   POST /api/play - Set the playing state to true
+ * Always bumps the play epoch, so posting while already playing forces the
+ * browser to re-evaluate the current code (useful after a flaky eval).
  */
 
 import { NextResponse } from 'next/server'
 import { state } from '../state'
+import { rejectCrossOrigin } from '../guard'
 
-/**
- * POST /api/play
- *
- * Sets isPlaying to true and broadcasts to connected clients.
- */
-export async function POST() {
-  state.isPlaying = true
-  return NextResponse.json({ isPlaying: state.isPlaying })
+export async function POST(request: Request) {
+  const rejected = rejectCrossOrigin(request)
+  if (rejected) return rejected
+
+  state.play()
+  return NextResponse.json({
+    desiredPlaying: state.desiredPlaying,
+    playEpoch: state.playEpoch,
+    revision: state.revision,
+  })
 }

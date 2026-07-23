@@ -7,22 +7,21 @@
  * Changes are automatically broadcast to connected clients via SSE.
  *
  * ENDPOINTS:
- *   GET  /api/code  - Retrieve the current code and playing status
- *   POST /api/code  - Update the stored code
+ *   GET  /api/code  - Retrieve the current code, revision, and playing state
+ *   POST /api/code  - Update the stored code; pass { "play": true } to
+ *                     atomically start playback of the new revision
  */
 
 import { NextResponse } from 'next/server'
 import { state } from '../state'
+import { rejectCrossOrigin } from '../guard'
 
-/**
- * GET /api/code
- *
- * Returns the current Strudel code and playing status.
- */
 export async function GET() {
   return NextResponse.json({
     code: state.code,
-    isPlaying: state.isPlaying,
+    revision: state.revision,
+    desiredPlaying: state.desiredPlaying,
+    actualPlaying: state.actualPlaying,
   })
 }
 
@@ -32,11 +31,15 @@ const MAX_CODE_LENGTH = 100_000
 /**
  * POST /api/code
  *
- * Updates the stored Strudel code.
- * Change is broadcast to all connected SSE clients.
+ * Body: { "code": "...", "play": true? }
  * Returns 400 on malformed JSON or non-string code, 413 on oversized code.
+ * The response includes the new revision - check /api/status afterwards to
+ * see whether the browser evaluated it successfully (lastEval).
  */
 export async function POST(request: Request) {
+  const rejected = rejectCrossOrigin(request)
+  if (rejected) return rejected
+
   let body: unknown
   try {
     body = await request.json()
@@ -54,7 +57,7 @@ export async function POST(request: Request) {
     )
   }
 
-  const { code } = body as { code?: unknown }
+  const { code, play } = body as { code?: unknown; play?: unknown }
   if (code !== undefined) {
     if (typeof code !== 'string') {
       return NextResponse.json({ error: '"code" must be a string' }, { status: 400 })
@@ -65,11 +68,31 @@ export async function POST(request: Request) {
         { status: 413 },
       )
     }
-    state.code = code
+    const before = state.revision
+    // Atomic push-and-play emits ONE snapshot; separate setCode + play
+    // emissions would make browsers evaluate twice.
+    if (play === true) {
+      state.pushAndPlay(code)
+    } else {
+      state.setCode(code)
+    }
+    return NextResponse.json({
+      code: state.code,
+      revision: state.revision,
+      unchanged: state.revision === before,
+      desiredPlaying: state.desiredPlaying,
+      playEpoch: state.playEpoch,
+    })
+  }
+
+  if (play === true) {
+    state.play()
   }
 
   return NextResponse.json({
     code: state.code,
-    isPlaying: state.isPlaying,
+    revision: state.revision,
+    desiredPlaying: state.desiredPlaying,
+    playEpoch: state.playEpoch,
   })
 }
