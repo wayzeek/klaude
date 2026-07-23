@@ -59,4 +59,11 @@ class StateEmitter {
   }
 }
 
-export const state = new StateEmitter()
+/**
+ * Singleton via globalThis so dev-mode hot reloads and separately-bundled
+ * route handlers all share the same state and listeners.
+ */
+const globalForState = globalThis as unknown as { __strudelState?: StateEmitter }
+
+export const state =
+  globalForState.__strudelState ?? (globalForState.__strudelState = new StateEmitter())

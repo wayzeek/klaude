@@ -14,7 +14,7 @@ import { DEFAULT_CODE } from '@/lib/constants'
 import { Play, Square, RefreshCw, Circle, Download, Trash2 } from 'lucide-react'
 
 export function StrudelEditor() {
-  const { loaded, isPlaying, editorRef, play, stop } = useStrudel()
+  const { loaded, loadError, isPlaying, editorRef, play, stop } = useStrudel()
   const {
     isRecording,
     duration,
@@ -24,6 +24,14 @@ export function StrudelEditor() {
     downloadRecording,
     dismissRecording,
   } = useAudioRecorder(() => null)
+
+  if (loadError) {
+    return (
+      <div className="h-screen bg-background flex items-center justify-center text-muted-foreground text-sm">
+        Failed to load the Strudel engine from the CDN. Check your connection and reload.
+      </div>
+    )
+  }
 
   if (!loaded) {
     return <div className="h-screen bg-background" />

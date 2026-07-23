@@ -150,7 +150,7 @@ Run after the code curl completes.
 
 ## Duration Planning
 
-**See `/arrange` skill for full duration math, cycle tables, and genre reference examples.**
+**See the `/compose` skill for full duration math, cycle tables, and genre reference examples.**
 
 Quick formula: `cycles = minutes × 60 × cps`
 
@@ -281,6 +281,8 @@ But genres are starting points, not rules. Cross-pollinate freely.
 ---
 
 ## Music Theory Foundations
+
+For deeper harmony — borrowed chords, modal interchange, progression recipes by mood — load the `/theory` skill.
 
 ### Start with Texture, Not Melody
 Don't jump into arpeggios or big chords. Begin with:
@@ -460,7 +462,7 @@ arrange(
 **When to use arrange():** Pre-composed journeys, precise timing
 **When to use phase-by-phase:** Interactive sets, indefinite mode
 
-**See `/arrange` skill for full examples (Metal, Melodic Techno, UK Garage, Orchestral).**
+**See the `/compose` skill for full examples (Metal, Melodic Techno, UK Garage, Lo-fi, Synthwave).**
 
 ---
 

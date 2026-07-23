@@ -35,7 +35,7 @@ curl -X POST http://localhost:3000/api/code \
 
 ## JSON Escaping Rules (CRITICAL)
 
-The API uses `JSON.parse()`. Invalid escape sequences will cause **500 errors**.
+The API uses `JSON.parse()`. Invalid escape sequences are rejected with a **400 error** (non-string or oversized `code` too) — the error message tells you what went wrong.
 
 **Valid JSON escapes (these work):**
 | Escape | Meaning |
@@ -59,7 +59,7 @@ curl -X POST http://localhost:3000/api/code \
   -H "Content-Type: application/json" \
   -d '{"code": "$: s(\"bd sd hh hh\")"}'
 
-# ❌ BAD - \s is not a valid JSON escape
+# ❌ BAD - \s is not a valid JSON escape (returns 400)
 curl -X POST http://localhost:3000/api/code \
   -H "Content-Type: application/json" \
   -d '{"code": "$: s(\"bd\sd\")"}'

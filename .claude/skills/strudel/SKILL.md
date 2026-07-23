@@ -8,6 +8,8 @@ allowed-tools: Bash(curl *), Bash(say *)
 
 Quick reference for Strudel syntax. Not exhaustive - experiment and discover.
 
+**Full sound listings** (all drum machines, GM instruments, wavetables, multi-sampled instruments): read `references/sound-catalog.md` in this skill's directory.
+
 ---
 
 ## The Basics
@@ -31,6 +33,8 @@ $: s("bd*4, hh*8")   // Layers: kick AND hats together
 | `/n` | Slow down n times | `[c d e f]/2` |
 | `[ ]` | Group (subdivide) | `[bd sd] hh` |
 | `< >` | Alternate each cycle | `<bd sd cp>` |
+| `{ }` | Polymeter (layers rotate at same step rate) | `{bd sd, hh hh hh}` |
+| `%n` | Steps per cycle for polymeter | `{c eb g c2}%8` |
 | `,` | Play in parallel (stack) | `bd, hh*2` |
 | `~` or `-` | Rest (silence) | `bd ~ sd ~` |
 | `?` | 50% chance to play | `hh*8?` |
@@ -39,6 +43,9 @@ $: s("bd*4, hh*8")   // Layers: kick AND hats together
 | `!n` | Replicate | `bd!3 sd` |
 | `\|` | Random choice | `bd \| sd \| cp` |
 | `:n` | Sample number | `hh:2` |
+| `..` | Range | `n("0 .. 7")` |
+
+**Polymeter** is a distinct rhythmic device from `[ ]` subdivision: each layer keeps its own length and they rotate against each other. `{bd sd, hh hh hh}` plays a 2-step and a 3-step loop at the same step rate — they realign every 6 steps.
 
 ---
 
@@ -48,141 +55,7 @@ $: s("bd*4, hh*8")   // Layers: kick AND hats together
 
 **Drum Banks (classic):** `.bank("RolandTR909")` `.bank("RolandTR808")` `.bank("RolandTR707")`
 
-### Drum Machines Catalog
-
-Use with sample pattern: `s("tr808_bd tr808_sd tr808_hh")` or with `:n` for variations: `s("tr808_bd:0 tr808_bd:5")`
-
-**ROLAND (The Classics)**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `tr808` | 25 kicks, 25 snares, 5 toms each | THE hip-hop/electro sound |
-| `tr909` | 4 kicks, 16 snares, 9 toms each | THE house/techno sound |
-| `tr707` | 2 kicks, 2 snares | Clean 80s digital |
-| `tr606` | 1 each | Acid house companion |
-| `tr626` | 2 kicks, 3 snares, 8 percs | Latin percussion |
-| `tr505` | 1 each, 3 percs | Budget 80s |
-| `tr727` | 10 percs, 2 shakers | Latin percussion only |
-| `mc303` | 16 kicks, 26 snares, 39 percs | Groovebox monster |
-| `r8` | 7 kicks, 12 snares, 8 percs | Pro 90s workstation |
-| `d110` | 3 snares, 3 percs | LA Synthesis module |
-| `d70` | 4 kicks, 5 snares | 90s workstation |
-| `system100` | 15 kicks, 21 snares, 19 percs | Modular analog |
-| `sh09` | 43 kicks | Synth bass drums |
-
-**LINN (The Originals)**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `linndrum` | 1 kick, 3 snares, 3 hats, 6 percs | Prince, 80s pop legend |
-| `lm1` / `linnlm1` | 4 kicks, 1 snare, 3 percs | First real drum machine |
-| `lm2` / `linnlm2` | 4 kicks, 4 snares | LM-1 successor |
-| `linn9000` / `9000` | 2 crashes, 2 toms each, 3 percs | Sampling pioneer |
-| `linn` / `akailinn` | Full kit | Akai recreation |
-
-**OBERHEIM**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `dmx` / `oberheimdmx` | 3 kicks, 3 snares | New Order, early hip-hop |
-
-**E-MU**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `sp12` / `emusp12` | 14 kicks, 21 snares, 6 toms each | Sampling legend |
-| `drumulator` / `emudrumulator` | 1 each | Budget classic |
-| `emumodular` | 2 kicks, 2 percs | Modular weirdness |
-
-**YAMAHA**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `rm50` / `yamaharm50` | 103 kicks, 108 snares, 56 percs | MASSIVE library |
-| `ry30` / `yamahary30` | 13 kicks, 21 snares, 13 percs | AWM synthesis |
-| `rx5` / `yamaharx5` | 2 kicks, 3 snares, FX | FM drums |
-| `rx21` / `yamaharx21` | 1 each | Budget FM |
-| `tg33` / `yamahatg33` | 4 kicks, 5 snares, 12 percs | Vector synthesis |
-
-**KORG**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `m1` / `korgm1` | 3 kicks, 4 snares, 16 misc, 7 percs | Workstation king |
-| `minipops` / `korgminipops` | 7 kicks, 13 snares | Vintage analog |
-| `kpr77` / `korgkpr77` | 1 each | Preset rhythm |
-| `kr55` / `korgkr55` | 1 each, 2 percs | Analog preset |
-| `ddm110` / `korgddm110` | 1 kick, 2 toms each | Digital |
-| `poly800` / `korgpoly800` | 4 kicks | Synth kicks |
-| `t3` / `korgt3` | 5 kicks, 5 snares, 4 percs | Workstation |
-| `krz` / `korgkrz` | 2 snares, 2 FX | Trinity/Triton |
-
-**BOSS**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `dr110` / `bossdr110` | 1 each | Compact analog |
-| `dr220` / `bossdr220` | Full kit + perc | Digital 80s |
-| `dr55` / `bossdr55` | 2 kicks, 8 snares, 2 hats | Dr. Rhythm |
-| `dr550` / `bossdr550` | 5 kicks, 6 snares, 11 percs | Pro 90s |
-
-**ALESIS**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `hr16` / `alesishr16` | 1 each, 8 percs, 3 shakers | 80s digital |
-| `sr16` / `alesissr16` | 13 kicks, 12 snares, 7 percs | Studio staple |
-
-**SEQUENTIAL CIRCUITS**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `circuitsdrumtracks` | 1 each | Early digital |
-| `circuitstom` | 2 hi toms | Tom module |
-
-**AKAI**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `mpc60` / `akaimpc60` | 2 kicks, 3 snares, 5 percs | Hip-hop legend |
-| `mpc1000` | 5 kicks, 4 snares | Modern MPC |
-| `xr10` / `akaixr10` | 10 kicks, 10 snares, 15 percs | XR series |
-
-**CASIO**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `rz1` / `casiorz1` | 1 each, 2 rides | Sampling keyboard |
-| `sk1` / `casiosk1` | 1 each | Toy sampling |
-| `vl1` / `casiovl1` | 1 each | VL-Tone |
-
-**SIMMONS**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `sds5` / `simmonssds5` | 12 kicks, 21 snares, 7 rims | Electronic drum pads |
-| `sds400` / `simmonssds400` | 3 snares, 8 mid toms, 6 lo toms | Tom heaven |
-
-**OTHER GEMS**
-| Machine | Sound | Vibe |
-|---------|-------|------|
-| `spacedrum` / `viscospacedrum` | 11 kicks, 6 hats, 7 hi toms | Weird analog |
-| `dpm48` / `sakatadpm48` | 3 kicks, 2 snares, 2 percs | Sakata |
-| `compurhythm78` | 8 percs, 4 misc | Roland CR-78 |
-| `compurhythm1000` | Full kit, 3 percs | Roland CR-1000 |
-| `compurhythm8000` | Full kit, 2 percs | Roland CR-8000 |
-| `mfb512` | 1 each | German analog |
-| `sergemodular` | 5 percs | Serge modular |
-| `mridangam_*` | South Indian percussion | `dhi`, `dhin`, `ka`, `ta`, `thom`, etc. |
-
-**Sample Counts Key:** Numbers in parentheses indicate variations available via `:n`
-
-```javascript
-// Classic 808 kit
-s("tr808_bd tr808_sd:3 tr808_hh*2 tr808_oh").gain(0.8)
-
-// Mix machines for unique kits
-s("tr909_bd linndrum_sd tr808_hh dmx_cp")
-
-// Explore variations
-s("tr808_bd:<0 5 10 15 20>") // cycle through 808 kick variations
-
-// Lo-fi with SP-12
-s("sp12_bd sp12_sd:5 sp12_hh").lpf(2000).room(0.4)
-
-// Yamaha RM50 has EVERYTHING
-s("rm50_bd:50 rm50_sd:30 rm50_perc:20")
-```
-
-### Synthesizers
+**Drum machines as samples:** `s("tr808_bd tr808_sd tr808_hh")` or with `:n` for variations: `s("tr808_bd:0 tr808_bd:5")`. Highlights: `tr808` (hip-hop), `tr909` (house/techno), `linndrum` (80s pop), `dmx` (early hip-hop), `sp12` (dusty sampling), `mpc60` (hip-hop). **Full catalog with variation counts: `references/sound-catalog.md`.**
 
 **Basic Waveforms:**
 | Sound | Alias | Description |
@@ -194,92 +67,11 @@ s("rm50_bd:50 rm50_sd:30 rm50_perc:20")
 | `supersaw` | - | Detuned saws - huge pads |
 | `pulse` | - | Variable width square |
 
-**Noise Sources:**
-| Sound | Character |
-|-------|-----------|
-| `white` | Full spectrum hiss |
-| `pink` | Warmer, less harsh |
-| `brown` | Deep rumble |
+**Noise:** `white` (hiss) `pink` (warmer) `brown` (rumble) — great for risers, rain, air.
 
-**Z-Oscillators (aliased/lo-fi):**
-`z_sine` `z_sawtooth` `z_square` `z_triangle` `z_tan` `z_noise`
+**GM Instruments (highlights):** `gm_piano` `gm_epiano1` (Rhodes) `gm_acoustic_bass` `gm_synth_bass_1` `gm_pad_warm` `gm_pad_halo` `gm_string_ensemble_1` `gm_voice_oohs` `gm_choir_aahs` `gm_tenor_sax` `gm_trumpet` `gm_flute` `gm_koto` `gm_vibraphone` `gm_music_box` — hundreds more in the catalog.
 
-**Other Synths:**
-| Sound | Description |
-|-------|-------------|
-| `zzfx` | ZzFX game audio synth |
-| `bytebeat` | Algorithmic 8-bit |
-| `crackle` | Vinyl crackle noise |
-
-### Wavetables
-
-```javascript
-// Wavetable synthesis
-s("wt_digital:2").note("c3 e3 g3 c4")
-```
-
-| Wavetable | Variations | Vibe |
-|-----------|------------|------|
-| `wt_digital` | 5 | Digital textures |
-| `wt_digital_bad_day` | 1 | Moody digital |
-| `wt_digital_basique` | 1 | Simple digital |
-| `wt_digital_crickets` | 1 | Insect-like |
-| `wt_digital_curses` | 1 | Harsh digital |
-| `wt_digital_echoes` | 1 | Spacey |
-| `wt_vgame` | 11 | Video game sounds |
-
-### GM Instruments (General MIDI)
-
-All have multiple velocity layers (number in parentheses). Use `:n` for variations.
-
-**Pianos (Keys):**
-| Sound | Layers | Character |
-|-------|--------|-----------|
-| `gm_piano` | 32 | Acoustic grand |
-| `gm_epiano1` | 11 | Rhodes-style |
-| `gm_epiano2` | 9 | DX7-style |
-| `gm_harpsichord` | 8 | Baroque |
-| `gm_clavinet` | 4 | Funky |
-
-**Chromatic Percussion:**
-| Sound | Layers |
-|-------|--------|
-| `gm_celesta` | 6 |
-| `gm_glockenspiel` | 5 |
-| `gm_music_box` | 5 |
-| `gm_vibraphone` | 6 |
-| `gm_marimba` | 7 |
-| `gm_xylophone` | 6 |
-| `gm_tubular_bells` | 6 |
-| `gm_dulcimer` | 5 |
-
-*Organs:* `gm_drawbar_organ` `gm_percussive_organ` `gm_rock_organ` `gm_church_organ` `gm_reed_organ` `gm_accordion` `gm_harmonica` `gm_bandoneon`
-
-*Guitars:* `gm_acoustic_guitar_nylon` `gm_acoustic_guitar_steel` `gm_electric_guitar_jazz` `gm_electric_guitar_clean` `gm_electric_guitar_muted` `gm_overdriven_guitar` `gm_distortion_guitar` `gm_guitar_harmonics`
-
-*Bass:* `gm_acoustic_bass` `gm_electric_bass_finger` `gm_electric_bass_pick` `gm_fretless_bass` `gm_slap_bass_1` `gm_slap_bass_2` `gm_synth_bass_1` `gm_synth_bass_2`
-
-*Strings:* `gm_violin` `gm_viola` `gm_cello` `gm_contrabass` `gm_tremolo_strings` `gm_pizzicato_strings` `gm_orchestral_harp` `gm_timpani`
-
-*Ensemble:* `gm_string_ensemble_1` `gm_string_ensemble_2` `gm_synth_strings_1` `gm_synth_strings_2` `gm_choir_aahs` `gm_voice_oohs` `gm_synth_choir` `gm_orchestra_hit`
-
-*Brass:* `gm_trumpet` `gm_trombone` `gm_tuba` `gm_muted_trumpet` `gm_french_horn` `gm_brass_section` `gm_synth_brass_1` `gm_synth_brass_2`
-
-*Reeds:* `gm_soprano_sax` `gm_alto_sax` `gm_tenor_sax` `gm_baritone_sax` `gm_oboe` `gm_english_horn` `gm_bassoon` `gm_clarinet`
-
-*Pipes:* `gm_piccolo` `gm_flute` `gm_recorder` `gm_pan_flute` `gm_blown_bottle` `gm_shakuhachi` `gm_whistle` `gm_ocarina`
-
-*Synth Leads:* `gm_lead_1_square` `gm_lead_2_sawtooth` `gm_lead_3_calliope` `gm_lead_4_chiff` `gm_lead_5_charang` `gm_lead_6_voice` `gm_lead_7_fifths` `gm_lead_8_bass_lead`
-
-*Synth Pads:* `gm_pad_new_age` `gm_pad_warm` `gm_pad_poly` `gm_pad_choir` `gm_pad_bowed` `gm_pad_metallic` `gm_pad_halo` `gm_pad_sweep`
-
-*Synth FX:* `gm_fx_rain` `gm_fx_soundtrack` `gm_fx_crystal` `gm_fx_atmosphere` `gm_fx_brightness` `gm_fx_goblins` `gm_fx_echoes` `gm_fx_sci_fi`
-
-*Ethnic:* `gm_sitar` `gm_banjo` `gm_shamisen` `gm_koto` `gm_kalimba` `gm_bagpipe` `gm_fiddle` `gm_shanai`
-
-*Percussive:* `gm_tinkle_bell` `gm_agogo` `gm_steel_drums` `gm_woodblock` `gm_taiko_drum` `gm_melodic_tom` `gm_synth_drum` `gm_reverse_cymbal`
-
-*Sound FX:* `gm_guitar_fret_noise` `gm_breath_noise` `gm_seashore` `gm_bird_tweet` `gm_telephone` `gm_helicopter` `gm_applause` `gm_gunshot`
+**Multi-sampled instruments (highlights):** `piano` `steinway` `sax` `harmonica` `kalimba` `marimba` `timpani` `conga` `bongo` `darbuka` `gong` `dantranh` — full list in the catalog.
 
 ```javascript
 // Switch between sounds (space = alternate)
@@ -297,188 +89,22 @@ note("c d e f").sound("piano, gm_electric_guitar_muted")
 .vibmod(0.5)      // Vibrato depth (semitones)
 ```
 
-### Samples Catalog
+---
 
-High-quality multi-sampled instruments. Numbers show available variations.
+## Custom Samples
 
-**Pianos & Keys:**
-| Sample | Variations | Character |
-|--------|------------|-----------|
-| `piano` | 29 | Acoustic grand |
-| `piano1` | 22 | Alternative piano |
-| `steinway` | 42 | Concert grand |
-| `fmpiano` | 22 | FM synthesis piano |
-| `kawai` | 37 | Kawai grand |
-| `clavisynth` | 19 | Clavinet-style synth |
-
-**Strings & Harps:**
-| Sample | Variations |
-|--------|------------|
-| `folkharp` | 29 |
-| `harp` | 23 |
-| `psaltery_bow` | 11 |
-| `psaltery_pluck` | 11 |
-| `psaltery_spiccato` | 11 |
-| `strumstick` | 19 |
-
-**Mallet Instruments:**
-| Sample | Variations | Character |
-|--------|------------|-----------|
-| `kalimba` | 11 | Thumb piano |
-| `kalimba2` - `kalimba5` | 14-25 | More kalimbas |
-| `marimba` | 10 | Wooden bars |
-| `glockenspiel` | 7 | Metal bells |
-| `vibraphone` | 11 | Jazz vibes |
-| `vibraphone_bowed` | 6 | Bowed vibes |
-| `vibraphone_soft` | 11 | Soft mallets |
-| `xylophone_hard_ff` | 8 | Hard mallets loud |
-| `xylophone_soft_pp` | 8 | Soft mallets quiet |
-| `balafon` | 6 | African xylophone |
-| `balafon_hard` / `_soft` | 6 | Articulation variants |
-| `tubularbells` | 9 | Orchestral chimes |
-| `tubularbells2` | 11 | Alternative |
-| `handbells` | 3 | Hand bells |
-| `handchimes` | 19 | Wind chimes |
-| `belltree` | 6 | Bell tree |
-| `wineglass` | 4 | Rubbed glass |
-
-**Wind Instruments:**
-| Sample | Variations |
-|--------|------------|
-| `recorder_soprano_sus` | 13 |
-| `recorder_soprano_stacc` | 12 |
-| `recorder_alto_sus` | 12 |
-| `recorder_alto_vib` | 12 |
-| `recorder_tenor_sus` | 13 |
-| `recorder_bass_sus` | 12 |
-| `ocarina` | 11 |
-| `ocarina_small` | 10 |
-| `ocarina_vib` | 10 |
-| `harmonica` | 9 |
-| `harmonica_soft` | 10 |
-| `harmonica_vib` | 10 |
-| `sax` | 23 |
-| `sax_stacc` | 23 |
-| `sax_vib` | 19 |
-| `saxello` | 8 |
-| `super64` | 13 (chromatic harmonica) |
-
-**Organs:**
-| Sample | Variations |
-|--------|------------|
-| `organ_4inch` | 27 |
-| `organ_8inch` | 27 |
-| `organ_full` | 27 |
-| `pipeorgan_loud` | 21 |
-| `pipeorgan_quiet` | 21 |
-| `pipeorgan_loud_pedal` | 11 |
-| `pipeorgan_quiet_pedal` | 11 |
-
-**Percussion - Pitched:**
-| Sample | Variations |
-|--------|------------|
-| `timpani` | 30 |
-| `timpani_roll` | 10 |
-| `timpani2` | 204 (!) |
-| `slitdrum` | 6 |
-
-**Percussion - Drums:**
-| Sample | Variations |
-|--------|------------|
-| `bassdrum1` | 8 |
-| `bassdrum2` | 30 |
-| `snare_hi` | 8 |
-| `snare_low` | 20 |
-| `snare_modern` | 72 |
-| `snare_rim` | 4 |
-| `tom_stick` | 8 |
-| `tom_mallet` | 8 |
-| `tom_rim` | 6 |
-| `tom2_stick` / `mallet` / `rim` | 6-8 |
-| `hihat` | 15 |
-| `clap` | 10 |
-| `jazz` | 8 (jazz kit) |
-
-**Percussion - World:**
-| Sample | Variations | Origin |
-|--------|------------|--------|
-| `bongo` | 28 | Latin |
-| `conga` | 34 | Latin |
-| `cajon` | 18 | Flamenco |
-| `darbuka` | 20 | Middle Eastern |
-| `framedrum` | 18 | World |
-| `tambourine` | 7 | Universal |
-| `tambourine2` | 7 | Alternative |
-| `agogo` | 5 | Brazilian |
-| `shaker_large` | 6 | Universal |
-| `shaker_small` | 16 | Universal |
-| `cabasa` | 6 | Latin |
-| `cowbell` | 13 | Universal |
-| `clave` | 6 | Latin |
-| `guiro` | 5 | Latin |
-
-**Percussion - Metals:**
-| Sample | Variations |
-|--------|------------|
-| `sus_cymbal` | 25 |
-| `sus_cymbal2` | 23 |
-| `clash` | 10 |
-| `clash2` | 5 |
-| `triangles` | 37 |
-| `fingercymbal` | 1 |
-| `gong` | 7 |
-| `gong2` | 6 |
-| `sleighbells` | 6 |
-| `anvil` | 9 |
-| `metal` | 10 |
-| `brakedrum` | 17 |
-
-**Percussion - Wood & Effects:**
-| Sample | Variations |
-|--------|------------|
-| `woodblock` | 10 |
-| `marktrees` | 6 |
-| `ratchet` | 8 |
-| `slapstick` | 5 |
-| `vibraslap` | 4 |
-| `flexatone` | 8 |
-| `oceandrum` | 3 |
-
-**Asian Instruments:**
-| Sample | Variations | Origin |
-|--------|------------|--------|
-| `dantranh` | 17 | Vietnamese zither |
-| `dantranh_tremolo` | 16 | With tremolo |
-| `dantranh_vibrato` | 16 | With vibrato |
-| `didgeridoo` | 12 | Australian |
-
-**Sound Effects:**
-| Sample | Variations |
-|--------|------------|
-| `space` | 18 |
-| `siren` | 5 |
-| `trainwhistle` | 6 |
-| `ballwhistle` | 2 |
-| `wind` | 10 |
-| `crow` | 4 |
-| `insect` | 3 |
-| `casio` | 3 |
-| `east` | 9 |
-| `num` | 21 |
-| `numbers` | 9 |
+Load sample packs from GitHub or any URL with `samples()` — call it once at the top, then use the names with `s()`.
 
 ```javascript
-// Multi-sampled piano
-s("steinway").note("c3 e3 g3 c4")
+// GitHub repo with a strudel.json manifest
+samples('github:tidalcycles/dirt-samples')
+$: s("moog:2 casio:1")
 
-// World percussion
-s("conga:5 conga:12 bongo:3 bongo:8").gain(0.7)
-
-// Vietnamese zither with tremolo
-s("dantranh_tremolo:8").note("c4 e4 g4")
-
-// Mix sample types
-s("timpani:5, sus_cymbal:10").note("c2")
+// Map names to files on any host
+samples({
+  bd: 'bd/BT0AADA.wav',
+  sd: 'sd/rytm-01-classic.wav',
+}, 'https://raw.githubusercontent.com/tidalcycles/dirt-samples/master/')
 ```
 
 ---
@@ -488,6 +114,7 @@ s("timpani:5, sus_cymbal:10").note("c2")
 ```javascript
 note("c4 e4 g4")                 // Letter notation
 n("0 2 4 7").scale("C:minor")    // Scale degrees
+n("0 .. 7").scale("C:minor")     // Range shorthand: 0 1 2 3 4 5 6 7
 chord("<Cm7 Fm7>").voicing()     // Chords
 ```
 
@@ -512,6 +139,8 @@ Use `n()` with `.scale()` - any number will sound good in the scale.
 n("0 2 4 7").scale("<C:major D:mixolydian>/4")
 ```
 
+For which scale/progression fits which mood, load the `/theory` skill.
+
 ---
 
 ## Sampler Controls
@@ -520,7 +149,7 @@ n("0 2 4 7").scale("<C:major D:mixolydian>/4")
 .speed(2)         // Playback speed (negative = reverse)
 .begin(0.25)      // Start point (0-1)
 .end(0.75)        // End point (0-1)
-.clip(0.5)        // Duration multiplier
+.clip(0.5)        // Duration multiplier (alias: .legato)
 .cut(1)           // Cut group (stops others in same group)
 .loopAt(4)        // Fit sample to n cycles
 .fit()            // Fit sample to event duration
@@ -529,7 +158,10 @@ n("0 2 4 7").scale("<C:major D:mixolydian>/4")
 .chop(8)          // Chop into n pieces
 .slice(8, "0 1 2 3 4 5 6 7")  // Slice and reorder
 .splice(8, "0 1 2 3")         // Like slice, speed-adjusted
+.striate(6)       // Interleave n progressive slices across repeats - texture/glitch
 ```
+
+`.clip(1)` ends each note exactly when the next starts; `.clip(0.5)` gives detached, punchy notes; `.clip(2)` overlaps. Use low clip values to avoid washy, smeared sustains.
 
 ---
 
@@ -575,6 +207,19 @@ n("0 2 4 7").scale("<C:major D:mixolydian>/4")
 .distort(0.2)     // Distortion
 .shape(0.3)       // Waveshaping
 .crush(4)         // Bit crush
+.coarse(4)        // Sample-rate reduction
+.phaser(2)        // Sweeping phaser (speed in hz)
+```
+
+---
+
+## Echo
+
+Decaying repeats of each event — distinct from `.delay()` (a wet/dry effect). Great for fills and breakdown tails.
+
+```javascript
+s("bd sd").echo(3, 1/6, 0.8)          // 3 repeats, 1/6 cycle apart, 0.8 feedback
+n("0 4 7").echoWith(4, 1/8, (p, i) => p.add(i * 12))  // Transform each repeat
 ```
 
 ---
@@ -597,9 +242,13 @@ irand(8)          // Random integer 0-7
 // Modifiers
 .range(200, 2000) // Scale to range
 .slow(8)          // Slow the signal
+.segment(16)      // Sample a signal into n discrete steps
 
 // Example: filter sweep
 .lpf(sine.range(200, 2000).slow(8))
+
+// Example: LFO becomes a melody
+n(sine.range(0, 7).segment(8)).scale("C:minor")
 ```
 
 ---
@@ -627,6 +276,9 @@ irand(8)          // Random integer 0-7
 
 // Conditional
 .every(4, fast(2))        // Every nth cycle
+.lastOf(4, x=>x.rev())    // Last of every 4 cycles - great for fills
+.firstOf(4, x=>x.hpf(800))  // First of every 4 cycles
+.chunk(4, x=>x.crush(4))  // Transform a different quarter each cycle
 .sometimes(rev)           // 50% chance
 .often(fast(2))           // 75% chance
 .rarely(rev)              // 25% chance
@@ -638,6 +290,18 @@ irand(8)          // Random integer 0-7
 .degradeBy(0.3)           // Remove 30% randomly
 choose("bd", "sd", "cp")  // Pick one randomly
 ```
+
+---
+
+## Silence & Kill Switch
+
+```javascript
+silence                   // The empty pattern - use as a placeholder
+$: s("hh*8").hush()       // Mute one layer (keep the code, kill the sound)
+hush()                    // Stop EVERYTHING - instant dramatic cut
+```
+
+`hush()` on its own line kills all sound — useful for hard stops before a drop.
 
 ---
 
@@ -656,14 +320,7 @@ cps = BPM / 60 / 4
 cycles = minutes × 60 × cps
 ```
 
-| Duration | 90 BPM | 110 BPM | 120 BPM | 128 BPM | 140 BPM | 160 BPM | 174 BPM |
-|----------|--------|---------|---------|---------|---------|---------|---------|
-| cps      | 0.375  | 0.458   | 0.5     | 0.533   | 0.583   | 0.667   | 0.725   |
-| 2 min    | 45     | 55      | 60      | 64      | 70      | 80      | 87      |
-| 5 min    | 112    | 137     | 150     | 160     | 175     | 200     | 217     |
-| 10 min   | 225    | 275     | 300     | 320     | 350     | 400     | 435     |
-
-Sum your `arrange()` entries to hit the target.
+Full BPM/duration cycle tables live in the `/compose` skill. Sum your `arrange()` entries to hit the target.
 
 ---
 
@@ -676,15 +333,18 @@ let prog = "<Cm7 Fm7 Abmaj7 G7>"
 // Basic chord with voicing
 chord(prog).voicing().s("piano")
 
-// .anchor() sets the root octave for voicings
+// .anchor() sets the reference note for voicings
 chord(prog).anchor("C3").voicing()     // Bass register
 chord(prog).anchor("C5").voicing()     // High register
+
+// .mode() controls whether the voicing sits below or above the anchor
+chord(prog).anchor("C4").mode("above").voicing()
+chord(prog).anchor("C4").mode("below").voicing()
 
 // Dynamic anchors (changes over time)
 chord(prog).anchor("<C3@8 C4@4>").voicing()
 
 // .ply(n) repeats each chord n times per cycle
-// Great for waltz (3) or house (4) feels
 chord(prog).ply(3).gain("0.8 0.3 0.4")  // Waltz: strong-weak-weak
 chord(prog).ply(4).gain("1 0.5 0.7 0.5") // House groove
 
@@ -699,6 +359,8 @@ chord(prog).voicing().arp("0 1 2 3".add("[12 |0|0]*4"))
 // Extract just the root for bass
 chord(prog).anchor("C2").voicing().arp("0")
 ```
+
+For progression ideas, borrowed chords, and which harmony fits which emotion, load `/theory`.
 
 ---
 
@@ -733,7 +395,7 @@ arrange(
 )
 ```
 
-**See `/arrange` skill for full reference with duration math and genre examples.**
+**See the `/compose` skill for full track structure, duration math, and genre examples.**
 
 ---
 
@@ -777,18 +439,7 @@ arrange(
 
 ## Genre → Instrument Guide
 
-| Genre | Drums | Bass | Keys/Pads | Lead/Melody |
-|-------|-------|------|-----------|-------------|
-| **House** | tr909 | `sawtooth` | `gm_pad_warm`, `gm_epiano1` | `supersaw` |
-| **Techno** | tr808, tr909 | `sawtooth`, `square` | `gm_pad_metallic` | `gm_lead_2_sawtooth` |
-| **Jazz** | tr707 (brushes) | `gm_acoustic_bass` | `gm_epiano1`, `piano` | `gm_tenor_sax`, `gm_trumpet` |
-| **Ambient** | minimal/none | `gm_contrabass` | `gm_pad_warm`, `gm_pad_halo` | `kalimba`, `gm_flute` |
-| **Metal** | tr909 (fast) | `gm_distortion_guitar` | `gm_overdriven_guitar` | `gm_guitar_harmonics` |
-| **Synthwave** | tr808 | `sawtooth`, `gm_synth_bass_1` | `gm_pad_warm` | `supersaw`, `gm_lead_2_sawtooth` |
-| **Lo-fi** | vinyl drums | `gm_acoustic_bass` | `gm_epiano1`, `piano` | `gm_vibraphone`, `kalimba` |
-| **Orchestral** | `gm_timpani` | `gm_contrabass`, `gm_bassoon` | `gm_string_ensemble_1` | `gm_violin`, `gm_flute`, `gm_french_horn` |
-| **Latin** | congas, bongos | `gm_acoustic_bass` | `piano` | `gm_trumpet`, `gm_alto_sax` |
-| **Funk** | tr808 | `gm_slap_bass_1` | `gm_clavinet`, `gm_epiano1` | `gm_trumpet`, `gm_tenor_sax` |
+Which drums/bass/keys/lead fit each genre: see the table at the end of `references/sound-catalog.md`.
 
 ---
 
@@ -810,43 +461,50 @@ arrange(
 
 ### Higher-Order Functions
 
-Functions like `jux`, `sometimes`, `every`, `off` take a **function** as argument, not a method reference.
+Functions like `jux`, `sometimes`, `every`, `off` take a **function** as argument. Two valid forms:
 
 ```javascript
-// ✅ CORRECT - arrow function
+// ✅ Standalone transform functions work directly
+.jux(rev)
+.every(4, fast(2))
+.superimpose(rev)
+
+// ✅ Arrow functions - the safest general form, required for chained transforms
 .jux(x => x.rev())
 .sometimes(x => x.speed(-1))
 .every(4, x => x.fast(2))
 .off(0.125, x => x.add(7))
-
-// ❌ WRONG - won't work
-.jux(rev)
-.sometimes(speed(-1))
-.every(4, fast(2))
+.jux(x => x.rev().speed(0.5))   // Multi-transform NEEDS an arrow function
 ```
 
-### Chaining After Higher-Order Functions
-
-```javascript
-// ✅ CORRECT
-s("bd sd").sometimes(x => x.crush(4)).room(0.3)
-
-// ✅ CORRECT - multi-transform
-s("bd sd").jux(x => x.rev().speed(0.5))
-```
+When in doubt, use an arrow function — it always works. `.rev` without parentheses inside a chain is still an error; the standalone form only works when passing the bare function name (`jux(rev)`, not `.jux(.rev)`).
 
 ---
 
 ## Common Mistakes to Avoid
 
-1. **Don't forget parentheses on methods** - `.rev()` not `.rev`. All methods need `()`.
-2. **Don't pass method names to higher-order functions** - Use arrow functions: `.jux(x => x.rev())` not `.jux(rev)`.
+1. **Don't forget parentheses on chained methods** - `.rev()` not `.rev`.
+2. **Use arrow functions for multi-step transforms** - `.jux(x => x.rev().speed(0.5))`.
 3. **Don't over-simplify rhythms** - `"bd*4, ~ sd ~ sd, hh*8"` is a full groove. Don't reduce it to just `"bd"`.
 4. **Don't use invalid sound names** - Stick to documented sounds (drums, GM instruments, synths).
 5. **Don't forget `setcpm()`** - Patterns need tempo to play correctly.
 6. **Don't create empty patterns** - Always include musical content.
 7. **Don't ignore layers** - Use `stack()` to build rich, full arrangements.
 8. **Don't fight the cycle** - Work with the timing, not against it.
+
+---
+
+## MIDI / OSC Output
+
+Strudel can drive external gear: `.midi()` sends notes via WebMIDI, `.osc()` sends OSC messages (needs SuperDirt/sidecar). Only relevant if the user asks to connect hardware or a DAW.
+
+---
+
+## Visual Feedback
+
+Always make music visible. Use `_` prefix for inline visuals: `._pianoroll()`, `._spiral()`, `._scope()`, `._spectrum()`, `._pitchwheel()`, `._punchcard()`.
+
+**Load the `/visuals` skill for options, colors, and presets.**
 
 ---
 
@@ -859,43 +517,3 @@ Stay in key. Variations, not new ideas. Let it breathe.
 Use `.scale()` to stay cohesive.
 
 Experiment freely. Trust your ears.
-
----
-
-## Visual Feedback
-
-Add visuals to your patterns. Use `_` prefix for inline (in-code) visuals, without prefix for background.
-
-```javascript
-// Pianoroll / Punchcard - scrolling note visualization
-note("c a f e")._punchcard()
-note("c a f e")._pianoroll()
-
-// Options: cycles, labels, vertical, active/inactive colors
-._pianoroll({ labels: 1, cycles: 8 })
-
-// Spiral - circular visualization
-note("c a f e")._spiral({ steady: 0.96 })
-
-// Scope - oscilloscope (time domain)
-s("sawtooth")._scope()
-
-// Spectrum - frequency analyzer
-s("sawtooth")._spectrum()
-
-// Pitchwheel - pitch circle visualization
-n("0 .. 12").scale("C:chromatic")._pitchwheel()
-```
-
-**Mini-notation highlighting** happens automatically with `"double quotes"` or `` `backticks` ``.
-
-```javascript
-// Color the highlights
-note("c a f e").color("cyan magenta")
-```
-
----
-
-## Learn More
-
-This is just the surface. Experiment. Break things. Happy accidents are the best discoveries.

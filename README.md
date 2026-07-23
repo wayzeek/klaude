@@ -1,10 +1,12 @@
-# strudel-claude
+# klaude
 
-![strudel-claude](public/strudel-claude.png)
+![klaude](public/strudel-claude.png)
 
-An experiment to play and learn [Strudel](https://strudel.cc) with Claude Code.
+**Your AI resident DJ.** Play, learn, and perform [Strudel](https://strudel.cc) with Claude Code.
 
 A minimal, full-screen live coding environment for making music. **Built for AI** - exposes REST APIs so Claude can compose and control music programmatically.
+
+> klaude continues development of [strudel-claude](https://github.com/renatoworks/strudel-claude), originally created by Renato Costa (MIT).
 
 ## What is Strudel?
 
@@ -21,13 +23,14 @@ $: note("<c2 eb2 f2 g2>").s("sawtooth").lpf(400)
 ## Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
+- Node.js and [pnpm](https://pnpm.io)
 
 ## Quick Start
 
 **1. Start the server**
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 **2. Open Claude Code in the project folder**
@@ -109,7 +112,6 @@ src/
 │   └── use-audio-recorder.ts # Audio recording to WAV
 └── lib/
     ├── constants.ts        # Shared constants
-    ├── utils.ts            # Utilities
     └── wav-encoder.ts      # Pure JS WAV encoder
 ```
 
@@ -142,7 +144,7 @@ say "Let's make some music"
 
 ## Skills for Claude Code
 
-This REPL includes skills that teach Claude how to make music. The `/strudel` and `/api` skills are loaded automatically - Claude already knows the syntax and how to control the app.
+This REPL includes skills that teach Claude how to make music. Claude auto-invokes `/strudel` and `/api` whenever it makes music - the syntax and the REPL controls are always at hand.
 
 **Try these:**
 
@@ -183,9 +185,11 @@ This REPL includes skills that teach Claude how to make music. The `/strudel` an
 
 ### Other Skills
 
+- `/tracks` - Save compositions to `tracks/` and replay them later ("play acid bloom again")
+- `/theory` - Music theory: scales, progressions, borrowed chords, song arcs
 - `/visuals` - Add visualizations (pianoroll, spiral, oscilloscope)
-- `/strudel` - Syntax reference (loaded automatically)
-- `/api` - REPL control (loaded automatically)
+- `/strudel` - Syntax reference (auto-invoked)
+- `/api` - REPL control (auto-invoked)
 
 ## Learn More
 

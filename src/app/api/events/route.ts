@@ -17,10 +17,20 @@ import { state } from '../state'
 
 export const dynamic = 'force-dynamic'
 
+/** Interval between SSE heartbeat comments, keeps idle connections alive through proxies */
+const HEARTBEAT_MS = 25_000
+
 export async function GET() {
   const encoder = new TextEncoder()
   let unsubscribe: (() => void) | null = null
+  let heartbeat: ReturnType<typeof setInterval> | null = null
   let isClosed = false
+
+  const cleanup = () => {
+    isClosed = true
+    if (heartbeat) clearInterval(heartbeat)
+    if (unsubscribe) unsubscribe()
+  }
 
   const stream = new ReadableStream({
     start(controller) {
@@ -36,15 +46,23 @@ export async function GET() {
           controller.enqueue(encoder.encode(message))
         } catch {
           // Controller closed, clean up
-          isClosed = true
-          if (unsubscribe) unsubscribe()
+          cleanup()
         }
       })
+
+      // Periodic comment lines so idle streams aren't torn down
+      heartbeat = setInterval(() => {
+        if (isClosed) return
+        try {
+          controller.enqueue(encoder.encode(': heartbeat\n\n'))
+        } catch {
+          cleanup()
+        }
+      }, HEARTBEAT_MS)
     },
     cancel() {
       // Called when client disconnects
-      isClosed = true
-      if (unsubscribe) unsubscribe()
+      cleanup()
     },
   })
 
@@ -53,6 +71,7 @@ export async function GET() {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
     },
   })
 }
