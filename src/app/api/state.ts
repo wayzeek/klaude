@@ -25,6 +25,20 @@ export type NowPlaying = {
   title: string | null
   artist: string | null
   section: string | null
+  /** When this piece started (reset when the title changes). */
+  since: number
+  /** Sections this piece has moved through, oldest first. */
+  trail: { section: string; at: number }[]
+}
+
+export const REACTION_KINDS = ['fire', 'love', 'sleep'] as const
+export type ReactionKind = (typeof REACTION_KINDS)[number]
+
+export type Reaction = {
+  kind: ReactionKind
+  at: number
+  revision: number
+  section: string | null
 }
 
 export type RecordCommand = {
@@ -76,6 +90,8 @@ export type HistoryEntry = { revision: number; code: string; at: number }
 type Listener = (state: BroadcastState) => void
 
 const HISTORY_LIMIT = 100
+const REACTIONS_LIMIT = 200
+const TRAIL_LIMIT = 24
 const PERSIST_DEBOUNCE_MS = 500
 const CLIENT_STALE_MS = 90_000
 const RECORD_START_TIMEOUT_MS = 15_000
@@ -123,6 +139,7 @@ class StateEmitter {
   private _commandSeq = 0
 
   private _clients = new Map<string, ClientInfo>()
+  private _reactions: Reaction[] = []
   private _lastEval: EvalResult | null = null
   private _history: HistoryEntry[]
   private _recording: RecordingState = { phase: 'idle' }
@@ -247,9 +264,58 @@ class StateEmitter {
     this.emit()
   }
 
-  setNowPlaying(nowPlaying: NowPlaying | null): void {
-    this._nowPlaying = nowPlaying
+  /**
+   * Update the HUD metadata. `since` and the section trail are stamped here:
+   * a new title starts a new piece (fresh clock, fresh trail); a section
+   * change appends to the current piece's trail.
+   */
+  setNowPlaying(input: { title: string | null; artist: string | null; section: string | null } | null): void {
+    if (input === null) {
+      this._nowPlaying = null
+      this.emit()
+      return
+    }
+    const prev = this._nowPlaying
+    const now = Date.now()
+    const newPiece = !prev || input.title !== prev.title
+    let trail = newPiece ? [] : [...prev.trail]
+    if (input.section && input.section !== (newPiece ? null : prev?.section)) {
+      trail.push({ section: input.section, at: now })
+      if (trail.length > TRAIL_LIMIT) trail = trail.slice(-TRAIL_LIMIT)
+    }
+    this._nowPlaying = {
+      title: input.title,
+      artist: input.artist,
+      section: input.section,
+      since: newPiece ? now : prev.since,
+      trail,
+    }
     this.emit()
+  }
+
+  // --- reactions --------------------------------------------------------------
+
+  /** Record a listener reaction, tagged with what was playing at the time. */
+  addReaction(kind: ReactionKind): Reaction {
+    const reaction: Reaction = {
+      kind,
+      at: Date.now(),
+      revision: this._revision,
+      section: this._nowPlaying?.section ?? null,
+    }
+    this._reactions.push(reaction)
+    if (this._reactions.length > REACTIONS_LIMIT) {
+      this._reactions.splice(0, this._reactions.length - REACTIONS_LIMIT)
+    }
+    return reaction
+  }
+
+  get reactions(): Reaction[] {
+    return this._reactions
+  }
+
+  clearReactions(): void {
+    this._reactions = []
   }
 
   // --- clients ----------------------------------------------------------------

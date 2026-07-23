@@ -8,6 +8,8 @@
     "build": "next build",
     "start": "next start",
     "push": "node scripts/push.mjs",
+    "listen": "node scripts/listen.mjs",
+    "analyze": "node scripts/analyze.mjs",
     "share": "node scripts/share.mjs",
     "smoke": "node scripts/smoke.mjs",
     "validate:tracks": "node scripts/validate-tracks.mjs"

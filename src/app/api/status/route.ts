@@ -54,6 +54,7 @@ export async function GET() {
     gain: state.gain,
     nowPlaying: state.nowPlaying,
     recording: state.recording,
+    recentReactions: state.reactions.slice(-20),
     serverTime: Date.now(),
   })
 }

@@ -40,6 +40,10 @@ export type NowPlaying = {
   title: string | null
   artist: string | null
   section: string | null
+  /** When this piece started (server time; same machine, so usable directly). */
+  since: number
+  /** Sections the piece has moved through, oldest first. */
+  trail: { section: string; at: number }[]
 }
 
 export type RemoteCommand = {
@@ -87,6 +91,7 @@ export function useStrudel() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null)
+  const [gainLevel, setGainLevel] = useState(1)
 
   // Bumped to force a fresh EventSource after a fatal connection loss
   const [sseGeneration, setSseGeneration] = useState(0)
@@ -388,6 +393,7 @@ export function useStrudel() {
         appliedGainSeqRef.current = s.gain.seq
         applyGain(s.gain.level, s.gain.rampMs)
       }
+      setGainLevel(s.gain.level)
 
       setNowPlaying(s.nowPlaying)
 
@@ -621,6 +627,7 @@ export function useStrudel() {
     isPlaying,
     audioBlocked,
     nowPlaying,
+    gainLevel,
     clientId: clientIdRef.current,
     editorRef,
     play,

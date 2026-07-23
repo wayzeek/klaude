@@ -12,6 +12,9 @@ Create evolving musical journeys that run autonomously.
 
 ## Before Starting
 
+**Load `/humanize` first** - swing, ghost notes, fills, drift, width, and
+gain staging are non-negotiable for every phase you push.
+
 **CRITICAL**: NEVER play music before asking the user what they want. Always ask first, then play.
 
 **Use the `AskUserQuestion` tool** IMMEDIATELY to learn about the set they want.
@@ -201,15 +204,23 @@ Move with purpose:
 
 ## Energy Management
 
-Use gain and filter values to control intensity:
+Use gain and filter values to control intensity (calibrated with the
+analyzer - hats carry the mix's brightness, so they run much hotter than
+old habit suggests; synth bass ALWAYS gets an explicit gain):
 
-| Energy Level | Kick Gain | Hat Gain | Bass Gain | LPF Range |
-|--------------|-----------|----------|-----------|-----------|
-| Low | 0.3-0.5 | 0.1-0.15 | 0.2-0.3 | 150-400 |
-| Medium | 0.6-0.8 | 0.18-0.25 | 0.4-0.5 | 400-1000 |
-| High | 0.85-1.0 | 0.25-0.35 | 0.5-0.7 | 800-2000+ |
+| Energy Level | Kick Gain | Hat Gain | Synth Bass Gain | LPF Range |
+|--------------|-----------|----------|-----------------|-----------|
+| Low | 0.3-0.5 | 0.3-0.45 | 0.15-0.25 | 150-400 |
+| Medium | 0.6-0.8 | 0.5-0.7 | 0.25-0.35 | 400-1000 |
+| High | 0.85-1.0 | 0.7-0.9 | 0.35-0.45 | 800-2000+ |
 
 A subtle filter sweep can build tension without adding sounds.
+
+**Sound-check with your ears.** Once the groove is established (and BEFORE
+starting any tape - recording is one-at-a-time), run
+`node scripts/listen.mjs 10` and fix what the NOTES flag: buried hats,
+hollow mids, clipping, mono width. Guessing the mix is how sets end up
+muffled.
 
 ---
 
@@ -442,6 +453,21 @@ If they say something mid-set, adapt:
 - **"Darker"** → minor keys, lower filters, distortion
 - **"More melodic"** → add piano/synth melodies, chord progressions
 - **"I love this"** → stay here longer, build on it
+
+**The reaction bar is your dance floor.** The browser has 🔥/❤️/💤 buttons;
+each tap is tagged with the section that was playing. Check while a phase
+holds (during the sleep, or right after):
+
+```bash
+curl -s http://localhost:3000/api/reactions
+```
+
+- 🔥 or ❤️ on a section → that world works; extend it, build on its elements
+- 💤 → change something REAL next phase: energy level, texture, register -
+  not just a louder version of the same thing
+- A reaction names the section it happened in - trust that tag over guessing
+- No reactions is normal; don't fish. But when they arrive, acknowledge with
+  the music (and voice, if on): react to the room like a real DJ.
 
 ---
 

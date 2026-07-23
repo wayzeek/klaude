@@ -45,19 +45,23 @@ export function useAudioRecorder() {
    * everything.
    */
   const restoreRouting = useCallback(() => {
-    if (processorRef.current) {
+    const processor = processorRef.current
+    if (processor) {
       try {
-        processorRef.current.onaudioprocess = null
-        processorRef.current.disconnect()
+        processor.onaudioprocess = null
       } catch {}
-      processorRef.current = null
     }
     if (destinationGainRef.current) {
       const getAudioContextFn = (window as any).getAudioContext
       const audioContext = getAudioContextFn?.() as AudioContext | undefined
-      try {
-        destinationGainRef.current.disconnect()
-      } catch {}
+      // Detach only the recording tap. A blanket disconnect() would also
+      // sever unrelated taps on the destination gain (the level meter's
+      // analyser), silencing them until a reload.
+      if (processor) {
+        try {
+          destinationGainRef.current.disconnect(processor)
+        } catch {}
+      }
       if (audioContext) {
         try {
           destinationGainRef.current.connect(audioContext.destination)
@@ -66,6 +70,12 @@ export function useAudioRecorder() {
         }
       }
       destinationGainRef.current = null
+    }
+    if (processor) {
+      try {
+        processor.disconnect()
+      } catch {}
+      processorRef.current = null
     }
   }, [])
 
@@ -134,10 +144,14 @@ export function useAudioRecorder() {
       e.outputBuffer.getChannelData(1).set(right)
     }
 
-    // Insert processor in the audio chain
+    // Insert processor in the audio chain. Disconnect ONLY the direct path
+    // to the speakers - other taps on the destination gain (level meter
+    // analyser) must keep receiving signal.
     processorRef.current = processor
     try {
-      destinationGain.disconnect()
+      try {
+        destinationGain.disconnect(audioContext.destination)
+      } catch {}
       destinationGain.connect(processor)
       processor.connect(audioContext.destination)
     } catch (e) {

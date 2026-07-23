@@ -1,12 +1,14 @@
 ---
 name: compose
 description: Create full arranged tracks with timeline structure. Use when user asks to "compose", "create a track", "make a song", or specifies a duration.
-allowed-tools: Bash(curl *)
+allowed-tools: Bash(curl *), Bash(node scripts/*), Write
 ---
 
 # Compose - Full Track Compositions
 
-**Load `/strudel` first** for syntax (notes, sounds, effects, patterns). Load `/theory` when choosing harmony and emotional structure.
+**Load `/strudel` first** for syntax (notes, sounds, effects, patterns). Load `/humanize` for feel (swing, ghosts, fills, drift, gain staging) - a composition without it sounds programmed. Load `/theory` when choosing harmony and emotional structure.
+
+Sound-check with `node scripts/listen.mjs 10` once the core groove exists - fix what the NOTES flag before building the full arrangement on top.
 
 Use `arrange()` to create complete tracks with intro, build, drop, breakdown, outro.
 

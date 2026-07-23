@@ -55,6 +55,17 @@ See [Skills for Claude Code](#skills-for-claude-code) for more examples.
 | `Cmd+Enter` | Play / evaluate code |
 | `Cmd+.` | Stop |
 
+## The Console
+
+The code stays front and center (it's live coding), with a small performance
+console around it:
+
+- **Now-playing HUD** (top left) - title, artist, current section, elapsed time, and the trail of sections the set has moved through
+- **Level meter** - a master VU bar; if it stops breathing, sound died
+- **Tape shelf** - saved recordings, playable right in the app
+- **Volume slider** - master gain with smooth ramps, synced with `/api/gain`
+- **Reaction bar** (bottom right) - 🔥 this hits · ❤️ love it · 💤 losing me. Each tap is tagged with what was playing, so the agent reads the room mid-set
+
 ## Recording Audio
 
 Capture your Strudel output to WAV:
@@ -82,7 +93,8 @@ The REST API allows AI agents to read and write Strudel code, enabling autonomou
 | `/api/history` | `GET`/`POST` | List pushed revisions / restore one (undo, survives restarts) |
 | `/api/record/start` | `POST` | Start recording in the browser |
 | `/api/record/stop` | `POST` | Stop recording; the WAV is saved to `recordings/` |
-| `/api/recordings` | `GET` | List saved recordings |
+| `/api/recordings` | `GET` | List saved recordings; `/api/recordings/<name>` streams one |
+| `/api/reactions` | `GET`/`POST`/`DELETE` | Listener reactions (🔥/❤️/💤) tagged with what was playing |
 | `/api/events` | `GET` | SSE stream for real-time updates |
 
 ### Example: AI Composing Music
@@ -100,11 +112,32 @@ curl -X POST http://localhost:3000/api/code \
   -d '{"code": "$: s(\"bd*4, cp*2\").bank(\"RolandTR909\")", "play": true}'
 ```
 
+### The Agent Has Ears
+
+Pushing code only proves it ran - not that it sounds good. The analysis
+scripts close that gap: the agent records a short clip of the live output and
+reads back loudness, dynamics, frequency balance, stereo width, clipping, and
+an energy arc, then fixes the mix like a producer would.
+
+```bash
+node scripts/listen.mjs 12        # record 12s of what's playing and analyze it
+node scripts/analyze.mjs tape.wav # analyze any saved recording
+```
+
+### Reading the Room
+
+The browser shows a reaction bar (🔥 this hits · ❤️ love it · 💤 losing me).
+Each tap is stored with the revision and set section playing at that moment,
+so the agent can steer a live set by actual listener feedback instead of
+guessing.
+
 ### Scripts
 
 | Command | What it does |
 |---------|--------------|
 | `pnpm push <file> [--play]` | Push a code file; `--play` waits for the eval verdict |
+| `node scripts/listen.mjs [secs]` | Record the live output and print a producer-grade analysis |
+| `node scripts/analyze.mjs [file]` | Analyze a WAV (newest recording if omitted) |
 | `pnpm share [file]` | Print a strudel.cc share link for a file or the current code |
 | `pnpm smoke` | API smoke test against the running server |
 | `pnpm validate:tracks` | Check every saved track's structure, tempo, and duration |
@@ -112,6 +145,8 @@ curl -X POST http://localhost:3000/api/code \
 ## Local Samples
 
 Drop WAV/MP3 files into `public/samples/` and register them in your patterns with `samples({ name: '/samples/file.wav' })` - real instruments, field recordings, your own hits. See `public/samples/README.md`.
+
+Verified external packs (a lofi drum crate with hundreds of real one-shots, classic drum breaks, sax/sitar/guitar, voices and textures) are cataloged for the agent in the `/strudel` skill.
 
 ## Project Structure
 
@@ -136,14 +171,17 @@ src/
 │   ├── page.tsx            # Home page
 │   └── globals.css         # Styles + CodeMirror theme
 ├── components/
-│   └── strudel-editor.tsx  # Main editor + HUD + overlays
+│   ├── strudel-editor.tsx  # Main editor + HUD + overlays + volume
+│   ├── level-meter.tsx     # Master VU bar (passive analyser tap)
+│   ├── reaction-bar.tsx    # 🔥/❤️/💤 listener feedback
+│   └── tape-shelf.tsx      # In-app playback of saved recordings
 ├── hooks/
 │   ├── use-strudel.ts      # Strudel lifecycle + revision sync protocol
 │   └── use-audio-recorder.ts # Audio recording to WAV
 └── lib/
     ├── constants.ts        # Shared constants
     └── wav-encoder.ts      # Pure JS WAV encoder
-scripts/                    # push / share / smoke / validate-tracks
+scripts/                    # push / listen / analyze / share / smoke / validate-tracks
 public/samples/             # Your local samples, served to Strudel
 ```
 
@@ -221,9 +259,10 @@ This REPL includes skills that teach Claude how to make music. Claude auto-invok
 
 - `/tracks` - Save compositions to `tracks/` and replay them later ("play acid bloom again")
 - `/theory` - Music theory: scales, progressions, borrowed chords, song arcs
+- `/humanize` - Feel rules: swing, ghost notes, fills, drift, width, gain staging (auto-invoked for music)
 - `/visuals` - Add visualizations (pianoroll, spiral, oscilloscope)
 - `/strudel` - Syntax reference (auto-invoked)
-- `/api` - REPL control (auto-invoked)
+- `/api` - REPL control + ears (auto-invoked)
 
 ## Learn More
 
@@ -234,7 +273,3 @@ This REPL includes skills that teach Claude how to make music. Claude auto-invok
 ## License
 
 MIT - Free to use, copy, modify, and distribute.
-
----
-
-Made in [Blueberry](https://meetblueberry.com) 🫐

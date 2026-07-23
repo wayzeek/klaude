@@ -10,6 +10,8 @@ Quick reference for Strudel syntax. Not exhaustive - experiment and discover.
 
 **Full sound listings** (all drum machines, GM instruments, wavetables, multi-sampled instruments): read `references/sound-catalog.md` in this skill's directory.
 
+**Real recorded samples** (verified external packs: lofi drum crate, real breaks, sax/sitar/guitar, voices, texture): read `references/crate.md` - reach for these whenever the music should feel warm or human.
+
 ---
 
 ## The Basics
@@ -106,6 +108,8 @@ samples({
   sd: 'sd/rytm-01-classic.wav',
 }, 'https://raw.githubusercontent.com/tidalcycles/dirt-samples/master/')
 ```
+
+Tested packs with highlight lists live in `references/crate.md`.
 
 ---
 

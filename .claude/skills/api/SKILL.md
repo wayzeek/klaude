@@ -31,6 +31,35 @@ exit code and message tell you. If you use raw curl instead, you MUST check
 
 ---
 
+## Listening - your ears
+
+`OK: playing` means the code ran, not that it sounds good. To actually hear
+the mix, record a short clip and read the analysis:
+
+```bash
+node scripts/listen.mjs 12          # record 12s of what's playing, analyze, clean up
+node scripts/listen.mjs 12 --keep   # same, but keep the WAV in recordings/
+node scripts/analyze.mjs <file.wav> # analyze an existing recording (newest if omitted)
+```
+
+The report gives loudness (RMS/peak/dynamic range), stereo width, clipping,
+band balance, spectral TILT (dB/Hz per band - the honest brightness measure),
+a loudness ARC over time, and NOTES flagging producer-level problems (mud,
+missing highs, hollow mids, flat dynamics, mono mixes).
+
+**How to use it well:**
+- Listen after establishing a groove, not after every push - then fix what
+  the notes flag (no highs → add hats/open filters; clipping → lower gains;
+  mono → pan/jux; flat dynamics → more contrast between sections).
+- A clip taken right after a pattern swap can contain the previous pattern's
+  decaying tail. If a reading looks impossible, listen again before acting.
+- TILT beats BALANCE for judging brightness: high-mid below about -30 dB/Hz
+  reads as dull; a healthy bright groove sits around -10 to -25.
+- During a recorded set, `listen.mjs` is unavailable (one recording at a
+  time) - do a sound check BEFORE starting the tape.
+
+---
+
 ## Endpoints
 
 | Endpoint | Method | What it does |
@@ -45,7 +74,8 @@ exit code and message tell you. If you use raw curl instead, you MUST check
 | `/api/history` | GET/POST | List revisions / restore one: `{"revision": N}` |
 | `/api/record/start` | POST | Start recording in the browser |
 | `/api/record/stop` | POST | Stop; the WAV lands in `recordings/` |
-| `/api/recordings` | GET | List saved WAVs |
+| `/api/recordings` | GET | List saved WAVs (`/api/recordings/<name>` streams one) |
+| `/api/reactions` | GET/DELETE | Listener reactions from the browser's reaction bar / clear the room |
 | `/api/events` | GET | SSE stream (browsers use this; you don't need it) |
 
 ---
@@ -62,6 +92,27 @@ audioReady       false = tab open but audio locked; an overlay in the tab
                  asks the user for one click - sound starts after that
 recording        {phase: idle|starting|recording|stopping|done|error, file?}
 ```
+
+---
+
+## Reading the Room
+
+The browser shows a reaction bar (🔥 this hits · ❤️ love it · 💤 losing me).
+Every tap is tagged with the revision and HUD section playing at that moment:
+
+```bash
+curl -s http://localhost:3000/api/reactions
+# {"reactions":[{"kind":"fire","at":1690...,"revision":42,"section":"the drop"}],"serverTime":...}
+```
+
+`/api/status` includes the same as `recentReactions`. Check between phases
+during sets: compare `at` against `serverTime` for freshness, use `section`
+to know WHAT they reacted to. 🔥/❤️ → more of that world; 💤 → change
+something real (energy, texture, key), not just volume. No reactions ≠
+boredom - silence is normal. React to signals, don't fish for them.
+
+Starting a fresh set? `curl -X DELETE http://localhost:3000/api/reactions`
+clears leftovers from earlier sessions.
 
 ---
 

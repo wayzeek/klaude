@@ -93,11 +93,41 @@ async function main() {
   console.log('nowplaying:')
   const npRes = await post('/api/nowplaying', { title: 'Smoke Test', section: 'verify' }).then((r) => r.json())
   check('nowplaying set', npRes.nowPlaying?.title === 'Smoke Test')
+  check('nowplaying stamps since', typeof npRes.nowPlaying?.since === 'number')
+  check('nowplaying starts trail', npRes.nowPlaying?.trail?.length === 1)
   const npPatch = await post('/api/nowplaying', { section: 'done' }).then((r) => r.json())
   check('nowplaying patch keeps title', npPatch.nowPlaying?.title === 'Smoke Test')
   check('nowplaying patch updates section', npPatch.nowPlaying?.section === 'done')
+  check('section change extends trail', npPatch.nowPlaying?.trail?.length === 2)
+  check('section change keeps since', npPatch.nowPlaying?.since === npRes.nowPlaying?.since)
+  const npNew = await post('/api/nowplaying', { title: 'Another Piece', section: 'intro' }).then((r) => r.json())
+  check('new title resets trail', npNew.nowPlaying?.trail?.length === 1)
   const npClear = await fetch(`${BASE}/api/nowplaying`, { method: 'DELETE' }).then((r) => r.json())
   check('nowplaying cleared', npClear.nowPlaying === null)
+
+  console.log('reactions:')
+  const preReactions = await get('/api/reactions').then((r) => r.json())
+  const reactRes = await post('/api/reactions', { kind: 'fire' })
+  const reactBody = await reactRes.json()
+  check('reaction accepted', reactRes.ok && reactBody.reaction?.kind === 'fire')
+  check('reaction tagged with revision', typeof reactBody.reaction?.revision === 'number')
+  const badReact = await post('/api/reactions', { kind: 'nonsense' })
+  check('invalid reaction kind is 400', badReact.status === 400)
+  const reactList = await get('/api/reactions').then((r) => r.json())
+  check(
+    'reactions listed',
+    Array.isArray(reactList.reactions) && reactList.reactions.some((x) => x.at === reactBody.reaction.at),
+  )
+  const statusReactions = await get('/api/status').then((r) => r.json())
+  check('status includes recentReactions', Array.isArray(statusReactions.recentReactions))
+  if (preReactions.reactions.length === 0) {
+    // The room was empty before the test - clean up our fake reaction so an
+    // agent can't mistake it for listener feedback. (With real reactions
+    // present we leave everything: clearing would erase them too.)
+    const clearRes = await fetch(`${BASE}/api/reactions`, { method: 'DELETE' })
+    const cleared = await clearRes.json()
+    check('reactions cleared', clearRes.ok && cleared.reactions.length === 0)
+  }
 
   console.log('play/stop:')
   const playRes = await post('/api/play', {}).then((r) => r.json())
@@ -114,6 +144,23 @@ async function main() {
   check('recordings lists', Array.isArray(recList.recordings))
   const recNoClient = await post('/api/record/stop', {})
   check('record stop while idle is 409', recNoClient.status === 409)
+  const recTraversal = await get('/api/recordings/..%2F..%2Fpackage.json')
+  check('recording file traversal is 400', recTraversal.status === 400)
+  const recMissing = await get('/api/recordings/nope-not-here.wav')
+  check('missing recording file is 404', recMissing.status === 404)
+  if (recList.recordings.length > 0) {
+    // Check headers only, then abort - recordings can be tens of MB
+    const ctl = new AbortController()
+    const first = recList.recordings[0]
+    const recFile = await fetch(`${BASE}/api/recordings/${encodeURIComponent(first.name)}`, {
+      signal: ctl.signal,
+    })
+    check(
+      'recording file streams as wav',
+      recFile.ok && recFile.headers.get('content-type') === 'audio/wav',
+    )
+    ctl.abort()
+  }
 
   // Restore starting state
   await post('/api/gain', { level: initial.gain.level })
