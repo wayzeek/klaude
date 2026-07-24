@@ -145,11 +145,14 @@ export function useStrudel() {
   const blockedEvalRef = useRef(false)
   const evaluateAndReportRef = useRef<((revision: number, playEpoch: number) => Promise<boolean>) | null>(null)
 
-  // Evaluation control: dedupe concurrent evals of the same revision/epoch
-  // (SSE echo + UI play can race), and invalidate in-flight evals when a
-  // stop or newer state supersedes them - a stale eval finishing late must
-  // not restart the scheduler or report against old keys.
-  const evalInFlightRef = useRef<{ key: string; promise: Promise<boolean> } | null>(null)
+  // Evaluation control: evaluations run strictly one at a time through a
+  // promise queue. Queued requests coalesce to the newest key (a burst of
+  // mix toggles evaluates once, with the final state), identical concurrent
+  // requests share one run (SSE echo + UI play can race), and the generation
+  // counter invalidates runs superseded by a stop mid-flight.
+  const evalQueueRef = useRef<Promise<boolean>>(Promise.resolve(true))
+  const queuedKeyRef = useRef<string | null>(null)
+  const latestKeyRef = useRef<string>('')
   const evalGenerationRef = useRef(0)
 
   // Callback refs for the recorder integration
@@ -303,24 +306,31 @@ export function useStrudel() {
   /**
    * Evaluate the current editor code and report the result for the given
    * revision/epoch. Detects autoplay blocking (evaluation "succeeds" but the
-   * audio context stays suspended). Concurrent calls for the same key share
-   * one evaluation; a stop or newer state invalidates in-flight ones.
+   * audio context stays suspended). Runs are serialized: two evaluations
+   * never overlap, so a slow older one can't install its pattern after a
+   * newer one finished. Requests that are superseded while queued are
+   * skipped; identical concurrent requests share one run.
    */
   const evaluateAndReport = useCallback(
     (revision: number, playEpoch: number): Promise<boolean> => {
       const key = `${revision}:${playEpoch}:${appliedMixSeqRef.current}`
-      if (evalInFlightRef.current?.key === key) {
-        return evalInFlightRef.current.promise
+      latestKeyRef.current = key
+      // The same request is already queued (SSE echo racing UI play): share it.
+      if (queuedKeyRef.current === key) {
+        return evalQueueRef.current
       }
-      // A different key superseding an in-flight eval invalidates it
-      if (evalInFlightRef.current) {
-        evalGenerationRef.current += 1
-      }
-      const promise = runEvaluation(revision, playEpoch).finally(() => {
-        if (evalInFlightRef.current?.key === key) evalInFlightRef.current = null
-      })
-      evalInFlightRef.current = { key, promise }
-      return promise
+      queuedKeyRef.current = key
+      evalQueueRef.current = evalQueueRef.current
+        .catch(() => false)
+        .then(() => {
+          // Superseded while waiting - only the newest queued request runs.
+          if (latestKeyRef.current !== key) return false
+          return runEvaluation(revision, playEpoch)
+        })
+        .finally(() => {
+          if (queuedKeyRef.current === key) queuedKeyRef.current = null
+        })
+      return evalQueueRef.current
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -334,7 +344,10 @@ export function useStrudel() {
       let ok = true
       let error: string | null = null
       blockedEvalRef.current = false
-      collectedLayersRef.current = []
+      // Fresh collector per run, captured locally: layers() writes into
+      // whatever the ref points at, this run reports only what it collected.
+      const collectedLayers: string[] = []
+      collectedLayersRef.current = collectedLayers
       try {
         await editor.evaluate()
         // Strudel's evaluate() resolves even when the code throws - the
@@ -393,7 +406,7 @@ export function useStrudel() {
         playEpoch,
         ok,
         error,
-        layers: ok ? collectedLayersRef.current : undefined,
+        layers: ok ? collectedLayers : undefined,
       })
       return ok
   }

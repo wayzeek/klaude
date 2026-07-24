@@ -43,7 +43,16 @@ const post = (url: string, body: unknown) =>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }).catch(() => {})
+  })
+
+const postQuiet = (url: string, body: unknown) => post(url, body).catch(() => {})
+
+/** POST a note; resolves true only when the server actually stored it. */
+const postNote = (body: { text: string; layer?: string }) =>
+  post('/api/notes', body).then(
+    (res) => res.ok,
+    () => false,
+  )
 
 /** "2026-07-23T18-35-40-145-blackout-bomt.wav" → { title: "blackout", detail } */
 function describeTape(tape: Tape): { title: string; detail: string } {
@@ -86,7 +95,11 @@ function Toggle({
   )
 }
 
-/** Inline note input - Enter sends, Escape closes. */
+/**
+ * Inline note input - Enter sends, Escape closes. The text clears only when
+ * the server confirms delivery; on failure it stays put with a red border so
+ * feedback is never silently lost.
+ */
 function NoteInput({
   placeholder,
   onSend,
@@ -94,28 +107,39 @@ function NoteInput({
   autoFocus,
 }: {
   placeholder: string
-  onSend: (text: string) => void
+  onSend: (text: string) => Promise<boolean>
   onClose?: () => void
   autoFocus?: boolean
 }) {
   const [text, setText] = useState('')
+  const [failed, setFailed] = useState(false)
   return (
     <input
       autoFocus={autoFocus}
       value={text}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        setText(e.target.value)
+        setFailed(false)
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && text.trim()) {
-          onSend(text.trim())
-          setText('')
-          onClose?.()
+          onSend(text.trim()).then((ok) => {
+            if (ok) {
+              setText('')
+              onClose?.()
+            } else {
+              setFailed(true)
+            }
+          })
         } else if (e.key === 'Escape') {
           onClose?.()
         }
       }}
       placeholder={placeholder}
       maxLength={500}
-      className="flex-1 min-w-0 bg-transparent border border-border px-1.5 h-5 text-[11px] font-mono outline-none placeholder:text-muted-foreground/60 focus:border-primary"
+      className={`flex-1 min-w-0 bg-transparent border px-1.5 h-5 text-[11px] font-mono outline-none placeholder:text-muted-foreground/60 ${
+        failed ? 'border-destructive' : 'border-border focus:border-primary'
+      }`}
     />
   )
 }
@@ -142,15 +166,18 @@ function LayerRow({ name, mix }: { name: string; mix: Mix }) {
 
   const muted = mix.muted.includes(name)
   const soloed = mix.soloed.includes(name)
-  const toggleMute = () =>
-    post('/api/mix', { muted: muted ? mix.muted.filter((n) => n !== name) : [...mix.muted, name] })
-  const toggleSolo = () =>
-    post('/api/mix', { soloed: soloed ? mix.soloed.filter((n) => n !== name) : [...mix.soloed, name] })
-  const sendNote = (text: string) => {
-    post('/api/notes', { text, layer: name })
-    setSent(true)
-    setTimeout(() => setSent(false), 1200)
-  }
+  // Toggle by intent, not by computed array - the server flips against its
+  // own current state, so rapid clicks from a stale snapshot can't collide.
+  const toggleMute = () => postQuiet('/api/mix', { toggleMuted: name })
+  const toggleSolo = () => postQuiet('/api/mix', { toggleSoloed: name })
+  const sendNote = (text: string) =>
+    postNote({ text, layer: name }).then((ok) => {
+      if (ok) {
+        setSent(true)
+        setTimeout(() => setSent(false), 1200)
+      }
+      return ok
+    })
 
   return (
     <div className="flex items-center gap-2 px-2 h-7 border-t border-border/60">
@@ -224,7 +251,7 @@ export function Console(props: ConsoleProps) {
     setDragVolume(level)
     if (volumePostTimerRef.current) clearTimeout(volumePostTimerRef.current)
     volumePostTimerRef.current = setTimeout(() => {
-      post('/api/gain', { level, rampMs: 120 })
+      postQuiet('/api/gain', { level, rampMs: 120 })
     }, 80)
     if (volumeSettleTimerRef.current) clearTimeout(volumeSettleTimerRef.current)
     volumeSettleTimerRef.current = setTimeout(() => setDragVolume(null), 800)
@@ -247,11 +274,14 @@ export function Console(props: ConsoleProps) {
       .catch(() => setTapes([]))
   }, [tapesOpen])
 
-  const sendTrackNote = (text: string) => {
-    post('/api/notes', { text })
-    setTrackSent(true)
-    setTimeout(() => setTrackSent(false), 1200)
-  }
+  const sendTrackNote = (text: string) =>
+    postNote({ text }).then((ok) => {
+      if (ok) {
+        setTrackSent(true)
+        setTimeout(() => setTrackSent(false), 1200)
+      }
+      return ok
+    })
 
   const elapsed = nowPlaying ? Math.max(0, Math.floor((Date.now() - nowPlaying.since) / 1000)) : 0
   const headline = nowPlaying

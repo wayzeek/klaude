@@ -11,9 +11,12 @@
  * ENDPOINTS:
  *   GET  /api/mix - Current mix state plus the layer names of the last
  *        successfully evaluated revision.
- *   POST /api/mix { "muted"?: string[], "soloed"?: string[] }
- *        Full replacement per provided key. Solo wins over mute; a new code
- *        push clears solo and keeps mutes.
+ *   POST /api/mix { "muted"?: string[], "soloed"?: string[],
+ *                   "toggleMuted"?: string, "toggleSoloed"?: string }
+ *        Arrays replace wholesale (agent use); toggles flip one name against
+ *        the current server state (console clicks - immune to stale
+ *        snapshots). Solo wins over mute; a new code push clears solo and
+ *        keeps mutes.
  */
 
 import { NextResponse } from 'next/server'
@@ -52,20 +55,41 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { muted, soloed } = (body ?? {}) as { muted?: unknown; soloed?: unknown }
+  const { muted, soloed, toggleMuted, toggleSoloed } = (body ?? {}) as {
+    muted?: unknown
+    soloed?: unknown
+    toggleMuted?: unknown
+    toggleSoloed?: unknown
+  }
   const mutedParsed = parseNames(muted, 'muted')
   if (mutedParsed.error) return NextResponse.json({ error: mutedParsed.error }, { status: 400 })
   const soloedParsed = parseNames(soloed, 'soloed')
   if (soloedParsed.error) return NextResponse.json({ error: soloedParsed.error }, { status: 400 })
-  if (!mutedParsed.names && !soloedParsed.names) {
+  for (const [field, value] of [
+    ['toggleMuted', toggleMuted],
+    ['toggleSoloed', toggleSoloed],
+  ] as const) {
+    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > MAX_NAME_LENGTH)) {
+      return NextResponse.json(
+        { error: `${field} must be a non-empty string (max ${MAX_NAME_LENGTH} chars)` },
+        { status: 400 },
+      )
+    }
+  }
+  if (!mutedParsed.names && !soloedParsed.names && toggleMuted === undefined && toggleSoloed === undefined) {
     return NextResponse.json(
-      { error: 'Provide muted and/or soloed (arrays of layer names)' },
+      { error: 'Provide muted/soloed arrays or toggleMuted/toggleSoloed names' },
       { status: 400 },
     )
   }
 
   return NextResponse.json({
-    mix: state.setMix({ muted: mutedParsed.names, soloed: soloedParsed.names }),
+    mix: state.setMix({
+      muted: mutedParsed.names,
+      soloed: soloedParsed.names,
+      toggleMuted: toggleMuted as string | undefined,
+      toggleSoloed: toggleSoloed as string | undefined,
+    }),
     layers: state.layerNames,
   })
 }

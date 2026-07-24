@@ -332,13 +332,24 @@ class StateEmitter {
 
   // --- mix (per-layer solo/mute) ---------------------------------------------
 
-  /** Replace mix arrays (full replacement per provided key). Bumps seq, emits. */
-  setMix(patch: { muted?: string[]; soloed?: string[] }): MixState {
-    this._mix = {
-      muted: patch.muted ?? this._mix.muted,
-      soloed: patch.soloed ?? this._mix.soloed,
-      seq: this._mix.seq + 1,
-    }
+  /**
+   * Update mix state. Arrays replace wholesale; toggles flip one name
+   * against the CURRENT server state, so two rapid clicks from a stale
+   * client snapshot can't overwrite each other. Bumps seq, emits.
+   */
+  setMix(patch: {
+    muted?: string[]
+    soloed?: string[]
+    toggleMuted?: string
+    toggleSoloed?: string
+  }): MixState {
+    const toggle = (list: string[], name: string) =>
+      list.includes(name) ? list.filter((n) => n !== name) : [...list, name]
+    let muted = patch.muted ?? this._mix.muted
+    let soloed = patch.soloed ?? this._mix.soloed
+    if (patch.toggleMuted) muted = toggle(muted, patch.toggleMuted)
+    if (patch.toggleSoloed) soloed = toggle(soloed, patch.toggleSoloed)
+    this._mix = { muted, soloed, seq: this._mix.seq + 1 }
     this.schedulePersist()
     this.emit()
     return this._mix
