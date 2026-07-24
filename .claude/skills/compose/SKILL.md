@@ -52,7 +52,10 @@ cycles = minutes × 60 × cps
 1. **Define your elements** - bass, drums, chords, leads, atmosphere
 2. **Calculate total cycles** for target duration
 3. **Build the arrangement** - distribute cycles across sections
-4. **Use `stack()`** to layer elements in each section
+4. **Layer with `layers({...})`** - name every element (`layers({ kick, bass, keys })`)
+   so the console draws a mixer row per name; keep names consistent across
+   sections. Plain `stack()` still plays but gives the listener nothing to
+   solo, mute, or aim a note at.
 5. **Present it** - show the journey with the output format below
 
 ---
@@ -182,6 +185,33 @@ What to change **every time**:
 
 ---
 
+## Arrangement Pacing - don't let a section repeat itself
+
+A `stack()` held unchanged for many cycles reads as a stuck loop no matter
+how good the sounds are - if a 4-chord progression plays under a 20-cycle
+section, the listener hears it repeat verbatim 4-5 times. That's the single
+biggest cause of "this feels repetitive/generic."
+
+- Keep any single unchanging section short: **roughly 4-8 cycles, rarely
+  more than 12**, before something audibly changes - a new layer, a chord
+  swap, a rhythm mutation, a texture swap.
+- Write progressions with as many unique chords/slots as the section is
+  cycles long (or close), so the loop doesn't complete and repeat within
+  earshot. An 8-slot progression held for 8 cycles is heard once through,
+  not looped.
+- Even within a short section, make something evolve every 2-4 cycles -
+  `.chunk(4, fn)`, `.every(4, fn)`, alternating melodic endings via `<...>`
+  - so no two passes of the same stack sound identical.
+- **Prefer MORE, SHORTER `arrange()` entries over a few long ones.** A
+  3-4 minute track built from 20-30 short movements (3-6 cycles each) with
+  real transitions between them reads as an actual arrangement; the same
+  duration built from 8-10 long held sections reads as slow and static.
+- This is about composed tracks (`arrange()`). It does NOT apply to live
+  improvised `/dj-set` phases, where holding a groove 20-30 seconds is
+  normal so the room has time to react.
+
+---
+
 ## Key Techniques
 
 - **Layered drum kits**: Build `garage`, `fullKit`, `maxKit` variables for easy stacking
@@ -191,6 +221,11 @@ What to change **every time**:
 - **Stutter effects**: `.clip(0.1)`, `.fast(2)` on vocals for builds
 - **Room for emotion**: `.room(0.8+)` on pads and vocals during breakdowns
 - **Key changes**: `.trans(3)` to shift everything up a minor third
+- **Avoid the chiptune tell**: a bare-waveform `.arp()` looped unchanged for
+  many cycles reads as a video game soundtrack, not a track - see
+  `/humanize`'s "melodic maturity" section. Let chords sustain, use arps as
+  an occasional accent, and layer at least one real/sampled voice under the
+  synth material even on electronic genres.
 
 ---
 

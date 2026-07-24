@@ -136,6 +136,11 @@ This way voice plays while code updates simultaneously. The push script
 reports the eval verdict — if it prints an evaluation error, fix the code and
 re-push before the next phase; the crowd can hear a broken transition.
 
+**Write every phase as named layers** - `$: layers({ kick, bass, hats, pad })`
+with consistent names across phases (kick is kick everywhere). The console
+draws a mixer row per name, and the listener's solo/mute/notes come back
+tagged with those names.
+
 **Step 4: Update the HUD (with the push, or right after)**
 ```bash
 curl -X POST http://localhost:3000/api/nowplaying -H "Content-Type: application/json" -d '{"section": "building"}'
@@ -454,19 +459,20 @@ If they say something mid-set, adapt:
 - **"More melodic"** → add piano/synth melodies, chord progressions
 - **"I love this"** → stay here longer, build on it
 
-**The reaction bar is your dance floor.** The browser has 🔥/❤️/💤 buttons;
-each tap is tagged with the section that was playing. Check while a phase
-holds (during the sleep, or right after):
+**The console is your dance floor.** The listener can type a note at any
+layer ("bass too muddy") or at the whole track, and solo/mute layers live.
+Check while a phase holds (during the sleep, or right after):
 
 ```bash
-curl -s http://localhost:3000/api/reactions
+curl -s http://localhost:3000/api/notes
+curl -s http://localhost:3000/api/status   # → mix.muted, recentNotes
 ```
 
-- 🔥 or ❤️ on a section → that world works; extend it, build on its elements
-- 💤 → change something REAL next phase: energy level, texture, register -
-  not just a louder version of the same thing
-- A reaction names the section it happened in - trust that tag over guessing
-- No reactions is normal; don't fish. But when they arrive, acknowledge with
+- A note names the layer and section it targets - trust that tag over
+  guessing, fix that exact thing next phase, and say what you changed
+- A layer the listener keeps muted for two sections is a verdict - write it
+  out of the arrangement instead of waiting for them to unmute
+- No notes is normal; don't fish. But when they arrive, acknowledge with
   the music (and voice, if on): react to the room like a real DJ.
 
 ---

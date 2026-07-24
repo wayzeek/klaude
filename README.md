@@ -57,14 +57,15 @@ See [Skills for Claude Code](#skills-for-claude-code) for more examples.
 
 ## The Console
 
-The code stays front and center (it's live coding), with a small performance
-console around it:
+The code stays front and center (it's live coding). Everything else lives in
+one flat terminal-style panel at the bottom right:
 
-- **Now-playing HUD** (top left) - title, artist, current section, elapsed time, and the trail of sections the set has moved through
-- **Level meter** - a master VU bar; if it stops breathing, sound died
-- **Tape shelf** - saved recordings, playable right in the app
-- **Volume slider** - master gain with smooth ramps, synced with `/api/gain`
-- **Reaction bar** (bottom right) - 🔥 this hits · ❤️ love it · 💤 losing me. Each tap is tagged with what was playing, so the agent reads the room mid-set
+- **Header line** - transport (play/stop/re-eval/record), what's playing with elapsed time and revision, a segmented master meter, and the volume slider
+- **Layer mixer** - tracks are written as named layers (`layers({ kick, bass, ... })`); each gets a row with an activity light, solo, and mute that apply live without stopping playback
+- **Notes** - type feedback at a specific layer ("bass too muddy") or the whole track; each note reaches the agent tagged with the layer, revision, and section playing at the time
+- **Tapes** - saved recordings listed and playable inside the same panel
+
+The panel collapses to its header line when you just want to code.
 
 ## Recording Audio
 
@@ -72,8 +73,8 @@ Capture your Strudel output to WAV:
 
 1. **Start playback** - Hit play or `Cmd+Enter`
 2. **Click the red record button** - It pulses and shows duration
-3. **Click again to stop** - A preview toast appears
-4. **Listen, then Download or Discard**
+3. **Click again to stop** - A review row appears in the console
+4. **Listen, then keep or discard**
 
 Recording can also be driven by the agent over the API (`/api/record/start`, `/api/record/stop`) - those bounces are saved into `recordings/`. If playback stops mid-recording, the recording finishes instead of capturing silence.
 
@@ -94,7 +95,8 @@ The REST API allows AI agents to read and write Strudel code, enabling autonomou
 | `/api/record/start` | `POST` | Start recording in the browser |
 | `/api/record/stop` | `POST` | Stop recording; the WAV is saved to `recordings/` |
 | `/api/recordings` | `GET` | List saved recordings; `/api/recordings/<name>` streams one |
-| `/api/reactions` | `GET`/`POST`/`DELETE` | Listener reactions (🔥/❤️/💤) tagged with what was playing |
+| `/api/mix` | `GET`/`POST` | Per-layer solo/mute `{ "muted": [...], "soloed": [...] }` - applies live |
+| `/api/notes` | `GET`/`POST`/`DELETE` | Free-text listener feedback, optionally aimed at a layer |
 | `/api/events` | `GET` | SSE stream for real-time updates |
 
 ### Example: AI Composing Music
@@ -126,10 +128,11 @@ node scripts/analyze.mjs tape.wav # analyze any saved recording
 
 ### Reading the Room
 
-The browser shows a reaction bar (🔥 this hits · ❤️ love it · 💤 losing me).
-Each tap is stored with the revision and set section playing at that moment,
-so the agent can steer a live set by actual listener feedback instead of
-guessing.
+The console's note inputs send free-text feedback aimed at a named layer or
+the whole track, stamped with the revision and set section playing at that
+moment - so the agent hears "the bass in the drop is too muddy" instead of
+guessing. Solo and mute state travel the same way: the agent can solo a layer
+over the API and listen to it in isolation, the same ear the listener has.
 
 ### Scripts
 
@@ -161,6 +164,8 @@ src/
 │   │   ├── gain/           # Master volume ramps
 │   │   ├── history/        # Revision history + restore
 │   │   ├── nowplaying/     # HUD metadata
+│   │   ├── mix/            # Per-layer solo/mute
+│   │   ├── notes/          # Listener feedback aimed at layers
 │   │   ├── play|stop/      # Playback control
 │   │   ├── record/         # Remote recording control
 │   │   ├── recordings/     # WAV upload + listing
@@ -171,15 +176,15 @@ src/
 │   ├── page.tsx            # Home page
 │   └── globals.css         # Styles + CodeMirror theme
 ├── components/
-│   ├── strudel-editor.tsx  # Main editor + HUD + overlays + volume
-│   ├── level-meter.tsx     # Master VU bar (passive analyser tap)
-│   ├── reaction-bar.tsx    # 🔥/❤️/💤 listener feedback
-│   └── tape-shelf.tsx      # In-app playback of saved recordings
+│   ├── strudel-editor.tsx  # Editor + recording wiring + unlock overlay
+│   ├── console.tsx         # The panel: transport, layer mixer, notes, tapes
+│   └── level-meter.tsx     # Segmented master VU (passive analyser tap)
 ├── hooks/
-│   ├── use-strudel.ts      # Strudel lifecycle + revision sync protocol
+│   ├── use-strudel.ts      # Strudel lifecycle + revision sync + layers() runtime
 │   └── use-audio-recorder.ts # Audio recording to WAV
 └── lib/
     ├── constants.ts        # Shared constants
+    ├── layer-pulse.ts      # Activity pulses from patterns to console rows
     └── wav-encoder.ts      # Pure JS WAV encoder
 scripts/                    # push / listen / analyze / share / smoke / validate-tracks
 public/samples/             # Your local samples, served to Strudel

@@ -107,6 +107,35 @@ Healthy targets from the analyzer: high-mid TILT between about -10 and -28
 dB/Hz; mid band well above -20; no clipping (if clipping is flagged, pull
 the two loudest layers down ~15% and listen again).
 
+## 8. Melodic maturity - don't fake a chord with an arpeggio
+
+Note-by-note `.arp()` on a bare `triangle`/`sine`/`sawtooth`, looped unchanged
+for many cycles, is the single-channel trick 8/16-bit consoles used to fake
+polyphony. Lean on it as the main harmonic device and a track reads as a
+video game soundtrack, not a composition - no matter the tempo or key.
+
+```javascript
+// the tell: bare waveform + a narrow arp repeating unchanged = chiptune
+chord("<Cm7 Fm7>").arp("0 1 2 3").s("triangle")
+
+// better: let the chord actually sound; arp only as an occasional accent
+chord("<Cm7 Fm7>").voicing().s("gm_epiano1").room(.3)
+  .sometimesBy(.25, x => x.arp("0 2 1 3"))
+
+// layer one real/sampled voice under the synth material -
+// breaks the pure-oscillator sound even on electronic tracks
+stack(
+  chord(prog).voicing().s("sawtooth").lpf(1200),
+  chord(prog).voicing().s("gm_epiano1").gain(.3),   // or a crate_* sample, a pad recording
+)
+
+// never loop an identical phrase for many cycles - mutate it
+n("<[0 2 4 3] [0 2 5 3] [0 2 4 7]>").scale("A:minor")   // different endings, not one repeated
+```
+
+Arps, when used, work best as a texture that appears sometimes (`.sometimesBy`,
+one section out of several) rather than the constant carrier of the harmony.
+
 ---
 
 ## Checklist before calling a groove done
@@ -118,4 +147,8 @@ the two loudest layers down ~15% and listen again).
 - [ ] One thing drifting (perlin filter, breathing gain, wandering pan)
 - [ ] Layers panned into places; keys widened
 - [ ] Bass gain set explicitly, hats loud enough to read as bright
+- [ ] Harmony sustains or evolves - arps are an accent, not the whole
+      melody; nothing loops bar-for-bar unchanged for more than a few cycles
+- [ ] Track pushed as named layers (`$: layers({ kick, bass, ... })`) so the
+      console can solo/mute and the listener's notes land on the right thing
 - [ ] Verified with `node scripts/listen.mjs` - fix what the NOTES flag

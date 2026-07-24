@@ -31,6 +31,33 @@ exit code and message tell you. If you use raw curl instead, you MUST check
 
 ---
 
+## Named Layers - write tracks the console can mix
+
+Always structure tracks as named layers and finish with `layers({...})`:
+
+```javascript
+const kick = s("bd*4").bank("RolandTR909").gain(.7)
+const bass = note("<c1 eb1>").s("sawtooth").lpf(450).gain(.32)
+const hats = s("hh*8").bank("RolandTR909").gain("[.8 .5]*4")
+
+$: layers({ kick, bass, hats })
+```
+
+`layers()` works anywhere a pattern goes, including inside `arrange()`
+sections - keep names consistent across sections (kick is kick everywhere).
+The console draws one mixer row per name; solo/mute apply live without
+stopping playback. A new revision clears solo and keeps mutes.
+
+**Solo a layer and listen to it in isolation - your closest ear to the mix:**
+
+```bash
+curl -X POST http://localhost:3000/api/mix -H "Content-Type: application/json" -d '{"soloed": ["bass"]}'
+node scripts/listen.mjs 8
+curl -X POST http://localhost:3000/api/mix -H "Content-Type: application/json" -d '{"soloed": []}'
+```
+
+---
+
 ## Listening - your ears
 
 `OK: playing` means the code ran, not that it sounds good. To actually hear
@@ -75,7 +102,8 @@ missing highs, hollow mids, flat dynamics, mono mixes).
 | `/api/record/start` | POST | Start recording in the browser |
 | `/api/record/stop` | POST | Stop; the WAV lands in `recordings/` |
 | `/api/recordings` | GET | List saved WAVs (`/api/recordings/<name>` streams one) |
-| `/api/reactions` | GET/DELETE | Listener reactions from the browser's reaction bar / clear the room |
+| `/api/mix` | GET/POST | Per-layer solo/mute: `{"muted": [...], "soloed": [...]}` - full replacement per key |
+| `/api/notes` | GET/POST/DELETE | Listener feedback: free text, optionally aimed at a layer |
 | `/api/events` | GET | SSE stream (browsers use this; you don't need it) |
 
 ---
@@ -91,27 +119,34 @@ browserConnected false = nothing can play; ask the user to open localhost:3000
 audioReady       false = tab open but audio locked; an overlay in the tab
                  asks the user for one click - sound starts after that
 recording        {phase: idle|starting|recording|stopping|done|error, file?}
+mix              {muted, soloed, seq} - live per-layer mixer state
+layers           layer names reported by the last successful eval
+recentNotes      listener feedback; each note has text, layer, revision, section
 ```
 
 ---
 
 ## Reading the Room
 
-The browser shows a reaction bar (🔥 this hits · ❤️ love it · 💤 losing me).
-Every tap is tagged with the revision and HUD section playing at that moment:
+The console lets the listener type notes at a specific layer or the whole
+track. Every note is stamped with the revision and HUD section playing when
+it was written:
 
 ```bash
-curl -s http://localhost:3000/api/reactions
-# {"reactions":[{"kind":"fire","at":1690...,"revision":42,"section":"the drop"}],"serverTime":...}
+curl -s http://localhost:3000/api/notes
+# {"notes":[{"text":"bass too muddy","layer":"bass","revision":42,"section":"the drop","at":...}],"serverTime":...}
 ```
 
-`/api/status` includes the same as `recentReactions`. Check between phases
-during sets: compare `at` against `serverTime` for freshness, use `section`
-to know WHAT they reacted to. 🔥/❤️ → more of that world; 💤 → change
-something real (energy, texture, key), not just volume. No reactions ≠
-boredom - silence is normal. React to signals, don't fish for them.
+`/api/status` carries the same as `recentNotes`. Check between phases and
+sections; compare `at` against `serverTime` for freshness. A note names the
+exact thing to change - act on it in the next push, and say what you changed.
+No notes ≠ boredom - silence is normal. React to signals, don't fish for them.
 
-Starting a fresh set? `curl -X DELETE http://localhost:3000/api/reactions`
+Mute state is feedback too: `/api/status` → `mix.muted` naming a layer for
+two sections running means the listener has already made the call - write it
+out of the arrangement.
+
+Starting a fresh session? `curl -X DELETE http://localhost:3000/api/notes`
 clears leftovers from earlier sessions.
 
 ---
