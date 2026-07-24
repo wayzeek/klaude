@@ -337,31 +337,7 @@ strudel-editor {
 }
 
 /* =============================================================================
-   6. APP UI ANIMATIONS
-   ============================================================================= */
-
-/* Reaction emoji floating up from the reaction bar */
-@keyframes reaction-rise {
-  from {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(-90px) scale(1.7);
-  }
-}
-
-.reaction-burst {
-  position: absolute;
-  top: -10px;
-  font-size: 1.4rem;
-  pointer-events: none;
-  animation: reaction-rise 1.1s ease-out forwards;
-}
-
-/* =============================================================================
-   7. BASE STYLES
+   6. BASE STYLES
    ============================================================================= */
 
 @layer base {
