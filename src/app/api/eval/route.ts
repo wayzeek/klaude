@@ -34,12 +34,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { clientId, revision, playEpoch, ok, error } = (body ?? {}) as {
+  const { clientId, revision, playEpoch, ok, error, layers } = (body ?? {}) as {
     clientId?: unknown
     revision?: unknown
     playEpoch?: unknown
     ok?: unknown
     error?: unknown
+    layers?: unknown
   }
 
   if (
@@ -54,14 +55,32 @@ export async function POST(request: Request) {
     )
   }
 
-  state.recordEval({
-    clientId,
-    revision,
-    playEpoch,
-    ok,
-    error: typeof error === 'string' ? error : null,
-    at: Date.now(),
-  })
+  let layerNames: string[] | undefined
+  if (layers !== undefined) {
+    if (
+      !Array.isArray(layers) ||
+      layers.length > 64 ||
+      layers.some((l) => typeof l !== 'string' || l.length === 0 || l.length > 40)
+    ) {
+      return NextResponse.json(
+        { error: 'layers must be an array of at most 64 non-empty strings (max 40 chars)' },
+        { status: 400 },
+      )
+    }
+    layerNames = layers as string[]
+  }
+
+  state.recordEval(
+    {
+      clientId,
+      revision,
+      playEpoch,
+      ok,
+      error: typeof error === 'string' ? error : null,
+      at: Date.now(),
+    },
+    layerNames,
+  )
 
   return NextResponse.json({ recorded: true })
 }

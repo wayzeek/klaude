@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react'
+import { emitLayerPulse } from '@/lib/layer-pulse'
 
 /**
  * CDN fallback for the Strudel REPL web component, used only if the locally
@@ -52,6 +53,8 @@ export type RemoteCommand = {
   targetClientId: string
 }
 
+export type Mix = { muted: string[]; soloed: string[]; seq: number }
+
 type ServerState = {
   code: string
   revision: number
@@ -60,6 +63,8 @@ type ServerState = {
   gain: { level: number; rampMs: number; seq: number }
   nowPlaying: NowPlaying | null
   command: RemoteCommand | null
+  mix: Mix
+  layers: string[]
 }
 
 function getStrudelAudioContext(): AudioContext | null {
@@ -92,6 +97,9 @@ export function useStrudel() {
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null)
   const [gainLevel, setGainLevel] = useState(1)
+  const [mix, setMix] = useState<Mix>({ muted: [], soloed: [], seq: 0 })
+  const [layerNames, setLayerNames] = useState<string[]>([])
+  const [revision, setRevision] = useState(0)
 
   // Bumped to force a fresh EventSource after a fatal connection loss
   const [sseGeneration, setSseGeneration] = useState(0)
@@ -122,6 +130,12 @@ export function useStrudel() {
 
   // Pending gain for when audio isn't initialized yet
   const pendingGainRef = useRef<{ level: number; rampMs: number } | null>(null)
+
+  // Mix state the layers() runtime reads at evaluation time, and the names
+  // collected during the current evaluation pass.
+  const mixRef = useRef<{ muted: string[]; soloed: string[] }>({ muted: [], soloed: [] })
+  const appliedMixSeqRef = useRef(-1)
+  const collectedLayersRef = useRef<string[]>([])
 
   const audioReadyRef = useRef(false)
   const isPlayingRef = useRef(false)
@@ -174,6 +188,55 @@ export function useStrudel() {
         console.warn('[klaude] bundled Strudel failed to load, falling back to CDN:', err)
         loadFromCdn()
       })
+  }, [])
+
+  /**
+   * layers({ kick, bass, ... }) - the named-layer convention. Evaluated code
+   * calls this; it registers the names (reported with the eval result so the
+   * console knows its rows), drops muted layers / keeps soloed ones, taps
+   * each survivor with a non-dominant onTrigger for the activity pulses, and
+   * returns the stacked pattern. Solo is global: soloing a name silences
+   * every layers() group that doesn't contain it.
+   */
+  useEffect(() => {
+    type Pat = {
+      stack: (other: Pat) => Pat
+      mask: (pattern: string) => Pat
+      onTrigger: (
+        fn: (hap: unknown, currentTime: number, cps: number, targetTime: number) => void,
+        dominant: boolean,
+      ) => Pat
+    }
+    const w = window as unknown as { layers?: (map: Record<string, Pat>) => Pat }
+    w.layers = (map) => {
+      if (!map || typeof map !== 'object' || Array.isArray(map)) {
+        throw new Error('layers() expects an object of named patterns, e.g. layers({ kick, bass })')
+      }
+      const names = Object.keys(map)
+      if (names.length === 0) throw new Error('layers() needs at least one named pattern')
+      for (const name of names) {
+        if (!collectedLayersRef.current.includes(name)) collectedLayersRef.current.push(name)
+      }
+      const { muted, soloed } = mixRef.current
+      const entries = Object.entries(map).filter(([name]) =>
+        soloed.length > 0 ? soloed.includes(name) : !muted.includes(name),
+      )
+      if (entries.length === 0) {
+        // Everything silenced: an event-free pattern keeps the eval valid.
+        return map[names[0]].mask('0')
+      }
+      const tapped = entries.map(([name, pat]) =>
+        pat.onTrigger((_hap, currentTime, _cps, targetTime) => {
+          // Schedule the visual pulse for when the event becomes audible.
+          const delayMs = Math.max(0, (targetTime - currentTime) * 1000)
+          setTimeout(() => emitLayerPulse(name), delayMs)
+        }, false),
+      )
+      return tapped.reduce((acc, pat) => acc.stack(pat))
+    }
+    return () => {
+      delete w.layers
+    }
   }, [])
 
   /** Get the StrudelMirror instance from the web component. */
@@ -245,7 +308,7 @@ export function useStrudel() {
    */
   const evaluateAndReport = useCallback(
     (revision: number, playEpoch: number): Promise<boolean> => {
-      const key = `${revision}:${playEpoch}`
+      const key = `${revision}:${playEpoch}:${appliedMixSeqRef.current}`
       if (evalInFlightRef.current?.key === key) {
         return evalInFlightRef.current.promise
       }
@@ -271,6 +334,7 @@ export function useStrudel() {
       let ok = true
       let error: string | null = null
       blockedEvalRef.current = false
+      collectedLayersRef.current = []
       try {
         await editor.evaluate()
         // Strudel's evaluate() resolves even when the code throws - the
@@ -329,6 +393,7 @@ export function useStrudel() {
         playEpoch,
         ok,
         error,
+        layers: ok ? collectedLayersRef.current : undefined,
       })
       return ok
   }
@@ -356,6 +421,15 @@ export function useStrudel() {
   const handleServerState = useCallback(
     (s: ServerState) => {
       serverStateRef.current = s
+
+      // Feed the layers() runtime BEFORE any evaluation below reads it.
+      mixRef.current = { muted: s.mix.muted, soloed: s.mix.soloed }
+      const mixChanged = s.mix.seq !== appliedMixSeqRef.current
+      appliedMixSeqRef.current = s.mix.seq
+      setMix(s.mix)
+      setLayerNames(s.layers)
+      setRevision(s.revision)
+
       const editor = getEditor()
       if (!editor) {
         pendingStateRef.current = s
@@ -379,7 +453,10 @@ export function useStrudel() {
         reportClient({ appliedRevision: s.revision })
       }
 
-      if (s.desiredPlaying && (epochChanged || (revisionChanged && s.code !== lastPushedCodeRef.current))) {
+      if (
+        (s.desiredPlaying && (epochChanged || (revisionChanged && s.code !== lastPushedCodeRef.current))) ||
+        (mixChanged && s.desiredPlaying && isPlayingRef.current)
+      ) {
         appliedEpochRef.current = s.playEpoch
         evaluateAndReport(s.revision, s.playEpoch)
       } else if (epochChanged) {
@@ -627,6 +704,9 @@ export function useStrudel() {
     isPlaying,
     audioBlocked,
     nowPlaying,
+    mix,
+    layers: layerNames,
+    revision,
     gainLevel,
     clientId: clientIdRef.current,
     editorRef,
