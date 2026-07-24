@@ -47,6 +47,8 @@ export type RecordCommand = {
   targetClientId: string
 }
 
+export type MixState = { muted: string[]; soloed: string[]; seq: number }
+
 /** The slice of state broadcast to browsers over SSE. */
 export type BroadcastState = {
   code: string
@@ -56,6 +58,8 @@ export type BroadcastState = {
   gain: { level: number; rampMs: number; seq: number }
   nowPlaying: NowPlaying | null
   command: RecordCommand | null
+  mix: MixState
+  layers: string[]
 }
 
 export type ClientInfo = {
@@ -103,6 +107,7 @@ type PersistedState = {
   code: string
   revision: number
   history: HistoryEntry[]
+  mutedLayers?: string[]
 }
 
 function loadPersisted(): PersistedState | null {
@@ -120,7 +125,10 @@ function loadPersisted(): PersistedState | null {
           typeof (h as HistoryEntry).at === 'number',
       )
       .slice(-HISTORY_LIMIT)
-    return { code: parsed.code, revision: parsed.revision as number, history }
+    const mutedLayers = (Array.isArray(parsed.mutedLayers) ? parsed.mutedLayers : []).filter(
+      (m): m is string => typeof m === 'string',
+    )
+    return { code: parsed.code, revision: parsed.revision as number, history, mutedLayers }
   } catch {
     return null
   }
@@ -144,6 +152,8 @@ class StateEmitter {
   private _history: HistoryEntry[]
   private _recording: RecordingState = { phase: 'idle' }
   private _recordIssuedAt = 0
+  private _mix: MixState = { muted: [], soloed: [], seq: 0 }
+  private _layerNames: string[] = []
 
   private persistTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -155,6 +165,7 @@ class StateEmitter {
     if (persisted === null) {
       this._history = [{ revision: this._revision, code: this._code, at: Date.now() }]
     }
+    this._mix = { muted: persisted?.mutedLayers ?? [], soloed: [], seq: 0 }
   }
 
   // --- broadcast state ------------------------------------------------------
@@ -168,6 +179,8 @@ class StateEmitter {
       gain: this._gain,
       nowPlaying: this._nowPlaying,
       command: this._command,
+      mix: this._mix,
+      layers: this._layerNames,
     }
   }
 
@@ -207,6 +220,14 @@ class StateEmitter {
     return this._history
   }
 
+  get mix(): MixState {
+    return this._mix
+  }
+
+  get layerNames(): string[] {
+    return this._layerNames
+  }
+
   /** True if any live client reports audio actually playing. */
   get actualPlaying(): boolean {
     return this.liveClients.some((c) => c.isPlaying)
@@ -222,6 +243,11 @@ class StateEmitter {
     this._history.push({ revision: this._revision, code, at: Date.now() })
     if (this._history.length > HISTORY_LIMIT) {
       this._history.splice(0, this._history.length - HISTORY_LIMIT)
+    }
+    // New revision: solo is a listening gesture, not an arrangement - clear it.
+    // Mutes persist until the layer disappears or someone unmutes.
+    if (this._mix.soloed.length > 0) {
+      this._mix = { ...this._mix, soloed: [], seq: this._mix.seq + 1 }
     }
     this.schedulePersist()
     return true
@@ -291,6 +317,20 @@ class StateEmitter {
       trail,
     }
     this.emit()
+  }
+
+  // --- mix (per-layer solo/mute) ---------------------------------------------
+
+  /** Replace mix arrays (full replacement per provided key). Bumps seq, emits. */
+  setMix(patch: { muted?: string[]; soloed?: string[] }): MixState {
+    this._mix = {
+      muted: patch.muted ?? this._mix.muted,
+      soloed: patch.soloed ?? this._mix.soloed,
+      seq: this._mix.seq + 1,
+    }
+    this.schedulePersist()
+    this.emit()
+    return this._mix
   }
 
   // --- reactions --------------------------------------------------------------
@@ -401,7 +441,7 @@ class StateEmitter {
 
   // --- eval feedback -----------------------------------------------------------
 
-  recordEval(result: EvalResult): void {
+  recordEval(result: EvalResult, layers?: string[]): void {
     // Future-keyed reports are impossible from an honest client in this
     // process's lifetime (e.g. leftovers from before a server restart, when
     // playEpoch reset) - drop them so they can't masquerade as fresh later.
@@ -424,6 +464,23 @@ class StateEmitter {
         ? { appliedRevision: result.revision, isPlaying: this._desiredPlaying }
         : { appliedRevision: result.revision },
     )
+
+    // A successful eval of the current revision reports the track's layer
+    // names - adopt them and prune mix entries for layers that no longer
+    // exist (a stale solo would otherwise silence everything forever).
+    if (result.ok && result.revision === this._revision && layers) {
+      const namesChanged =
+        layers.length !== this._layerNames.length || layers.some((n, i) => n !== this._layerNames[i])
+      if (namesChanged) this._layerNames = [...layers]
+      const muted = this._mix.muted.filter((n) => layers.includes(n))
+      const soloed = this._mix.soloed.filter((n) => layers.includes(n))
+      const pruned = muted.length !== this._mix.muted.length || soloed.length !== this._mix.soloed.length
+      if (pruned) {
+        this._mix = { muted, soloed, seq: this._mix.seq + 1 }
+        this.schedulePersist()
+      }
+      if (namesChanged || pruned) this.emit()
+    }
   }
 
   // --- recording ---------------------------------------------------------------
@@ -525,6 +582,7 @@ class StateEmitter {
         code: this._code,
         revision: this._revision,
         history: this._history,
+        mutedLayers: this._mix.muted,
       }
       fs.mkdirSync(STATE_DIR, { recursive: true })
       const tmp = `${STATE_FILE}.tmp`

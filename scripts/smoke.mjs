@@ -48,6 +48,11 @@ async function main() {
   check('status has actualPlaying', typeof initial.actualPlaying === 'boolean')
   check('status has clients array', Array.isArray(initial.clients))
   check('status has recording phase', typeof initial.recording?.phase === 'string')
+  check(
+    'status has mix state',
+    Array.isArray(initial.mix?.muted) && Array.isArray(initial.mix?.soloed) && typeof initial.mix?.seq === 'number',
+  )
+  check('status has layers array', Array.isArray(initial.layers))
 
   console.log('code push:')
   const marker = `// smoke-test ${Math.random().toString(36).slice(2)}\n$: s("bd")`
@@ -104,6 +109,25 @@ async function main() {
   check('new title resets trail', npNew.nowPlaying?.trail?.length === 1)
   const npClear = await fetch(`${BASE}/api/nowplaying`, { method: 'DELETE' }).then((r) => r.json())
   check('nowplaying cleared', npClear.nowPlaying === null)
+
+  console.log('mix:')
+  const mix0 = await get('/api/mix').then((r) => r.json())
+  check('GET /api/mix returns mix + layers', Array.isArray(mix0.mix?.muted) && Array.isArray(mix0.layers))
+  const mixSet = await post('/api/mix', { muted: ['bass'], soloed: ['hats'] }).then((r) => r.json())
+  check('mix set bumps seq', mixSet.mix.seq === mix0.mix.seq + 1)
+  check('mix stores muted', mixSet.mix.muted.includes('bass'))
+  check('mix stores soloed', mixSet.mix.soloed.includes('hats'))
+  const badMix = await post('/api/mix', { muted: 'bass' })
+  check('non-array mix field is 400', badMix.status === 400)
+  const emptyMix = await post('/api/mix', {})
+  check('empty mix patch is 400', emptyMix.status === 400)
+  await post('/api/code', { code: marker + '\n// mix probe' })
+  const mixAfter = await get('/api/mix').then((r) => r.json())
+  check('push clears solo', mixAfter.mix.soloed.length === 0)
+  check('push preserves mutes', mixAfter.mix.muted.includes('bass'))
+  check('push bumps mix seq (solo cleared)', mixAfter.mix.seq > mixSet.mix.seq)
+  await post('/api/mix', { muted: mix0.mix.muted, soloed: [] })
+  await post('/api/history', { revision: initial.revision })
 
   console.log('reactions:')
   const preReactions = await get('/api/reactions').then((r) => r.json())
