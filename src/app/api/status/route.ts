@@ -56,7 +56,7 @@ export async function GET() {
     recording: state.recording,
     mix: state.mix,
     layers: state.layerNames,
-    recentReactions: state.reactions.slice(-20),
+    recentNotes: state.notes.slice(-20),
     serverTime: Date.now(),
   })
 }

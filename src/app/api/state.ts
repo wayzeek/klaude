@@ -31,11 +31,10 @@ export type NowPlaying = {
   trail: { section: string; at: number }[]
 }
 
-export const REACTION_KINDS = ['fire', 'love', 'sleep'] as const
-export type ReactionKind = (typeof REACTION_KINDS)[number]
-
-export type Reaction = {
-  kind: ReactionKind
+export type Note = {
+  text: string
+  /** Layer the note targets, or null for the whole track. */
+  layer: string | null
   at: number
   revision: number
   section: string | null
@@ -94,7 +93,7 @@ export type HistoryEntry = { revision: number; code: string; at: number }
 type Listener = (state: BroadcastState) => void
 
 const HISTORY_LIMIT = 100
-const REACTIONS_LIMIT = 200
+const NOTES_LIMIT = 200
 const TRAIL_LIMIT = 24
 const PERSIST_DEBOUNCE_MS = 500
 const CLIENT_STALE_MS = 90_000
@@ -108,6 +107,7 @@ type PersistedState = {
   revision: number
   history: HistoryEntry[]
   mutedLayers?: string[]
+  notes?: Note[]
 }
 
 function loadPersisted(): PersistedState | null {
@@ -128,7 +128,17 @@ function loadPersisted(): PersistedState | null {
     const mutedLayers = (Array.isArray(parsed.mutedLayers) ? parsed.mutedLayers : []).filter(
       (m): m is string => typeof m === 'string',
     )
-    return { code: parsed.code, revision: parsed.revision as number, history, mutedLayers }
+    const notes = (Array.isArray(parsed.notes) ? parsed.notes : [])
+      .filter(
+        (n): n is Note =>
+          n !== null &&
+          typeof n === 'object' &&
+          typeof (n as Note).text === 'string' &&
+          typeof (n as Note).at === 'number' &&
+          typeof (n as Note).revision === 'number',
+      )
+      .slice(-NOTES_LIMIT)
+    return { code: parsed.code, revision: parsed.revision as number, history, mutedLayers, notes }
   } catch {
     return null
   }
@@ -147,7 +157,7 @@ class StateEmitter {
   private _commandSeq = 0
 
   private _clients = new Map<string, ClientInfo>()
-  private _reactions: Reaction[] = []
+  private _notes: Note[] = []
   private _lastEval: EvalResult | null = null
   private _history: HistoryEntry[]
   private _recording: RecordingState = { phase: 'idle' }
@@ -166,6 +176,7 @@ class StateEmitter {
       this._history = [{ revision: this._revision, code: this._code, at: Date.now() }]
     }
     this._mix = { muted: persisted?.mutedLayers ?? [], soloed: [], seq: 0 }
+    this._notes = persisted?.notes ?? []
   }
 
   // --- broadcast state ------------------------------------------------------
@@ -333,29 +344,32 @@ class StateEmitter {
     return this._mix
   }
 
-  // --- reactions --------------------------------------------------------------
+  // --- notes --------------------------------------------------------------
 
-  /** Record a listener reaction, tagged with what was playing at the time. */
-  addReaction(kind: ReactionKind): Reaction {
-    const reaction: Reaction = {
-      kind,
+  /** Record listener feedback, tagged with what was playing at the time. */
+  addNote(text: string, layer: string | null): Note {
+    const note: Note = {
+      text,
+      layer,
       at: Date.now(),
       revision: this._revision,
       section: this._nowPlaying?.section ?? null,
     }
-    this._reactions.push(reaction)
-    if (this._reactions.length > REACTIONS_LIMIT) {
-      this._reactions.splice(0, this._reactions.length - REACTIONS_LIMIT)
+    this._notes.push(note)
+    if (this._notes.length > NOTES_LIMIT) {
+      this._notes.splice(0, this._notes.length - NOTES_LIMIT)
     }
-    return reaction
+    this.schedulePersist()
+    return note
   }
 
-  get reactions(): Reaction[] {
-    return this._reactions
+  get notes(): Note[] {
+    return this._notes
   }
 
-  clearReactions(): void {
-    this._reactions = []
+  clearNotes(): void {
+    this._notes = []
+    this.schedulePersist()
   }
 
   // --- clients ----------------------------------------------------------------
@@ -583,6 +597,7 @@ class StateEmitter {
         revision: this._revision,
         history: this._history,
         mutedLayers: this._mix.muted,
+        notes: this._notes,
       }
       fs.mkdirSync(STATE_DIR, { recursive: true })
       const tmp = `${STATE_FILE}.tmp`

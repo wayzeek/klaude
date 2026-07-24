@@ -129,28 +129,34 @@ async function main() {
   await post('/api/mix', { muted: mix0.mix.muted, soloed: [] })
   await post('/api/history', { revision: initial.revision })
 
-  console.log('reactions:')
-  const preReactions = await get('/api/reactions').then((r) => r.json())
-  const reactRes = await post('/api/reactions', { kind: 'fire' })
-  const reactBody = await reactRes.json()
-  check('reaction accepted', reactRes.ok && reactBody.reaction?.kind === 'fire')
-  check('reaction tagged with revision', typeof reactBody.reaction?.revision === 'number')
-  const badReact = await post('/api/reactions', { kind: 'nonsense' })
-  check('invalid reaction kind is 400', badReact.status === 400)
-  const reactList = await get('/api/reactions').then((r) => r.json())
+  console.log('notes:')
+  const preNotes = await get('/api/notes').then((r) => r.json())
+  const noteRes = await post('/api/notes', { text: 'bass too muddy', layer: 'bass' })
+  const noteBody = await noteRes.json()
+  check('note accepted', noteRes.ok && noteBody.note?.text === 'bass too muddy')
+  check('note tagged with layer', noteBody.note?.layer === 'bass')
+  check('note tagged with revision', typeof noteBody.note?.revision === 'number')
+  const trackNote = await post('/api/notes', { text: 'love this section' }).then((r) => r.json())
+  check('track-level note has null layer', trackNote.note?.layer === null)
+  const badNote = await post('/api/notes', { text: '   ' })
+  check('blank note is 400', badNote.status === 400)
+  const badNote2 = await post('/api/notes', {})
+  check('missing text is 400', badNote2.status === 400)
+  const noteList = await get('/api/notes').then((r) => r.json())
   check(
-    'reactions listed',
-    Array.isArray(reactList.reactions) && reactList.reactions.some((x) => x.at === reactBody.reaction.at),
+    'notes listed',
+    Array.isArray(noteList.notes) && noteList.notes.some((n) => n.at === noteBody.note.at),
   )
-  const statusReactions = await get('/api/status').then((r) => r.json())
-  check('status includes recentReactions', Array.isArray(statusReactions.recentReactions))
-  if (preReactions.reactions.length === 0) {
-    // The room was empty before the test - clean up our fake reaction so an
-    // agent can't mistake it for listener feedback. (With real reactions
+  const statusNotes = await get('/api/status').then((r) => r.json())
+  check('status includes recentNotes', Array.isArray(statusNotes.recentNotes))
+  check('status no longer exposes recentReactions', statusNotes.recentReactions === undefined)
+  if (preNotes.notes.length === 0) {
+    // The queue was empty before the test - clean up our fake notes so the
+    // agent can't mistake them for listener feedback. (With real notes
     // present we leave everything: clearing would erase them too.)
-    const clearRes = await fetch(`${BASE}/api/reactions`, { method: 'DELETE' })
+    const clearRes = await fetch(`${BASE}/api/notes`, { method: 'DELETE' })
     const cleared = await clearRes.json()
-    check('reactions cleared', clearRes.ok && cleared.reactions.length === 0)
+    check('notes cleared', clearRes.ok && cleared.notes.length === 0)
   }
 
   console.log('play/stop:')
