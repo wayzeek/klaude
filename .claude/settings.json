@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Skill(api)",
+      "Skill(strudel)",
+      "Skill(theory)",
+      "Skill(tracks)",
+      "Skill(compose)",
+      "Skill(dj-set)",
+      "Skill(interactive)",
+      "Skill(tutorial)",
+      "Skill(visuals)",
+      "Skill(humanize)",
+      "Bash(sleep *)",
+      "Bash(say *)",
+      "Bash(curl *)",
+      "Bash(node scripts/*)",
+      "Bash(pnpm push*)",
+      "Bash(pnpm share*)",
+      "Bash(pnpm smoke*)",
+      "Bash(pnpm validate:tracks*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/strudel-status.sh",
+            "timeout": 10,
+            "statusMessage": "Checking Strudel REPL status..."
+          }
+        ]
+      }
+    ]
+  }
+}

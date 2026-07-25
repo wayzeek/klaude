@@ -1,7 +1,7 @@
 ---
 name: dj-set
 description: Create and perform automated DJ sets with Strudel. Use when the user asks for a "set", "DJ set", "live performance", "mix", or wants music that evolves over time.
-allowed-tools: Bash(curl *), Bash(sleep *), Bash(say *)
+allowed-tools: Bash(curl *), Bash(sleep *), Bash(say *), Bash(node scripts/*), Bash(pnpm push*), Write
 ---
 
 # DJ Set Mode
@@ -11,6 +11,9 @@ Create evolving musical journeys that run autonomously.
 ---
 
 ## Before Starting
+
+**Load `/humanize` first** - swing, ghost notes, fills, drift, width, and
+gain staging are non-negotiable for every phase you push.
 
 **CRITICAL**: NEVER play music before asking the user what they want. Always ask first, then play.
 
@@ -127,30 +130,45 @@ Run as a separate Bash call (15-40 seconds typical).
 
 Run these two Bash calls in the SAME message (parallel execution):
 - `say "<announcement>"` with `run_in_background: true`
-- `curl -X POST http://localhost:3000/api/code ...`
+- `node scripts/push.mjs /tmp/phase.js --play` (write the phase code to the file first)
 
-This way voice plays while code updates simultaneously.
+This way voice plays while code updates simultaneously. The push script
+reports the eval verdict - if it prints an evaluation error, fix the code and
+re-push before the next phase; the crowd can hear a broken transition.
 
-**Step 4: Play (AFTER code completes)**
+**Write every phase as named layers** - `$: layers({ kick, bass, hats, pad })`
+with consistent names across phases (kick is kick everywhere). The console
+draws a mixer row per name, and the listener's solo/mute/notes come back
+tagged with those names.
+
+**Step 4: Update the HUD (with the push, or right after)**
 ```bash
-curl -X POST http://localhost:3000/api/play
+curl -X POST http://localhost:3000/api/nowplaying -H "Content-Type: application/json" -d '{"section": "building"}'
 ```
-Run after the code curl completes.
+Set `title`/`artist` once at set start; update `section` each phase.
 
 **Key rules:**
 - NEVER use `&&`, `&`, or `;` to chain commands
 - `sleep` - separate Bash call
-- `say` - use `run_in_background: true` parameter, run PARALLEL with code
-- `curl /api/code` - run PARALLEL with say
-- `curl /api/play` - run AFTER code completes (separate call)
+- `say` - use `run_in_background: true` parameter, run PARALLEL with the push
+- Push script (`node scripts/push.mjs <file> --play`) - run PARALLEL with say
 
 **Voice setting:** If user selects "No" for voice announcements, simply omit the `say` command.
+
+**Smooth transitions with gain fades:** For a dramatic track-to-track cut,
+fade out (`POST /api/gain {"level": 0, "rampMs": 4000}`), sleep ~4s, push the
+new code with `--play`, fade back in (`{"level": 1, "rampMs": 2000}`). Use
+sparingly - most phase transitions should stay seamless pattern swaps.
+ALWAYS restore gain to 1 before the set ends.
+
+**Offer a bounce:** If the set is a banger, offer to record it - see the
+recording flow in `/api` (`/api/record/start` → `/api/record/stop`).
 
 ---
 
 ## Duration Planning
 
-**See `/arrange` skill for full duration math, cycle tables, and genre reference examples.**
+**See the `/compose` skill for full duration math, cycle tables, and genre reference examples.**
 
 Quick formula: `cycles = minutes × 60 × cps`
 
@@ -191,15 +209,23 @@ Move with purpose:
 
 ## Energy Management
 
-Use gain and filter values to control intensity:
+Use gain and filter values to control intensity (calibrated with the
+analyzer - hats carry the mix's brightness, so they run much hotter than
+old habit suggests; synth bass ALWAYS gets an explicit gain):
 
-| Energy Level | Kick Gain | Hat Gain | Bass Gain | LPF Range |
-|--------------|-----------|----------|-----------|-----------|
-| Low | 0.3-0.5 | 0.1-0.15 | 0.2-0.3 | 150-400 |
-| Medium | 0.6-0.8 | 0.18-0.25 | 0.4-0.5 | 400-1000 |
-| High | 0.85-1.0 | 0.25-0.35 | 0.5-0.7 | 800-2000+ |
+| Energy Level | Kick Gain | Hat Gain | Synth Bass Gain | LPF Range |
+|--------------|-----------|----------|-----------------|-----------|
+| Low | 0.3-0.5 | 0.3-0.45 | 0.15-0.25 | 150-400 |
+| Medium | 0.6-0.8 | 0.5-0.7 | 0.25-0.35 | 400-1000 |
+| High | 0.85-1.0 | 0.7-0.9 | 0.35-0.45 | 800-2000+ |
 
 A subtle filter sweep can build tension without adding sounds.
+
+**Sound-check with your ears.** Once the groove is established (and BEFORE
+starting any tape - recording is one-at-a-time), run
+`node scripts/listen.mjs 10` and fix what the NOTES flag: buried hats,
+hollow mids, clipping, mono width. Guessing the mix is how sets end up
+muffled.
 
 ---
 
@@ -224,7 +250,7 @@ A subtle filter sweep can build tension without adding sounds.
 - Warm, mellow, piano/organ chords
 - Moderate reverb (.4-.6)
 - Smooth filter movements
-- 7th chords: Cm7, Fm7, Abmaj7
+- 7th chords: Cm7, Fm7, Ab^7
 
 ### Techno (125-135 BPM)
 - Driving, hypnotic, minimal melodic content
@@ -281,6 +307,8 @@ But genres are starting points, not rules. Cross-pollinate freely.
 ---
 
 ## Music Theory Foundations
+
+For deeper harmony - borrowed chords, modal interchange, progression recipes by mood - load the `/theory` skill.
 
 ### Start with Texture, Not Melody
 Don't jump into arpeggios or big chords. Begin with:
@@ -431,6 +459,22 @@ If they say something mid-set, adapt:
 - **"More melodic"** → add piano/synth melodies, chord progressions
 - **"I love this"** → stay here longer, build on it
 
+**The console is your dance floor.** The listener can type a note at any
+layer ("bass too muddy") or at the whole track, and solo/mute layers live.
+Check while a phase holds (during the sleep, or right after):
+
+```bash
+curl -s http://localhost:3000/api/notes
+curl -s http://localhost:3000/api/status   # → mix.muted, recentNotes
+```
+
+- A note names the layer and section it targets - trust that tag over
+  guessing, fix that exact thing next phase, and say what you changed
+- A layer the listener keeps muted for two sections is a verdict - write it
+  out of the arrangement instead of waiting for them to unmute
+- No notes is normal; don't fish. But when they arrive, acknowledge with
+  the music (and voice, if on): react to the room like a real DJ.
+
 ---
 
 ## Tips for Great Sets
@@ -460,7 +504,7 @@ arrange(
 **When to use arrange():** Pre-composed journeys, precise timing
 **When to use phase-by-phase:** Interactive sets, indefinite mode
 
-**See `/arrange` skill for full examples (Metal, Melodic Techno, UK Garage, Orchestral).**
+**See the `/compose` skill for full examples (Metal, Melodic Techno, UK Garage, Lo-fi, Synthwave).**
 
 ---
 

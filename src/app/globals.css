@@ -3,12 +3,11 @@
  * GLOBAL STYLES
  * =============================================================================
  *
- * 1. TAILWIND IMPORTS     - Core framework
- * 2. THEME CONFIGURATION  - CSS variables to Tailwind mapping
- * 3. COLOR PALETTE        - Light & dark theme (oklch colors)
- * 4. LAYOUT STYLES        - Full-screen app layout
- * 5. EDITOR STYLES        - CodeMirror customizations
- * 6. BASE STYLES          - Default element styles
+ * 1. TAILWIND IMPORTS  - Core framework
+ * 2. DESIGN TOKENS     - The studio is dark-only; one palette on :root
+ * 3. LAYOUT & CHROME   - Full-screen app layout, scrollbars, focus, fader
+ * 4. EDITOR STYLES     - CodeMirror sizing + underground syntax theme
+ * 5. BASE STYLES       - Default element styles
  */
 
 /* =============================================================================
@@ -16,126 +15,70 @@
    ============================================================================= */
 
 @import 'tailwindcss';
-@import 'tw-animate-css';
-
-@custom-variant dark (&:is(.dark *));
 
 /* =============================================================================
-   2. THEME CONFIGURATION
+   2. DESIGN TOKENS
+
+   moltek is a night studio - there is no light theme. Tokens live on :root
+   so the UI never depends on the Strudel CDN bundle adding a `dark` class
+   (which it happens to do, but is not ours to rely on).
+
+   Surfaces:  --background (app)  <  --card (bars, rack)
+   The editor sits slightly deeper than --background so the code reads as
+   the work surface. The brand orange is the one signal color: playheads,
+   meters, active states. A darker red is reserved for record and clipping,
+   kept clearly apart from the orange so an armed take cannot be mistaken
+   for ordinary playback.
    ============================================================================= */
 
 @theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
+  --font-mono: var(--font-geist-mono), ui-monospace, 'SF Mono', monospace;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
-  --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
 }
-
-/* =============================================================================
-   3. COLOR PALETTE - Light Theme (default)
-   ============================================================================= */
 
 :root {
-  --radius: 0.65rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
-  --primary: oklch(0.648 0.2 131.684);
-  --primary-foreground: oklch(0.986 0.031 120.757);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
-  --ring: oklch(0.841 0.238 128.85);
-  --chart-1: oklch(0.871 0.15 154.449);
-  --chart-2: oklch(0.723 0.219 149.579);
-  --chart-3: oklch(0.627 0.194 149.214);
-  --chart-4: oklch(0.527 0.154 150.069);
-  --chart-5: oklch(0.448 0.119 151.328);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
-  --sidebar-primary: oklch(0.648 0.2 131.684);
-  --sidebar-primary-foreground: oklch(0.986 0.031 120.757);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
-  --sidebar-ring: oklch(0.841 0.238 128.85);
+  --radius: 0px; /* flat tracker chrome - nothing rounds */
+
+  /* The ember palette: slate surfaces, ivory type, one warm accent. The
+     mascot's body is a separate token because the accent marks lit states and
+     wants saturation, while the body has to stay readable against surfaces at
+     any size. Contrast for every pair here is gated by scripts/themes.mjs. */
+  --brand-orange: #d97757;
+  --brand-ivory: #f0eee6;
+  --brand-cream: #e8e6dc;
+  --brand-light: #c6c4ba;
+  --brand-mid: #b0aea5;
+  --brand-neutral: #87867f;
+  --brand-dark: #3d3d3a;
+  --brand-slate: #141413;
+
+  --background: var(--brand-slate);
+  --foreground: var(--brand-ivory);
+  --card: #1c1c1a;
+  --editor: #100f0e;
+  --primary: var(--brand-orange);
+  --primary-foreground: var(--brand-slate);
+  --muted: var(--brand-dark);
+  --muted-foreground: var(--brand-neutral);
+  /* Record only. Deliberately redder and darker than the orange accent, or
+     the armed state would be indistinguishable from ordinary playback. */
+  --destructive: #b8452e;
+  --border: rgb(240 238 230 / 12%);
+  --ring: rgb(217 119 87 / 70%);
 }
 
 /* =============================================================================
-   3. COLOR PALETTE - Dark Theme
-   ============================================================================= */
-
-.dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.648 0.2 131.684);
-  --primary-foreground: oklch(0.986 0.031 120.757);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.405 0.101 131.063);
-  --chart-1: oklch(0.871 0.15 154.449);
-  --chart-2: oklch(0.723 0.219 149.579);
-  --chart-3: oklch(0.627 0.194 149.214);
-  --chart-4: oklch(0.527 0.154 150.069);
-  --chart-5: oklch(0.448 0.119 151.328);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.768 0.233 130.85);
-  --sidebar-primary-foreground: oklch(0.986 0.031 120.757);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.405 0.101 131.063);
-}
-
-/* =============================================================================
-   4. LAYOUT STYLES
+   3. LAYOUT & CHROME
    ============================================================================= */
 
 html,
@@ -144,8 +87,114 @@ body {
   overflow: hidden;
 }
 
+/* Flat square scrollbars, everywhere - including the editor.
+   Styled via the webkit pseudos only: setting the standard scrollbar-width
+   property would override them in Chromium and bring back the OS chrome. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--brand-dark);
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--brand-orange) 60%, var(--brand-dark));
+}
+
+/* Keyboard focus is always visible - flat, one hairline. Scoped to
+   buttons/links: text inputs signal focus with their caret and border, and
+   an unlayered :focus-visible on everything would override Tailwind's
+   layered outline utilities. */
+button:focus-visible,
+a:focus-visible {
+  outline: 1px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Resize handles: invisible 6px grab strips overlaying the panel's own
+   border (zero net size, so panel edges stay pixel-aligned with the bars
+   below them); the strip lights up on hover, focus, and while dragging. */
+.divider {
+  position: relative;
+  z-index: 10;
+  flex-shrink: 0;
+  touch-action: none;
+}
+
+.divider-col {
+  width: 6px;
+  margin-right: -6px;
+  cursor: col-resize;
+}
+
+.divider-row {
+  height: 6px;
+  margin-bottom: -6px;
+  cursor: row-resize;
+}
+
+.divider:hover,
+.divider:focus-visible,
+.divider[data-dragging] {
+  background: color-mix(in oklab, var(--primary) 55%, transparent);
+}
+
+/* Master fader: square thumb on a hairline track (native range restyled) */
+.flat-fader {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 16px;
+  background: transparent;
+}
+
+.flat-fader::-webkit-slider-runnable-track {
+  height: 3px;
+  background: var(--muted);
+}
+
+.flat-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 8px;
+  height: 15px;
+  margin-top: -6px;
+  border-radius: 0;
+  background: var(--foreground);
+}
+
+.flat-fader:hover::-webkit-slider-thumb,
+.flat-fader:active::-webkit-slider-thumb,
+.flat-fader:focus-visible::-webkit-slider-thumb {
+  background: var(--primary);
+}
+
+.flat-fader::-moz-range-track {
+  height: 3px;
+  background: var(--muted);
+}
+
+.flat-fader::-moz-range-thumb {
+  width: 8px;
+  height: 15px;
+  border: none;
+  border-radius: 0;
+  background: var(--foreground);
+}
+
+.flat-fader:hover::-moz-range-thumb,
+.flat-fader:active::-moz-range-thumb,
+.flat-fader:focus-visible::-moz-range-thumb {
+  background: var(--primary);
+}
+
 /* =============================================================================
-   5. EDITOR STYLES
+   4. EDITOR STYLES
    ============================================================================= */
 
 .editor-container {
@@ -170,7 +219,7 @@ strudel-editor {
 .cm-editor {
   height: 100% !important;
   font-size: 14px !important;
-  background: oklch(0.12 0.008 285) !important;
+  background: var(--editor) !important;
 }
 
 .cm-editor .cm-scroller {
@@ -201,143 +250,136 @@ strudel-editor {
 }
 
 /* =============================================================================
-   CODEMIRROR UNDERGROUND THEME
-   Cyberpunk-inspired syntax highlighting
+   CODEMIRROR THEME
+   Warm and brand-derived. Tokens separate by lightness rather than by hue,
+   which keeps the code readable without dragging in colours from outside
+   the palette.
    ============================================================================= */
 
 /* Editor chrome */
 .cm-editor .cm-gutters {
-  background: oklch(0.1 0.008 285) !important;
-  border-right: 1px solid oklch(1 0 0 / 8%) !important;
-  color: oklch(0.45 0.02 285) !important;
+  background: var(--editor) !important;
+  border-right: 1px solid rgb(240 238 230 / 8%) !important;
+  color: #55544f !important;
 }
 
 .cm-editor .cm-activeLineGutter {
-  background: oklch(0.18 0.01 285) !important;
-  color: oklch(0.7 0.15 130) !important;
+  background: #1c1c1a !important;
+  color: var(--brand-orange) !important;
 }
 
 .cm-editor .cm-activeLine {
-  background: oklch(0.16 0.01 285) !important;
+  background: #191917 !important;
 }
 
 .cm-editor .cm-cursor {
-  border-left-color: oklch(0.85 0.2 130) !important;
+  border-left-color: var(--brand-orange) !important;
   border-left-width: 2px !important;
 }
 
 .cm-editor .cm-selectionBackground,
 .cm-editor.cm-focused .cm-selectionBackground {
-  background: oklch(0.4 0.12 130 / 25%) !important;
+  background: rgb(217 119 87 / 24%) !important;
 }
 
 .cm-editor .cm-matchingBracket {
-  background: oklch(0.5 0.15 130 / 30%) !important;
-  color: oklch(0.9 0.2 130) !important;
-  outline: 1px solid oklch(0.7 0.15 130 / 50%);
+  background: rgb(217 119 87 / 26%) !important;
+  color: var(--brand-ivory) !important;
+  outline: 1px solid rgb(217 119 87 / 55%);
 }
 
-/* Syntax colors - underground neon palette */
+/* Strudel flashes the currently sounding pattern by setting an inline
+   background of #00CA2880 on a CodeMirror decoration (see
+   node_modules/@strudel/codemirror/highlight.mjs, where its own comment calls
+   the green a leftover debug colour). Inline styles beat stylesheets, so the
+   override has to match the attribute and force it back onto the palette. */
+.cm-editor [style*='#00CA2880'],
+.cm-editor [style*='00CA28'] {
+  background-color: rgb(217 119 87 / 42%) !important;
+}
+
+/* Syntax colors - warm, brand-derived */
 
 /* Comments - dim purple */
 .cm-editor .cm-comment {
-  color: oklch(0.5 0.08 300) !important;
+  color: #6b6a64 !important;
   font-style: italic;
 }
 
 /* Keywords (const, let, function, if) - electric magenta */
 .cm-editor .cm-keyword {
-  color: oklch(0.7 0.2 330) !important;
+  color: var(--brand-orange) !important;
 }
 
 /* Strings - warm amber */
 .cm-editor .cm-string,
 .cm-editor .cm-string2 {
-  color: oklch(0.8 0.15 80) !important;
+  color: var(--brand-cream) !important;
 }
 
 /* Numbers - cyan */
 .cm-editor .cm-number {
-  color: oklch(0.8 0.15 195) !important;
+  color: var(--brand-light) !important;
 }
 
 /* Functions/methods - primary green */
 .cm-editor .cm-function,
 .cm-editor .cm-callee {
-  color: oklch(0.8 0.2 130) !important;
+  color: #e08a6b !important;
 }
 
 /* Variables - soft white */
 .cm-editor .cm-variableName,
 .cm-editor .cm-variable {
-  color: oklch(0.9 0.02 285) !important;
+  color: var(--brand-ivory) !important;
 }
 
 /* Properties - light blue */
 .cm-editor .cm-propertyName,
 .cm-editor .cm-property {
-  color: oklch(0.75 0.12 220) !important;
+  color: #b5806a !important;
 }
 
 /* Operators - pink */
 .cm-editor .cm-operator {
-  color: oklch(0.75 0.15 350) !important;
+  color: #a85c3f !important;
 }
 
 /* Punctuation - muted */
 .cm-editor .cm-punctuation {
-  color: oklch(0.6 0.03 285) !important;
+  color: var(--brand-neutral) !important;
 }
 
 /* Definition names - bright green */
 .cm-editor .cm-definition {
-  color: oklch(0.85 0.22 130) !important;
+  color: #eda184 !important;
 }
 
 /* Types/classes - orange */
 .cm-editor .cm-typeName,
 .cm-editor .cm-className {
-  color: oklch(0.75 0.18 55) !important;
+  color: var(--brand-mid) !important;
 }
 
 /* Atoms (true, false, null) - cyan */
 .cm-editor .cm-atom,
 .cm-editor .cm-bool {
-  color: oklch(0.8 0.15 195) !important;
+  color: var(--brand-light) !important;
 }
 
 /* Special Strudel syntax - make patterns pop */
 .cm-editor .cm-meta {
-  color: oklch(0.7 0.2 330) !important;
+  color: var(--brand-orange) !important;
 }
 
 /* Tags/labels - yellow */
 .cm-editor .cm-tagName,
 .cm-editor .cm-labelName {
-  color: oklch(0.85 0.18 100) !important;
-}
-
-/* Scrollbar styling */
-.cm-editor .cm-scroller::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.cm-editor .cm-scroller::-webkit-scrollbar-track {
-  background: oklch(0.12 0.008 285);
-}
-
-.cm-editor .cm-scroller::-webkit-scrollbar-thumb {
-  background: oklch(0.3 0.02 285);
-  border-radius: 4px;
-}
-
-.cm-editor .cm-scroller::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.4 0.1 130);
+  color: #cfa88f !important;
 }
 
 /* =============================================================================
-   6. BASE STYLES
+   5. BASE STYLES
    ============================================================================= */
 
 @layer base {

@@ -56,6 +56,8 @@ note("c a f e").color("#ff00ff #00ffff #ffff00")
 
 Scrolling note visualization. **The bread and butter of live coding visuals.**
 
+They're not identical: `pianoroll()` draws the pattern as directly defined, while `punchcard()` reflects downstream transformations (things applied *after* it in the chain) and is lighter on resources. Prefer `_punchcard()` when you transform a pattern after attaching the visual, or when stacking many visuals.
+
 ```javascript
 // Basic
 note("c a f e")._pianoroll()
@@ -98,6 +100,10 @@ note("c2 eb2 f2 g2")
 | `autorange` | bool | 0 | Auto-fit note range |
 | `minMidi` | int | 10 | Min note displayed |
 | `maxMidi` | int | 90 | Max note displayed |
+| `overscan` | num | 1 | Draw outside visible area (smoother scroll) |
+| `hideNegative` | bool | 0 | Hide notes with negative time |
+| `strokeActive` | bool | 0 | Stroke active notes |
+| `fontFamily` | string | monospace | Label font |
 
 ### Trippy Pianoroll Recipes
 
@@ -225,7 +231,7 @@ s("supersaw")._spectrum()
 s("supersaw")._spectrum({
   thickness: 3,
   speed: 2,           // Scroll speed
-  min: -60,           // Min dB
+  min: -60,           // Min dB (default -80)
   max: 0,             // Max dB
 })
 ```
@@ -238,6 +244,10 @@ Pitch circle for visualizing notes within an octave.
 
 ```javascript
 n("0 .. 12").scale("C:chromatic")._pitchwheel()
+
+// Options: hapcircles (dot per event), circle (draw circle), edo (notes per octave),
+// root (reference pitch), mode (layout), margin
+._pitchwheel({ hapcircles: 1, edo: 12, root: "c" })
 ```
 
 ---

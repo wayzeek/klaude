@@ -39,3 +39,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# claude code local settings
+.claude/settings.local.json
+
+# personal compositions stay local (root tracks/ only - NOT .claude/skills/tracks)
+/tracks/
+
+# runtime state + audio bounces
+/.moltek/
+/.klaude/
+/recordings/
+
+# browser automation residue
+/.playwright-mcp/

@@ -14,10 +14,19 @@ const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] })
 const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'Strudel REPL',
-  description: 'Live coding music with Strudel',
+  title: 'moltek',
+  description:
+    'A live coding music studio that hears itself. Strudel, driven by an agent that records its own output and fixes the mix.',
+  applicationName: 'moltek',
   icons: {
     icon: '/favicon.svg',
+  },
+  openGraph: {
+    title: 'moltek',
+    description: 'A live coding music studio that hears itself.',
+    siteName: 'moltek',
+    type: 'website',
+    images: ['/moltek.png'],
   },
 }
 
