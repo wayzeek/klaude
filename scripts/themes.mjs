@@ -293,3 +293,54 @@ ${THEMES.slice(1).map((t) => block(`:root[data-theme='${t.name}']`, t)).join('\n
 
 writeFileSync(OUT, css)
 console.log(`\nwrote ${path.relative(ROOT, OUT)}  (${css.split('\n').length} lines)`)
+
+/* ------------------------------------------------------- dangling vars ---- */
+
+/**
+ * Every `var(--...)` in src/ has to resolve to a token this file emits.
+ *
+ * An undefined custom property raises nothing. The declaration is invalid at
+ * computed-value time and the element simply paints as though nothing was set,
+ * so the page still renders and every test still passes. That is exactly how the
+ * master level meter and the per-layer activity lights went blank when the
+ * palette was namespaced to `--mk-*` and the old generic aliases were dropped:
+ * three components wrote `var(--primary)` and `var(--muted)` from JS, which no
+ * longer existed, and nothing anywhere complained.
+ */
+{
+  const { readdirSync, statSync } = await import('node:fs')
+  const ALLOWED = ['--mk-', '--color-', '--font-', '--radius', '--tw-']
+
+  const walk = (dir) =>
+    readdirSync(dir).flatMap((name) => {
+      const full = path.join(dir, name)
+      if (statSync(full).isDirectory()) return walk(full)
+      return /\.(ts|tsx|css)$/.test(name) && !name.endsWith('themes.generated.css') ? [full] : []
+    })
+
+  const emitted = new Set([...css.matchAll(/^\s*(--[\w-]+):/gm)].map((m) => m[1]))
+  const files = walk(path.join(ROOT, 'src'))
+
+  // Variables the source defines for itself count as defined: --rack-w is a
+  // layout value set inline on an element, not a palette token.
+  for (const file of files) {
+    for (const m of readFileSync(file, 'utf8').matchAll(/'?(--[\w-]+)'?\s*:/g)) emitted.add(m[1])
+  }
+
+  const offenders = new Set()
+  for (const file of files) {
+    for (const m of readFileSync(file, 'utf8').matchAll(/var\((--[\w-]+)/g)) {
+      const name = m[1]
+      if (emitted.has(name) || ALLOWED.some((p) => name.startsWith(p))) continue
+      offenders.add(`${path.relative(ROOT, file)}  var(${name})`)
+    }
+  }
+
+  if (offenders.size) {
+    console.error(`\n${offenders.size} reference(s) to a custom property no theme defines:`)
+    for (const o of offenders) console.error(`  ${o}`)
+    console.error('\nAn undefined var paints as unset, so this fails silently in the browser.')
+    process.exit(1)
+  }
+  console.log(`checked every var() in src/ against ${emitted.size} emitted tokens: none dangling`)
+}

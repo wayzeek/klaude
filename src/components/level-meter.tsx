@@ -32,7 +32,7 @@ export function LevelMeter() {
           const cell = cells[i] as HTMLElement
           // the last two segments read hot
           cell.style.background =
-            i < lit ? (i >= SEGMENTS - 2 ? 'var(--destructive)' : 'var(--primary)') : 'var(--muted)'
+            i < lit ? (i >= SEGMENTS - 2 ? 'var(--mk-destructive)' : 'var(--mk-accent)') : 'var(--mk-n5)'
         }
       }),
     [],
@@ -41,7 +41,7 @@ export function LevelMeter() {
   return (
     <div ref={barRef} className="flex gap-[2px] shrink-0" title="Master level">
       {Array.from({ length: SEGMENTS }, (_, i) => (
-        <div key={i} className="w-[5px] h-3.5" style={{ background: 'var(--muted)' }} />
+        <div key={i} className="w-[5px] h-3.5" style={{ background: 'var(--mk-n5)' }} />
       ))}
     </div>
   )

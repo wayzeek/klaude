@@ -133,7 +133,7 @@ export function MoltekIcon({ size = 18, className }: IconProps) {
       {/* Eyes punched through in the surface behind him, which is --card
           everywhere this is used. */}
       {EYES.map((e, i) => (
-        <rect key={i} x={e.x} y={e.y} width={e.w} height={e.h} fill="var(--card)" />
+        <rect key={i} x={e.x} y={e.y} width={e.w} height={e.h} fill="var(--mk-surface)" />
       ))}
     </svg>
   )

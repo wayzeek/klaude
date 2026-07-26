@@ -91,9 +91,9 @@ export function ChannelRow({
       onLayerPulse(({ layer }) => {
         if (layer !== name || !dotRef.current) return
         const dot = dotRef.current
-        dot.style.background = 'var(--primary)'
+        dot.style.background = 'var(--mk-accent)'
         setTimeout(() => {
-          if (dotRef.current) dotRef.current.style.background = 'var(--muted)'
+          if (dotRef.current) dotRef.current.style.background = 'var(--mk-n5)'
         }, 90)
       }),
     [name],
@@ -220,7 +220,7 @@ export function ChannelRow({
       >
         {String(index + 1).padStart(2, '0')}
       </span>
-      <span ref={dotRef} className="w-2 h-2 shrink-0" style={{ background: 'var(--muted)' }} />
+      <span ref={dotRef} className="w-2 h-2 shrink-0" style={{ background: 'var(--mk-n5)' }} />
       <span
         className={`flex-1 min-w-0 truncate lowercase ${silenced ? 'text-muted-foreground/50' : ''} ${
           muted ? 'line-through' : ''
