@@ -3,78 +3,62 @@
  * GLOBAL STYLES
  * =============================================================================
  *
- * 1. TAILWIND IMPORTS  - Core framework
- * 2. DESIGN TOKENS     - The studio is dark-only; one palette on :root
- * 3. LAYOUT & CHROME   - Full-screen app layout, scrollbars, focus, fader
- * 4. EDITOR STYLES     - CodeMirror sizing + underground syntax theme
- * 5. BASE STYLES       - Default element styles
+ * 1. IMPORTS         - Tailwind, then the generated theme palettes
+ * 2. DESIGN TOKENS   - Tailwind mapping; the values live in themes.generated.css
+ * 3. LAYOUT & CHROME - Full-screen app layout, scrollbars, focus, fader
+ * 4. EDITOR STYLES   - CodeMirror sizing + syntax theme
+ * 5. MASCOT          - Sprite fills by role, so the crab follows the theme
+ * 6. BASE STYLES     - Default element styles
  */
 
 /* =============================================================================
-   1. TAILWIND IMPORTS
+   1. IMPORTS
    ============================================================================= */
 
 @import 'tailwindcss';
 
+/* Generated from src/lib/themes.json by scripts/themes.mjs. Every palette lives
+   there and nowhere else; nothing in this file hardcodes a colour. */
+@import './themes.generated.css';
+
 /* =============================================================================
    2. DESIGN TOKENS
 
-   moltek is a night studio - there is no light theme. Tokens live on :root
-   so the UI never depends on the Strudel CDN bundle adding a `dark` class
-   (which it happens to do, but is not ours to rely on).
+   Themes are selected with a `data-theme` attribute on <html>. Because both the
+   UI and the mascot read the same custom properties, switching that attribute
+   recolours everything in one repaint with nothing coordinating them.
 
-   Surfaces:  --background (app)  <  --card (bars, rack)
-   The editor sits slightly deeper than --background so the code reads as
-   the work surface. The brand orange is the one signal color: playheads,
-   meters, active states. A darker red is reserved for record and clipping,
-   kept clearly apart from the orange so an armed take cannot be mistaken
-   for ordinary playback.
+   Surfaces:  --bg (app)  <  --surface (bars, rack), with --editor deeper than
+   both so code reads as the work surface. --accent is the one signal colour:
+   playheads, meters, active states. --destructive is reserved for record and
+   clipping, and the gate enforces that it stays perceptually distinct from the
+   accent so an armed take cannot be mistaken for ordinary playback.
+
+   --n1..--n6 are a neutral ramp derived from --fg down to --bg, which is what
+   lets a light theme work without its own set of scenery values.
    ============================================================================= */
 
 @theme inline {
   --font-mono: var(--font-geist-mono), ui-monospace, 'SF Mono', monospace;
 
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-destructive: var(--destructive);
-  --color-border: var(--border);
-  --color-ring: var(--ring);
+  /* Mapped straight onto the namespaced tokens. Going through generic aliases
+     (--background, --border, --primary) is what let another stylesheet on the
+     page shadow them: --background resolved to #222 from outside our CSS, which
+     was invisible while every theme was dark and glaring the moment one was not. */
+  --color-background: var(--mk-bg);
+  --color-foreground: var(--mk-fg);
+  --color-card: var(--mk-surface);
+  --color-primary: var(--mk-accent);
+  --color-primary-foreground: var(--mk-bg);
+  --color-muted: var(--mk-n5);
+  --color-muted-foreground: var(--mk-mutedFg);
+  --color-destructive: var(--mk-destructive);
+  --color-border: var(--mk-border);
+  --color-ring: var(--mk-ring);
 }
 
 :root {
   --radius: 0px; /* flat tracker chrome - nothing rounds */
-
-  /* The ember palette: slate surfaces, ivory type, one warm accent. The
-     mascot's body is a separate token because the accent marks lit states and
-     wants saturation, while the body has to stay readable against surfaces at
-     any size. Contrast for every pair here is gated by scripts/themes.mjs. */
-  --brand-orange: #d97757;
-  --brand-ivory: #f0eee6;
-  --brand-cream: #e8e6dc;
-  --brand-light: #c6c4ba;
-  --brand-mid: #b0aea5;
-  --brand-neutral: #87867f;
-  --brand-dark: #3d3d3a;
-  --brand-slate: #141413;
-
-  --background: var(--brand-slate);
-  --foreground: var(--brand-ivory);
-  --card: #1c1c1a;
-  --editor: #100f0e;
-  --primary: var(--brand-orange);
-  --primary-foreground: var(--brand-slate);
-  --muted: var(--brand-dark);
-  --muted-foreground: var(--brand-neutral);
-  /* Record only. Deliberately redder and darker than the orange accent, or
-     the armed state would be indistinguishable from ordinary playback. */
-  --destructive: #b8452e;
-  --border: rgb(240 238 230 / 12%);
-  --ring: rgb(217 119 87 / 70%);
 }
 
 /* =============================================================================
@@ -100,12 +84,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--brand-dark);
+  background: var(--mk-n5);
   border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in oklab, var(--brand-orange) 60%, var(--brand-dark));
+  background: color-mix(in oklab, var(--mk-accent) 60%, var(--mk-n5));
 }
 
 /* Keyboard focus is always visible - flat, one hairline. Scoped to
@@ -114,7 +98,7 @@ body {
    layered outline utilities. */
 button:focus-visible,
 a:focus-visible {
-  outline: 1px solid var(--ring);
+  outline: 1px solid var(--mk-ring);
   outline-offset: 1px;
 }
 
@@ -143,7 +127,7 @@ a:focus-visible {
 .divider:hover,
 .divider:focus-visible,
 .divider[data-dragging] {
-  background: color-mix(in oklab, var(--primary) 55%, transparent);
+  background: color-mix(in oklab, var(--mk-accent) 55%, transparent);
 }
 
 /* Master fader: square thumb on a hairline track (native range restyled) */
@@ -156,7 +140,7 @@ a:focus-visible {
 
 .flat-fader::-webkit-slider-runnable-track {
   height: 3px;
-  background: var(--muted);
+  background: var(--mk-n5);
 }
 
 .flat-fader::-webkit-slider-thumb {
@@ -165,18 +149,18 @@ a:focus-visible {
   height: 15px;
   margin-top: -6px;
   border-radius: 0;
-  background: var(--foreground);
+  background: var(--mk-fg);
 }
 
 .flat-fader:hover::-webkit-slider-thumb,
 .flat-fader:active::-webkit-slider-thumb,
 .flat-fader:focus-visible::-webkit-slider-thumb {
-  background: var(--primary);
+  background: var(--mk-accent);
 }
 
 .flat-fader::-moz-range-track {
   height: 3px;
-  background: var(--muted);
+  background: var(--mk-n5);
 }
 
 .flat-fader::-moz-range-thumb {
@@ -184,13 +168,13 @@ a:focus-visible {
   height: 15px;
   border: none;
   border-radius: 0;
-  background: var(--foreground);
+  background: var(--mk-fg);
 }
 
 .flat-fader:hover::-moz-range-thumb,
 .flat-fader:active::-moz-range-thumb,
 .flat-fader:focus-visible::-moz-range-thumb {
-  background: var(--primary);
+  background: var(--mk-accent);
 }
 
 /* =============================================================================
@@ -219,7 +203,7 @@ strudel-editor {
 .cm-editor {
   height: 100% !important;
   font-size: 14px !important;
-  background: var(--editor) !important;
+  background: var(--mk-editor) !important;
 }
 
 .cm-editor .cm-scroller {
@@ -251,41 +235,41 @@ strudel-editor {
 
 /* =============================================================================
    CODEMIRROR THEME
-   Warm and brand-derived. Tokens separate by lightness rather than by hue,
-   which keeps the code readable without dragging in colours from outside
-   the palette.
+   Every colour is a theme token, so the editor follows a theme switch along
+   with everything else. Tokens separate by lightness rather than by hue, which
+   keeps code readable without dragging in colours from outside the palette.
    ============================================================================= */
 
 /* Editor chrome */
 .cm-editor .cm-gutters {
-  background: var(--editor) !important;
-  border-right: 1px solid rgb(240 238 230 / 8%) !important;
-  color: #55544f !important;
+  background: var(--mk-editor) !important;
+  border-right: 1px solid var(--mk-cm-gutter-line) !important;
+  color: var(--mk-cm-gutter) !important;
 }
 
 .cm-editor .cm-activeLineGutter {
-  background: #1c1c1a !important;
-  color: var(--brand-orange) !important;
+  background: var(--mk-surface) !important;
+  color: var(--mk-accent) !important;
 }
 
 .cm-editor .cm-activeLine {
-  background: #191917 !important;
+  background: var(--mk-cm-line-bg) !important;
 }
 
 .cm-editor .cm-cursor {
-  border-left-color: var(--brand-orange) !important;
+  border-left-color: var(--mk-accent) !important;
   border-left-width: 2px !important;
 }
 
 .cm-editor .cm-selectionBackground,
 .cm-editor.cm-focused .cm-selectionBackground {
-  background: rgb(217 119 87 / 24%) !important;
+  background: var(--mk-cm-select) !important;
 }
 
 .cm-editor .cm-matchingBracket {
-  background: rgb(217 119 87 / 26%) !important;
-  color: var(--brand-ivory) !important;
-  outline: 1px solid rgb(217 119 87 / 55%);
+  background: var(--mk-cm-bracket) !important;
+  color: var(--mk-fg) !important;
+  outline: 1px solid var(--mk-cm-bracket-line);
 }
 
 /* Strudel flashes the currently sounding pattern by setting an inline
@@ -295,91 +279,59 @@ strudel-editor {
    override has to match the attribute and force it back onto the palette. */
 .cm-editor [style*='#00CA2880'],
 .cm-editor [style*='00CA28'] {
-  background-color: rgb(217 119 87 / 42%) !important;
+  background-color: var(--mk-cm-playing) !important;
 }
 
-/* Syntax colors - warm, brand-derived */
-
-/* Comments - dim purple */
-.cm-editor .cm-comment {
-  color: #6b6a64 !important;
-  font-style: italic;
-}
-
-/* Keywords (const, let, function, if) - electric magenta */
-.cm-editor .cm-keyword {
-  color: var(--brand-orange) !important;
-}
-
-/* Strings - warm amber */
-.cm-editor .cm-string,
-.cm-editor .cm-string2 {
-  color: var(--brand-cream) !important;
-}
-
-/* Numbers - cyan */
-.cm-editor .cm-number {
-  color: var(--brand-light) !important;
-}
-
-/* Functions/methods - primary green */
-.cm-editor .cm-function,
-.cm-editor .cm-callee {
-  color: #e08a6b !important;
-}
-
-/* Variables - soft white */
-.cm-editor .cm-variableName,
-.cm-editor .cm-variable {
-  color: var(--brand-ivory) !important;
-}
-
-/* Properties - light blue */
-.cm-editor .cm-propertyName,
-.cm-editor .cm-property {
-  color: #b5806a !important;
-}
-
-/* Operators - pink */
-.cm-editor .cm-operator {
-  color: #a85c3f !important;
-}
-
-/* Punctuation - muted */
-.cm-editor .cm-punctuation {
-  color: var(--brand-neutral) !important;
-}
-
-/* Definition names - bright green */
-.cm-editor .cm-definition {
-  color: #eda184 !important;
-}
-
-/* Types/classes - orange */
-.cm-editor .cm-typeName,
-.cm-editor .cm-className {
-  color: var(--brand-mid) !important;
-}
-
-/* Atoms (true, false, null) - cyan */
-.cm-editor .cm-atom,
-.cm-editor .cm-bool {
-  color: var(--brand-light) !important;
-}
-
-/* Special Strudel syntax - make patterns pop */
-.cm-editor .cm-meta {
-  color: var(--brand-orange) !important;
-}
-
-/* Tags/labels - yellow */
-.cm-editor .cm-tagName,
-.cm-editor .cm-labelName {
-  color: #cfa88f !important;
-}
+/* Syntax token colours are NOT set here.
+   CodeMirror 6 gives tokens generated class names (`\u03fc13`, `\u03fcm`) and emits its own
+   rules for them, so selectors like `.cm-keyword` match nothing and always did.
+   The real theme is a HighlightStyle extension in src/lib/cm-theme.ts, whose
+   colours are var(--mk-cm-*) so syntax follows a theme switch live. */
 
 /* =============================================================================
-   5. BASE STYLES
+   5. MASCOT
+
+   The sprite carries no colours of its own. Each rect declares a role and the
+   fill comes from the theme, which is what makes "the crab and the UI are
+   always in sync" true by construction rather than by discipline: there is
+   nothing to keep in step.
+   ============================================================================= */
+
+.m-body { fill: var(--mk-m-body); }
+.m-gear { fill: var(--mk-m-gear); }
+.m-pad { fill: var(--mk-m-pad); }
+.m-eye { fill: var(--mk-m-eye); }
+.m-accent { fill: var(--mk-m-accent); }
+
+.m-chrome-top { fill: var(--mk-m-chrome-top); }
+.m-chrome { fill: var(--mk-m-chrome); }
+.m-chrome-deep { fill: var(--mk-m-chrome-deep); }
+.m-chrome-hi { fill: var(--mk-m-chrome-hi); }
+.m-cap { fill: var(--mk-m-cap); }
+.m-cap-2 { fill: var(--mk-m-cap-2); }
+
+.m-wall-1 { fill: var(--mk-m-wall-1); }
+.m-wall-2 { fill: var(--mk-m-wall-2); }
+.m-wall-3 { fill: var(--mk-m-wall-3); }
+.m-wall-4 { fill: var(--mk-m-wall-4); }
+.m-floor { fill: var(--mk-m-floor); }
+.m-stack { fill: var(--mk-m-stack); }
+.m-stack-in { fill: var(--mk-m-stack-in); }
+.m-grille { fill: var(--mk-m-grille); }
+.m-truss-hi { fill: var(--mk-m-truss-hi); }
+
+/* Level LEDs and the booth lamps are driven by the audio, so their state is a
+   class the animation loop toggles rather than a fill it writes. Writing hex
+   from JS is what used to strand them on the old palette after a theme switch. */
+.m-led { fill: var(--mk-m-led-off); }
+.m-led[data-lit='on'] { fill: var(--mk-m-led-on); }
+.m-led[data-lit='hot'] { fill: var(--mk-m-led-hot); }
+
+.m-lamp { fill: var(--mk-m-chrome); }
+.m-lamp[data-lit='on'] { fill: var(--mk-m-accent); }
+
+/* =============================================================================
+   6. BASE STYLES
    ============================================================================= */
 
 @layer base {

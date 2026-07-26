@@ -8,6 +8,7 @@
 
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
+import { DEFAULT_THEME, themeBootScript } from '@/lib/theme'
 import './globals.css'
 
 const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] })
@@ -32,7 +33,21 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    // suppressHydrationWarning: the boot script below deliberately rewrites
+    // data-theme before React hydrates, so server and client markup differ by
+    // design. Scoped to this one element.
+    <html lang="en" data-theme={DEFAULT_THEME} suppressHydrationWarning>
+      <head>
+        {/* Applies the stored theme before first paint. Without it every reload
+            flashes the default until hydration catches up.
+
+            dangerouslySetInnerHTML is the only way to get a script to run this
+            early, and it is safe here: themeBootScript is a build-time constant
+            built from the checked-in theme list, with no user input reaching it.
+            The value it reads from localStorage is validated against that list
+            before use, so a hand-edited key cannot inject anything either. */}
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
     </html>
   )

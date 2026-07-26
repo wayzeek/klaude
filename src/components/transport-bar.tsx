@@ -13,6 +13,7 @@
 'use client'
 
 import { useEffect, useReducer, useRef, useState } from 'react'
+import { ThemePicker } from '@/components/theme-picker'
 import { LevelMeter } from '@/components/level-meter'
 import { PlayIcon, StopIcon, RecordIcon, RefreshIcon, MoltekIcon } from '@/components/icons'
 import { formatDuration } from '@/hooks/use-audio-recorder'
@@ -141,6 +142,12 @@ export function TransportBar({
             {detail && <span className="text-muted-foreground"> · {detail}</span>}
           </span>
         )}
+      </div>
+
+      {/* Theme. Sits here rather than in the transport group: it is a
+          preference, not a control you reach for mid-take. */}
+      <div className="flex items-center pr-3 shrink-0">
+        <ThemePicker />
       </div>
 
       {/* Meter + master fader, aligned under the rack column */}

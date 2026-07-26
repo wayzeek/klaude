@@ -19,6 +19,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { clearPendingPulses, schedulePulse } from '@/lib/layer-pulse'
 import { createLayersRuntime, type LayerPattern } from '@/lib/layers-runtime'
 import { trimFor, type LayerTrim } from '@/lib/trim'
+import { installSyntaxTheme } from '@/lib/cm-theme'
 
 /**
  * CDN fallback for the Strudel REPL web component, used only if the locally
@@ -232,6 +233,30 @@ export function useStrudel() {
     const el = editorRef.current as any
     return el?.editor
   }, [])
+
+  /**
+   * Install our syntax theme once the editor exists.
+   *
+   * The web component mounts CodeMirror asynchronously and there is no ready
+   * event to hook, so this polls briefly and stops the moment it lands. Without
+   * it the editor keeps Strudel's own highlighter and ignores theme switches,
+   * because CM6 tokens carry generated class names that no stylesheet can target.
+   */
+  useEffect(() => {
+    let stop = false
+    let tries = 0
+    const tick = () => {
+      if (stop) return
+      if (installSyntaxTheme(getEditor()?.editor)) return
+      if (++tries > 60) return // ~15s, then give up quietly
+      timer = setTimeout(tick, 250)
+    }
+    let timer: ReturnType<typeof setTimeout> = setTimeout(tick, 250)
+    return () => {
+      stop = true
+      clearTimeout(timer)
+    }
+  }, [getEditor])
 
   /** Fire-and-forget report to the server; sync failures must never break audio. */
   const post = useCallback((url: string, body: unknown) => {

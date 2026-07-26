@@ -26,7 +26,6 @@ import {
   BEAM_ALPHAS,
   BODY,
   BOOTH,
-  BRAND,
   HAZE_BACK,
   HAZE_BACK_ALPHAS,
   HAZE_BACK_DRIFT,
@@ -51,9 +50,7 @@ import {
   GROUND_CLIP,
   GROUND_Y,
   HANDS,
-  LED_HOT,
-  LED_OFF,
-  LED_ON,
+  LED_HOT_FROM,
   LEGS,
   PIVOT,
   VIEWBOX,
@@ -86,6 +83,10 @@ export function Moltek({ size = 180 }: { size?: number }) {
   const handRefs = useRef<(SVGGElement | null)[]>([])
   const jogRefs = useRef<(SVGRectElement | null)[]>([])
   const xfaderRef = useRef<SVGRectElement>(null)
+  // Last written lit state per element, so the loop can skip no-op attribute
+  // writes. Style recalculation, not painting, was the cost.
+  const ledStateRef = useRef<string[]>([])
+  const lampStateRef = useRef<string[]>([])
   const ledRefs = useRef<(SVGRectElement | null)[]>([])
   const lampRefs = useRef<(SVGRectElement | null)[]>([])
   const beamRefs = useRef<(SVGRectElement | null)[]>([])
@@ -181,7 +182,18 @@ export function Moltek({ size = 180 }: { size?: number }) {
       const lit = Math.max(0, Math.min(1, bands.rms * 3.2)) * ledRefs.current.length
       ledRefs.current.forEach((led, i) => {
         if (!led) return
-        led.setAttribute('fill', i < lit ? (i > 9 ? LED_HOT : LED_ON) : LED_OFF)
+        // A state attribute, not a fill: writing hex here is what used to
+        // strand the meter on the previous theme after a switch.
+        //
+        // Only written when it actually changes. An attribute that participates
+        // in selector matching forces a style recalculation, so writing all
+        // twelve every frame cost far more than the old paint-only fill write
+        // and made the whole rig judder.
+        const want = i < lit ? (i >= LED_HOT_FROM ? 'hot' : 'on') : 'off'
+        if (ledStateRef.current[i] !== want) {
+          ledStateRef.current[i] = want
+          led.setAttribute('data-lit', want)
+        }
       })
 
       // The room answers too. Lamps and beams ride the same envelope as the
@@ -193,7 +205,11 @@ export function Moltek({ size = 180 }: { size?: number }) {
         // Alternate lamps favour the off-beat, so the rig chases rather than
         // pulsing all at once.
         const bias = i % 2 === 0 ? glow : glow * 0.45 + bands.high * 0.4
-        lamp.setAttribute('fill', bias > 0.35 ? BRAND.orange : BRAND.dark)
+        const lampWant = bias > 0.35 ? 'on' : 'off'
+        if (lampStateRef.current[i] !== lampWant) {
+          lampStateRef.current[i] = lampWant
+          lamp.setAttribute('data-lit', lampWant)
+        }
       })
       beamRefs.current.forEach((beam, i) => {
         if (!beam) return
@@ -286,9 +302,9 @@ export function Moltek({ size = 180 }: { size?: number }) {
       {/* The room, behind everything. */}
       <g>
         {WALL_BANDS.map((r, i) => (
-          <rect key={`wall-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+          <rect key={`wall-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
         ))}
-        <rect x={FLOOR.x} y={FLOOR.y} width={FLOOR.w} height={FLOOR.h} fill={FLOOR.fill} />
+        <rect x={FLOOR.x} y={FLOOR.y} width={FLOOR.w} height={FLOOR.h} className={FLOOR.role} />
         {BEAMS.map((r, i) => (
           <rect
             key={`beam-${i}`}
@@ -299,12 +315,12 @@ export function Moltek({ size = 180 }: { size?: number }) {
             y={r.y}
             width={r.w}
             height={r.h}
-            fill={r.fill}
+            className={r.role}
             opacity="0"
           />
         ))}
         {TRUSS.map((r, i) => (
-          <rect key={`truss-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+          <rect key={`truss-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
         ))}
         {LAMPS.map((r, i) => (
           <rect
@@ -316,14 +332,14 @@ export function Moltek({ size = 180 }: { size?: number }) {
             y={r.y}
             width={r.w}
             height={r.h}
-            fill={r.fill}
+            className={r.role}
           />
         ))}
         {STACKS.map((r, i) => (
-          <rect key={`stack-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+          <rect key={`stack-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
         ))}
         {GRILLES.map((r, i) => (
-          <rect key={`grille-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+          <rect key={`grille-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
         ))}
         {WOOFERS.map((r, i) => (
           <rect
@@ -335,7 +351,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
             y={r.y}
             width={r.w}
             height={r.h}
-            fill={r.fill}
+            className={r.role}
           />
         ))}
         {/* Haze behind him, so the beams have something to land on. */}
@@ -349,7 +365,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
             y={r.y}
             width={r.w}
             height={r.h}
-            fill={r.fill}
+            className={r.role}
             opacity="0"
           />
         ))}
@@ -369,19 +385,19 @@ export function Moltek({ size = 180 }: { size?: number }) {
             y={leg.y}
             width={leg.w}
             height={leg.h}
-            fill={leg.fill}
+            className={leg.role}
           />
         ))}
       </g>
 
       <g ref={bodyRef}>
-        <rect x={BODY.x} y={BODY.y} width={BODY.w} height={BODY.h} fill={BODY.fill} />
+        <rect x={BODY.x} y={BODY.y} width={BODY.w} height={BODY.h} className={BODY.role} />
         {CANS.map((r, i) => (
-          <rect key={`can-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+          <rect key={`can-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
         ))}
         <g transform={`translate(${CUP_OFF_OFFSET.x} ${CUP_OFF_OFFSET.y})`}>
           {CUP_OFF.map((r, i) => (
-            <rect key={`cup-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+            <rect key={`cup-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
           ))}
         </g>
       </g>
@@ -394,7 +410,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
           leaves it. */}
       <g>
         {BOOTH.map((r, i) => (
-          <rect key={`booth-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+          <rect key={`booth-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
         ))}
         {BOOTH_JOGS.map((r, i) => (
           <rect
@@ -406,11 +422,11 @@ export function Moltek({ size = 180 }: { size?: number }) {
             y={r.y}
             width={r.w}
             height={r.h}
-            fill={r.fill}
+            className={r.role}
           />
         ))}
         {BOOTH_FADERS.map((r, i) => (
-          <rect key={`fader-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill={r.fill} />
+          <rect key={`fader-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} className={r.role} />
         ))}
         <rect
           ref={xfaderRef}
@@ -418,7 +434,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
           y={BOOTH_XFADER.y}
           width={BOOTH_XFADER.w}
           height={BOOTH_XFADER.h}
-          fill={BOOTH_XFADER.fill}
+          className={BOOTH_XFADER.role}
         />
         {BOOTH_LEDS.map((r, i) => (
           <rect
@@ -430,7 +446,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
             y={r.y}
             width={r.w}
             height={r.h}
-            fill={r.fill}
+            className={r.role}
           />
         ))}
       </g>
@@ -445,7 +461,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
             handRefs.current[i] = el
           }}
         >
-          <rect x={hand.x} y={hand.y} width={hand.w} height={hand.h} fill={hand.fill} />
+          <rect x={hand.x} y={hand.y} width={hand.w} height={hand.h} className={hand.role} />
         </g>
       ))}
 
@@ -455,7 +471,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
       <g ref={eyesBodyRef}>
         <g ref={eyesRef}>
           {EYES.map((eye, i) => (
-            <rect key={`eye-${i}`} x={eye.x} y={eye.y} width={eye.w} height={eye.h} fill={eye.fill} />
+            <rect key={`eye-${i}`} x={eye.x} y={eye.y} width={eye.w} height={eye.h} className={eye.role} />
           ))}
         </g>
       </g>
@@ -472,7 +488,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
           y={r.y}
           width={r.w}
           height={r.h}
-          fill={r.fill}
+          className={r.role}
           opacity="0"
         />
       ))}
@@ -483,7 +499,7 @@ export function Moltek({ size = 180 }: { size?: number }) {
         y={VIEWBOX.y}
         width={VIEWBOX.w}
         height={VIEWBOX.h}
-        fill={BRAND.ivory}
+        className="m-cap"
         opacity="0"
         style={{ mixBlendMode: 'screen' }}
       />

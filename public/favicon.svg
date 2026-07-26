@@ -1,14 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -10.5 107 107" shape-rendering="crispEdges">
-  <rect x="0" y="-10.5" width="107" height="107" fill="#141413"/>
-  <g fill="#E0714F">
-    <rect x="11" y="0" width="85" height="65"/>
-    <rect x="0" y="21" width="22" height="23"/>
-    <rect x="85" y="21" width="22" height="23"/>
-    <rect x="11" y="60" width="11" height="26"/>
-    <rect x="32" y="60" width="11" height="26"/>
-    <rect x="64" y="60" width="11" height="26"/>
-    <rect x="85" y="60" width="11" height="26"/>
+<!--
+  moltek mark: a level meter, six segments rising.
+
+  Deliberately not the mascot. A favicon sits in a browser tab beside the real
+  thing, which makes it the single most recognisable place to put a derived
+  sprite and the one place it should never go. A meter reads as audio, matches
+  the flat tracker chrome, and is nobody's character.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges">
+  <rect width="32" height="32" fill="#141413"/>
+  <g fill="#d97757">
+    <rect x="4"  y="21" width="3" height="6"/>
+    <rect x="9"  y="17" width="3" height="10"/>
+    <rect x="14" y="12" width="3" height="15"/>
+    <rect x="19" y="15" width="3" height="12"/>
   </g>
-  <rect x="21" y="11" width="11" height="11" fill="#000"/>
-  <rect x="75" y="11" width="11" height="11" fill="#000"/>
+  <rect x="24" y="8"  width="3" height="19" fill="#f0eee6"/>
+  <rect x="4"  y="5"  width="23" height="2" fill="#3b3a36"/>
 </svg>

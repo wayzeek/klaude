@@ -719,7 +719,13 @@ export function advance(
       // same "absorb the impact" direction as body squash above). Floored so
       // that legScale and weight's separate legScale impulse landing on the
       // same leg in the same frame can't invert it past zero.
-      scaleY: Math.max(0.4, 1 + rig.legScale[i].x * 6.2),
+      // The floor is 0.7 because that is the design bound: the regression test
+      // caps the deviation from 1.0 at 0.3, so 0.7 is the deepest squash the rig
+      // is specified to reach. It was 0.4, which only guarded against inverting
+      // past zero and let two impulses landing on one leg in a single frame
+      // squash it under half height. On live audio that happens often enough to
+      // read as the legs collapsing rather than absorbing.
+      scaleY: Math.max(0.7, 1 + rig.legScale[i].x * 6.2),
     })),
     hands: rig.handY.map((h, i) => ({
       x: rig.handX[i].x + rig.bodyX.x * 0.7 + rock * 0.8,

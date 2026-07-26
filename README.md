@@ -121,6 +121,36 @@ whatever is actually playing.
 Server state and revision history persist to `.moltek/state.json`, so a restart
 doesn't lose the working track. Playback never auto-resumes, deliberately.
 
+## Themes
+
+Eight of them, in the bottom bar: `ember`, `concrete`, `sodium`, `steel`,
+`hazard`, `uv`, `oxblood` and `bone`. Click to move through them. Your choice
+persists, and it's applied before the first paint so a reload doesn't flash.
+
+The mascot is part of the theme rather than a picture sitting on top of it. He
+carries no colours of his own; every rect declares a role and the fill comes from
+the theme, so the crab, the chrome, the meters and the editor's syntax all move
+in the same repaint with nothing coordinating them.
+
+Palettes live in one place, `src/lib/themes.json`, which is the only file that
+writes a colour down. `pnpm themes` measures every pair that matters against WCAG
+thresholds and then generates the CSS from it. A theme that can't be read doesn't
+get built:
+
+```
+PASS  concrete  (dark)
+      fg / bg                14.59 : 1   min 4.50    ok
+      body / bg               6.15 : 1   min 3.00    ok
+      gear / bg              14.74 : 1   min 3.00    ok
+      destructive vs accent  0.436 dE    min 0.10    ok
+```
+
+That last one is a perceptual distance rather than a contrast ratio, because the
+question it answers is whether an armed take can be mistaken for ordinary
+playback, and a red and a green of equal lightness have a contrast ratio near
+1.0 while being obvious at a glance. `pnpm build` runs the gate first, so adding
+a ninth theme means proving it's legible before it can ship.
+
 ## Recording
 
 Hit play, then the red record button. It pulses and shows duration. Click again
