@@ -18,7 +18,9 @@
     "tidalcycles",
     "web-audio",
     "claude-code",
-    "agent"
+    "agent",
+    "rest-api",
+    "ai"
   ],
   "packageManager": "pnpm@10.12.1",
   "scripts": {
