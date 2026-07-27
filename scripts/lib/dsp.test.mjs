@@ -12,7 +12,7 @@ import {
   ONSET_HOP,
 } from './dsp.mjs'
 import { decodeWav } from './decoded-audio.mjs'
-import { synthClip } from './__fixtures__/make-wav.mjs'
+import { rhythmClip, synthClip } from './__fixtures__/make-wav.mjs'
 
 describe('fft', () => {
   it('puts a pure tone in the expected bin', () => {
@@ -44,7 +44,7 @@ describe('makeHann', () => {
 
 describe('computeNovelty and pickOnsets', () => {
   it('finds one onset per beat on a clip with a kick on every beat', () => {
-    const audio = decodeWav(synthClip({ seconds: 8, bpm: 120, key: 'A minor' }))
+    const audio = decodeWav(rhythmClip({ seconds: 8, bpm: 120 }))
     const novelty = computeNovelty(audio.readSample, audio.numFrames, audio.channels)
     const onsets = pickOnsets(novelty, ONSET_HOP / audio.sampleRate)
 
@@ -54,14 +54,14 @@ describe('computeNovelty and pickOnsets', () => {
   })
 
   it('returns null for a clip too short to analyse', () => {
-    const audio = decodeWav(synthClip({ seconds: 0.01, bpm: 120, key: 'A minor' }))
+    const audio = decodeWav(rhythmClip({ seconds: 0.01, bpm: 120 }))
     expect(computeNovelty(audio.readSample, audio.numFrames, audio.channels)).toBeNull()
   })
 })
 
 describe('estimateTempo', () => {
   it('recovers 120 BPM from a 120 BPM clip', () => {
-    const audio = decodeWav(synthClip({ seconds: 12, bpm: 120, key: 'A minor' }))
+    const audio = decodeWav(rhythmClip({ seconds: 12, bpm: 120 }))
     const novelty = computeNovelty(audio.readSample, audio.numFrames, audio.channels)
     const tempo = estimateTempo(novelty, ONSET_HOP / audio.sampleRate)
     expect(tempo.bpm).toBeCloseTo(120, 0)

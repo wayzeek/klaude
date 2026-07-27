@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { synthClip, writeWavBuffer } from './make-wav.mjs'
+import { rhythmClip, synthClip, writeWavBuffer } from './make-wav.mjs'
 
 describe('writeWavBuffer', () => {
   it('produces a parseable 16-bit stereo RIFF header', () => {
@@ -23,6 +23,20 @@ describe('synthClip', () => {
 
   it('produces the requested duration', () => {
     const buf = synthClip({ seconds: 2, bpm: 120, key: 'A minor', sampleRate: 44100, channels: 2 })
+    const frames = (buf.length - 44) / (2 * 2)
+    expect(frames).toBe(2 * 44100)
+  })
+})
+
+describe('rhythmClip', () => {
+  it('is deterministic: the same arguments give byte-identical output', () => {
+    const a = rhythmClip({ seconds: 2, bpm: 120 })
+    const b = rhythmClip({ seconds: 2, bpm: 120 })
+    expect(a.equals(b)).toBe(true)
+  })
+
+  it('produces the requested duration', () => {
+    const buf = rhythmClip({ seconds: 2, bpm: 120, sampleRate: 44100, channels: 2 })
     const frames = (buf.length - 44) / (2 * 2)
     expect(frames).toBe(2 * 44100)
   })

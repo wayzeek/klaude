@@ -89,3 +89,41 @@ export function synthClip({ sampleRate = 44100, seconds, bpm, key, channels = 2 
   for (let ch = 0; ch < channels; ch++) samples.push(mono)
   return writeWavBuffer({ sampleRate, channels, float32: false, samples })
 }
+
+/** Kick frequency and decay, chosen so onset detection can resolve the hits. */
+const RHYTHM_KICK_HZ = 150
+const RHYTHM_KICK_DECAY = 0.03
+
+/**
+ * A rhythm-only clip: one kick per beat, nothing pitched.
+ *
+ * Deliberately separate from synthClip rather than an option on it, for two
+ * measured reasons.
+ *
+ * The sustained triad makes synthClip unusable for rhythm. Pure sines are not
+ * bin-aligned to the 1024-point onset FFT, so their leakage shifts every frame
+ * and generates continuous flux. On an 8 second 120 BPM clip the triad alone
+ * produces 236 onsets and an 83.35 BPM estimate, which is also what the full
+ * clip reports: the kicks contribute nothing to the measurement.
+ *
+ * And 55 Hz is too low to resolve. Its 18 ms period against a 23 ms window
+ * yields roughly two onsets per hit, 31 for 16 kicks. At 150 Hz over a 30 ms
+ * decay the detector reports 15, which is correct to within an edge frame.
+ */
+export function rhythmClip({ sampleRate = 44100, seconds, bpm, channels = 2 }) {
+  const numFrames = Math.round(seconds * sampleRate)
+  const beatFrames = Math.round((60 / bpm) * sampleRate)
+  const decayFrames = Math.round(RHYTHM_KICK_DECAY * sampleRate)
+  const mono = new Float32Array(numFrames)
+
+  for (let beatStart = 0; beatStart < numFrames; beatStart += beatFrames) {
+    for (let i = 0; i < decayFrames && beatStart + i < numFrames; i++) {
+      const envelope = Math.exp(-6 * (i / decayFrames))
+      mono[beatStart + i] += 0.6 * envelope * Math.sin((2 * Math.PI * RHYTHM_KICK_HZ * i) / sampleRate)
+    }
+  }
+
+  const samples = []
+  for (let ch = 0; ch < channels; ch++) samples.push(mono)
+  return writeWavBuffer({ sampleRate, channels, float32: false, samples })
+}
