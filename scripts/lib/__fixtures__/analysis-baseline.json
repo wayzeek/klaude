@@ -1,0 +1,384 @@
+{
+  "stereo-120-Aminor": {
+    "duration": 8,
+    "sampleRate": 44100,
+    "channels": 2,
+    "overallRmsDb": -15.998172,
+    "peakDb": -3.787609,
+    "quietDb": -16.026389,
+    "loudDb": -15.961347,
+    "loudnessRange": 0.065042,
+    "clippedSamples": 0,
+    "avgCorr": 1,
+    "bandPct": [
+      2.586673,
+      0.929453,
+      96.483847,
+      0.000026,
+      0,
+      0
+    ],
+    "bandTiltDb": [
+      -7.75833,
+      -15.725297,
+      0,
+      -73.775949,
+      -98.949469,
+      -102.744083
+    ],
+    "spark": "▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆",
+    "segments": [
+      {
+        "startSec": 0,
+        "endSec": 2,
+        "rmsDb": -15.989129,
+        "bandPct": [
+          2.586505,
+          0.929405,
+          96.484064,
+          0.000026,
+          0,
+          0
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 2,
+        "endSec": 4,
+        "rmsDb": -16.003445,
+        "bandPct": [
+          2.586487,
+          0.929485,
+          96.484002,
+          0.000026,
+          0,
+          0
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 4,
+        "endSec": 6,
+        "rmsDb": -16.007204,
+        "bandPct": [
+          2.58683,
+          0.929498,
+          96.483645,
+          0.000026,
+          0,
+          0
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 6,
+        "endSec": 8,
+        "rmsDb": -15.992935,
+        "bandPct": [
+          2.586871,
+          0.929424,
+          96.483679,
+          0.000026,
+          0,
+          0
+        ],
+        "silent": false
+      }
+    ],
+    "leadSilenceSec": 0,
+    "tailSilenceSec": 0,
+    "onsetCount": 211,
+    "onsetRate": 26.375,
+    "tempo": {
+      "bpm": 83.354335,
+      "confidence": 0.526281
+    },
+    "key": {
+      "best": {
+        "name": "A minor",
+        "score": 0.908962
+      },
+      "runnerUp": {
+        "name": "C major",
+        "score": 0.591336
+      },
+      "chroma": [
+        0.261696,
+        0.014494,
+        0.00773,
+        0.018089,
+        0.264434,
+        0.048899,
+        0.004355,
+        0.009751,
+        0.032845,
+        0.267866,
+        0.024555,
+        0.045287
+      ]
+    },
+    "expectedBpm": null,
+    "expectedKey": null,
+    "notes": [
+      "flat dynamics: quiet and loud sections are nearly the same level - contrast is what makes drops land",
+      "low-mids dominate (150-400Hz) - the classic mud zone; carve space with hpf/lpf",
+      "almost no highs - the mix will feel dull or underwater; add hats, brightness, or open a filter",
+      "essentially mono - pan, jux, or stereo effects would add width",
+      "extremely dense (26 onsets/sec) - individual hits will smear into a buzz"
+    ]
+  },
+  "stereo-140-Fmajor": {
+    "duration": 8,
+    "sampleRate": 44100,
+    "channels": 2,
+    "overallRmsDb": -15.88605,
+    "peakDb": -2.005858,
+    "quietDb": -16.037092,
+    "loudDb": -15.42473,
+    "loudnessRange": 0.612362,
+    "clippedSamples": 0,
+    "avgCorr": 1,
+    "bandPct": [
+      9.381545,
+      4.043186,
+      86.572727,
+      0.00252,
+      0.000021,
+      0.000001
+    ],
+    "bandTiltDb": [
+      -1.692267,
+      -8.869598,
+      0,
+      -53.421465,
+      -78.290664,
+      -94.873763
+    ],
+    "spark": "▇▆▆▆▆▆▇▆▆▆▆▆▇▆▆▆",
+    "segments": [
+      {
+        "startSec": 0,
+        "endSec": 2,
+        "rmsDb": -15.85125,
+        "bandPct": [
+          9.496978,
+          3.979327,
+          86.521588,
+          0.002089,
+          0.000017,
+          0.000001
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 2,
+        "endSec": 4,
+        "rmsDb": -15.843179,
+        "bandPct": [
+          7.915159,
+          3.676527,
+          88.404982,
+          0.003304,
+          0.000027,
+          0.000001
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 4,
+        "endSec": 6,
+        "rmsDb": -16.001797,
+        "bandPct": [
+          10.555457,
+          4.519091,
+          84.922819,
+          0.002611,
+          0.000021,
+          0.000001
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 6,
+        "endSec": 8,
+        "rmsDb": -15.850004,
+        "bandPct": [
+          9.507042,
+          3.981521,
+          86.509329,
+          0.002091,
+          0.000017,
+          0.000001
+        ],
+        "silent": false
+      }
+    ],
+    "leadSilenceSec": 0,
+    "tailSilenceSec": 0,
+    "onsetCount": 186,
+    "onsetRate": 23.25,
+    "tempo": {
+      "bpm": 139.674831,
+      "confidence": 0.631528
+    },
+    "key": {
+      "best": {
+        "name": "A minor",
+        "score": 0.826623
+      },
+      "runnerUp": {
+        "name": "F major",
+        "score": 0.643119
+      },
+      "chroma": [
+        0.264167,
+        0.01567,
+        0.0088,
+        0.001053,
+        0.055053,
+        0.160832,
+        0.104861,
+        0.015005,
+        0.033112,
+        0.270342,
+        0.025326,
+        0.045778
+      ]
+    },
+    "expectedBpm": null,
+    "expectedKey": null,
+    "notes": [
+      "flat dynamics: quiet and loud sections are nearly the same level - contrast is what makes drops land",
+      "low-mids dominate (150-400Hz) - the classic mud zone; carve space with hpf/lpf",
+      "almost no highs - the mix will feel dull or underwater; add hats, brightness, or open a filter",
+      "essentially mono - pan, jux, or stereo effects would add width"
+    ]
+  },
+  "mono-90-Cminor": {
+    "duration": 8,
+    "sampleRate": 44100,
+    "channels": 1,
+    "overallRmsDb": -16.154942,
+    "peakDb": -1.879882,
+    "quietDb": -16.680149,
+    "loudDb": -15.885281,
+    "loudnessRange": 0.794868,
+    "clippedSamples": 0,
+    "avgCorr": null,
+    "bandPct": [
+      4.216522,
+      33.939245,
+      61.842473,
+      0.001745,
+      0.000014,
+      0.000001
+    ],
+    "bandTiltDb": [
+      -5.535653,
+      0,
+      -1.831128,
+      -55.386778,
+      -80.271825,
+      -96.69689
+    ],
+    "spark": "▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆",
+    "segments": [
+      {
+        "startSec": 0,
+        "endSec": 2,
+        "rmsDb": -16.164256,
+        "bandPct": [
+          4.244833,
+          33.762426,
+          61.990969,
+          0.001757,
+          0.000014,
+          0.000001
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 2,
+        "endSec": 4,
+        "rmsDb": -16.148401,
+        "bandPct": [
+          4.204951,
+          34.123945,
+          61.669348,
+          0.001741,
+          0.000014,
+          0.000001
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 4,
+        "endSec": 6,
+        "rmsDb": -16.149968,
+        "bandPct": [
+          4.198833,
+          34.10457,
+          61.694844,
+          0.001738,
+          0.000014,
+          0.000001
+        ],
+        "silent": false
+      },
+      {
+        "startSec": 6,
+        "endSec": 8,
+        "rmsDb": -16.157162,
+        "bandPct": [
+          4.21777,
+          33.763585,
+          62.016884,
+          0.001746,
+          0.000014,
+          0.000001
+        ],
+        "silent": false
+      }
+    ],
+    "leadSilenceSec": 0,
+    "tailSilenceSec": 0,
+    "onsetCount": 190,
+    "onsetRate": 23.75,
+    "tempo": {
+      "bpm": 78.302557,
+      "confidence": 0.743492
+    },
+    "key": {
+      "best": {
+        "name": "C major",
+        "score": 0.562098
+      },
+      "runnerUp": {
+        "name": "G major",
+        "score": 0.512084
+      },
+      "chroma": [
+        0.164802,
+        0.104667,
+        0.146598,
+        0.000484,
+        0.136725,
+        0.029909,
+        0.059004,
+        0.16621,
+        0.108806,
+        0.015467,
+        0.066296,
+        0.001032
+      ]
+    },
+    "expectedBpm": null,
+    "expectedKey": null,
+    "notes": [
+      "flat dynamics: quiet and loud sections are nearly the same level - contrast is what makes drops land",
+      "low-mids dominate (150-400Hz) - the classic mud zone; carve space with hpf/lpf",
+      "almost no highs - the mix will feel dull or underwater; add hats, brightness, or open a filter",
+      "hollow middle: melodic content sits far below the bass - raise chords/leads or open their filters"
+    ]
+  }
+}
