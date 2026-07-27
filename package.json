@@ -1,7 +1,7 @@
 {
   "name": "moltek",
   "version": "0.1.0",
-  "description": "A live coding music studio that hears itself. Strudel, driven by an agent that records its own output and fixes the mix.",
+  "description": "An AI music studio. Ask for a track and the agent writes it, plays it, listens back to what came out, and mixes it.",
   "license": "AGPL-3.0-or-later",
   "author": "wayzeek",
   "repository": {

@@ -1,30 +1,64 @@
 # moltek
 
-**A live coding music studio that hears itself.**
-
-Write patterns in [Strudel](https://strudel.cc), push them from whatever coding
-agent you use, and the studio records its own output, reads back the mix, and
-tells the agent what's actually wrong with it.
+**An AI music studio.** Ask for a track, and the agent writes it, plays it, listens
+back to what came out, and mixes it. You sit at the desk and tell it what you want
+changed.
 
 ![the studio](docs/img/studio.png)
 
-Most agent-driven music setups can tell you the code ran. This one can tell you
-the bass is muddy, the pad is ducking the kick instead of the other way round,
-and that the chord you wrote voices to silence.
+The music itself is [Strudel](https://strudel.cc), so a track is real code you can
+read and change yourself whenever you want. Around that, moltek is the studio: a
+mixer channel for every part, recording, version history, and the tools that let
+the agent judge its own work instead of guessing.
 
-## Why it's different
+## Run it
 
-**It refuses to lie about whether the code worked.** Pushing waits for the
-browser to evaluate and reports the verdict, so `OK: playing` means the pattern
-is running, not that a request was accepted.
+You need Node.js and [pnpm](https://pnpm.io).
 
-**It catches faults that make no noise.** Some failures raise no error and still
-ruin a track. Strudel's `.voicing()` speaks jazz shorthand, so a
-plausible-looking `Cmaj7` is not in its dictionary and voices to silence.
-`.duckorbit(n)` ducks orbit `n` rather than the layer carrying it, so a pad
-written for a sidechain punches the kick instead. Code like that pushes cleanly,
-plays without complaint, and measures fine. `check.mjs` evaluates a track
-headlessly and inspects the events it would actually produce:
+```bash
+pnpm install
+pnpm dev
+```
+
+Open `http://localhost:3000`, then open your coding agent in the same folder and
+ask it for something:
+
+```
+"play me a slow melodic techno track"
+"make the bass darker and give it more room"
+"record the last two minutes"
+```
+
+Claude Code skills ship in `.claude/`, so with Claude Code it works straight away.
+Anything else drives the studio over HTTP, which is one command:
+
+```bash
+node scripts/push.mjs my-track.js --play
+```
+
+## How it knows what it made
+
+An agent writing music is working blind. It can produce something that parses
+perfectly and makes no sound, or a mix where the bass buries everything, and it has
+no way to tell. These are the four things moltek does about that.
+
+### It tells you whether the code actually ran
+
+Pushing waits for the browser to evaluate the code and reports what happened, so a
+success message means the pattern is running, not that a request was accepted. If
+the code threw, you get the error. If no browser tab is open, you get told that
+instead of silence.
+
+### It catches mistakes that make no sound
+
+Some Strudel mistakes produce no error and no audio. A chord name that isn't in
+Strudel's dictionary plays nothing. `.duckorbit(n)` turns down the bus you name,
+not the layer you attached it to, so a pad meant to duck under the kick can end up
+ducking the kick instead. Code like this pushes cleanly and plays without
+complaint.
+
+So before pushing, the track is evaluated without audio and the notes it would
+produce are inspected:
 
 ```
 FAIL my-track.js  (2056 events/64cy · 120 BPM · 6 layers)
@@ -34,75 +68,62 @@ FAIL my-track.js  (2056 events/64cy · 120 BPM · 6 layers)
            -> duckorbit ducks the TARGET orbit. Put .duckorbit(N) on the kick
 ```
 
-It also flags default-gain bass, low-mid pile-ups, missing sample packs, and
-sections that repeat bit-for-bit. `pnpm push` runs it first and refuses on errors.
+It also warns about a bass loud enough to bury everything, several parts crowded
+into the same register, missing sample packs, and sections that repeat note for
+note. `pnpm push` runs this first and refuses to push if anything is an error.
 
-**It has ears.** Pushing code only proves it ran. The analysis scripts record a
-clip of the live output and read back loudness, dynamics, frequency balance,
-stereo width, clipping and an energy arc, plus the musical content: measured
-tempo with onset density, and the key the sounding notes belong to. State your
-intent and let the measurement disagree with you.
+### It listens back
+
+Running is not the same as sounding good, so the studio can record a few seconds of
+its own output and measure it: loudness, dynamics, how the frequencies are balanced,
+stereo width, clipping, and how the energy moves over time. It also measures the
+tempo and works out what key the notes belong to, which is useful mostly because it
+can then disagree with you:
 
 ```bash
-node scripts/listen.mjs 12                                    # record 12s of what's playing
+node scripts/listen.mjs 12                                    # record 12s of what is playing
 node scripts/analyze.mjs tape.wav --expect-bpm 124 --expect-key "F minor"
 ```
 
-**It hears you too.** Every layer gets a fader, solo, mute and four feel knobs,
-and a note box that sends free text straight to the agent, stamped with the layer,
-the revision and the section playing at that moment. So it gets "the bass in the
-drop is too muddy" instead of guessing.
+### It lets you say what you think
 
-<img src="docs/img/mixer.png" alt="the layer mixer" width="384">
+Every part in the mixer has a fader, solo, mute, four feel controls, and a box you
+can type into.
 
-Every control is a **trim on top of what the code says**, so centre always means
-as-written and nothing silently rewrites your patterns. Volume, tone and space
-apply live. The two timing controls rebuild the pattern, so they re-evaluate when
-you let go rather than under your finger.
+<img src="docs/img/mixer.png" alt="the mixer" width="384">
 
-## Any agent, not one
+Typing "the bass is too muddy here" sends that to the agent along with which part
+you aimed it at, which version of the code was playing, and where in the track you
+were. So it gets a specific complaint about a specific bar instead of a guess.
 
-The studio is driven entirely over a REST API, so anything that can make an HTTP
-request can run it: a coding agent, a shell script, a keybinding, your own tooling.
-There is nothing harness-specific in the app.
+The controls are adjustments layered on top of the code, never edits to it. Centre
+always means "as written", so nothing you do here quietly rewrites your track.
+Volume, tone and space take effect immediately; the two timing controls have to
+rebuild the pattern, so they wait until you let go of the slider.
 
-Claude Code skills ship in `.claude/` as the worked example, because that is what
-this was built against. They teach an agent the Strudel syntax, the transport, the
-feel rules and how to read the analysis output. Port them to whatever you use, or
-just point your agent at the API table below and the `scripts/` directory.
+## Taking over
 
-## Quick start
+Nothing is hidden. What the agent writes is ordinary Strudel sitting in the editor,
+and you can change it whenever you like. `Cmd+Enter` re-runs it, `Cmd+.` stops.
 
-You need Node.js and [pnpm](https://pnpm.io).
+A track is a set of named parts:
 
-```bash
-pnpm install
-pnpm dev          # studio at http://localhost:3000
+```js
+setcpm(124 / 4)
+
+const kick = s("bd*4").bank("RolandTR909")
+const bass = note("<c2 ab1 bb1>").s("sawtooth").lpf(600)
+
+$: layers({ kick, bass })
 ```
 
-Then drive it. From a shell:
-
-```bash
-node scripts/push.mjs my-track.js --play    # checks, pushes, waits for the verdict
-node scripts/listen.mjs 12                  # records it and reads back the mix
-```
-
-Or from an agent session, if you're using the bundled Claude Code skills:
-
-```
-"Teach me Strudel"           -> /tutorial
-"Play me a techno set"       -> /dj-set
-"Compose a synthwave track"  -> /compose
-"Let's make music together"  -> /interactive
-```
-
-`Cmd+Enter` evaluates, `Cmd+.` stops.
+Those names are what produce the channels in the mixer. If you already know
+Strudel, everything you know still works, and `layers()` is the only thing moltek
+asks you to add.
 
 ## Themes
 
-Eight of them, in the bottom bar. Here's the resident in each one. He's part of
-the theme rather than a picture sitting on top of it, so he recolours with the
-chrome, the meters, the room and the editor in the same repaint.
+Eight of them, in the bottom bar.
 
 | | | | |
 |:-:|:-:|:-:|:-:|
@@ -111,132 +132,104 @@ chrome, the meters, the room and the editor in the same repaint.
 | ![hazard](docs/img/theme-hazard.png) | ![uv](docs/img/theme-uv.png) | ![oxblood](docs/img/theme-oxblood.png) | ![bone](docs/img/theme-bone.png) |
 | `hazard` | `uv` | `oxblood` | `bone` |
 
+The mascot belongs to the theme rather than sitting on top of it, so he changes
+colour along with the editor, the meters and everything else.
+
 <img src="docs/img/picker.png" alt="the theme picker" width="640">
 
-Palettes live in one place, `src/lib/themes.json`, which is the only file in the
-repo that writes a colour down. `pnpm themes` measures every pair that matters
-against WCAG thresholds and then generates the CSS from it. A theme that can't be
-read doesn't get built:
-
-```
-PASS  concrete  (dark)
-      fg / bg                14.59 : 1   min 4.50    ok
-      body / bg               6.15 : 1   min 3.00    ok
-      gear / bg              14.74 : 1   min 3.00    ok
-      destructive vs accent  0.436 dE    min 0.10    ok
-```
-
-That last one is a perceptual distance rather than a contrast ratio, because the
-question it answers is whether an armed take can be mistaken for ordinary
-playback, and a red and a green of equal lightness score near 1.0 while being
-obvious at a glance. `pnpm build` runs the gate first, so adding a ninth theme
-means proving it's legible before it can ship.
-
-## The studio
-
-Code stays front and centre, because that's the instrument. A rack down the right
-holds the layer mixer over the tape deck; the chrome sits in a flat strip along the
-bottom. The rack's width and the mixer/tapes split both drag.
-
-Tracks are written as named layers, which is what makes the mixer possible:
-
-```javascript
-layers({ kick, bass, rhodes, pad })
-```
-
-The mascot is his own window, draggable and resizable, and he moves to whatever is
-actually playing: the meter reads the master level, the lamps flash on the kick,
-the legs absorb the landing.
-
-Server state and revision history persist to `.moltek/state.json`, so a restart
-doesn't lose the working track. Playback never auto-resumes, deliberately.
+Every palette lives in `src/lib/themes.json`. Running `pnpm themes` checks that
+each one is actually readable, using the same contrast rules as accessibility
+guidelines, and then generates the CSS from it. A theme with unreadable text or a
+mascot that disappears into the background fails the check and the build stops, so
+adding a ninth theme means proving it works before it can ship.
 
 ## Recording
 
-Hit play, then the red record button. It pulses and shows duration; click again to
-stop and a review row appears so you can listen before keeping or discarding.
-Keeping downloads the WAV through your browser.
+Press play, then the round record button. Press it again to stop and you get a row
+you can listen to before deciding whether to keep it. Keeping it downloads a WAV.
 
-An agent can record too, over `/api/record/start` and `/api/record/stop`, and those
-takes are saved server-side into `recordings/` where the analysis scripts and
-`/api/recordings` can reach them. So takes you start by hand come to you as a
-download; takes the agent starts land in the project. If playback stops
-mid-recording the take finishes rather than capturing silence.
+An agent records through `/api/record/start` and `/api/record/stop` instead, and
+those takes are saved into `recordings/` where the analysis scripts can reach them.
+So takes you start yourself come to you as a download, and takes the agent starts
+stay in the project. If playback stops partway through, the recording ends there
+rather than filling up with silence.
 
-## Scripts
+## Your own samples
+
+Drop WAV or MP3 files into `public/samples/` and name them in your patterns:
+
+```js
+samples({ clap: '/samples/my-clap.wav' })
+```
+
+See `public/samples/README.md`. A set of external packs is also catalogued for the
+agent in the `/strudel` skill: a large lofi drum collection, classic breaks, sax,
+sitar, guitar, voices and textures.
+
+## Commands
 
 | Command | What it does |
 |---|---|
-| `pnpm check <file>` | Evaluate headlessly, report silent chords, bad routing, mix problems |
-| `pnpm push <file> [--play]` | Check, then push; `--play` waits for the eval verdict |
-| `pnpm listen [secs]` | Record the live output and print a producer-grade analysis |
-| `pnpm analyze [file]` | Analyse a WAV, newest recording if omitted |
-| `pnpm themes [--html]` | Gate every theme's contrast and regenerate the CSS |
-| `pnpm share [file]` | Print a strudel.cc share link |
-| `pnpm smoke` | API smoke test against the running server |
-| `pnpm validate:tracks` | Check every saved track's structure, tempo, duration, content |
+| `pnpm dev` | Start the studio |
+| `pnpm check <file>` | Evaluate a track without audio and report problems |
+| `pnpm push <file> [--play]` | Check, then push; `--play` waits for the result |
+| `pnpm listen [secs]` | Record what is playing and analyse it |
+| `pnpm analyze [file]` | Analyse a WAV, or the newest recording |
+| `pnpm themes` | Check every theme's contrast and regenerate the CSS |
+| `pnpm share [file]` | Print a strudel.cc link for a track |
+| `pnpm smoke` | Check the API against a running studio |
+| `pnpm validate:tracks` | Check every saved track in `tracks/` |
 
 ## API
 
-Real-time sync over Server-Sent Events, so the browser updates the moment code is
-pushed, and reports back, so the caller knows whether a push actually evaluated or
-threw.
+The browser and the server stay in sync over Server-Sent Events, so a push shows up
+immediately, and the browser reports back what happened when it ran.
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/code` | `GET` | Current code and revision. Browser edits sync back automatically, on a short poll |
-| `/api/code` | `POST` | Push code `{ code, play? }`, atomic push-and-play |
-| `/api/play` | `POST` | Start playback. Repeat POSTs force re-evaluation |
-| `/api/stop` | `POST` | Stop playback |
-| `/api/status` | `GET` | Full state: eval results, connected clients, audio readiness, recording |
-| `/api/gain` | `POST` | Master volume with ramp `{ level, rampMs }` |
-| `/api/nowplaying` | `POST` | Now-playing metadata `{ title, artist, section }` |
-| `/api/history` | `GET`/`POST` | List pushed revisions, restore one. Survives restarts |
-| `/api/record/start` | `POST` | Start recording in the browser |
-| `/api/record/stop` | `POST` | Stop recording; the WAV lands in `recordings/` |
-| `/api/recordings` | `GET` | List saved recordings; `/api/recordings/<name>` streams one |
-| `/api/mix` | `GET`/`POST` | Per-layer solo/mute `{ muted, soloed }` and trims `{ trim: { layer: "bass", volume: 0.5 } }` |
-| `/api/notes` | `GET`/`POST`/`DELETE` | Listener feedback, optionally aimed at a layer |
-| `/api/events` | `GET` | SSE stream |
+| `/api/code` | `GET` | The current code and its version number |
+| `/api/code` | `POST` | Replace the code: `{ code, play? }` |
+| `/api/play` | `POST` | Start playing. Posting again re-runs the code |
+| `/api/stop` | `POST` | Stop |
+| `/api/status` | `GET` | Everything: last result, connected tabs, whether audio is unlocked, recording state |
+| `/api/gain` | `POST` | Master volume, optionally faded: `{ level, rampMs }` |
+| `/api/nowplaying` | `POST` | Set the title and section shown in the bottom bar |
+| `/api/history` | `GET`/`POST` | List previous versions, or go back to one |
+| `/api/record/start` | `POST` | Start recording |
+| `/api/record/stop` | `POST` | Stop recording and save the WAV to `recordings/` |
+| `/api/recordings` | `GET` | List recordings; `/api/recordings/<name>` plays one |
+| `/api/mix` | `GET`/`POST` | Mute, solo and per-part adjustments |
+| `/api/notes` | `GET`/`POST`/`DELETE` | The feedback typed in the mixer |
+| `/api/events` | `GET` | The event stream |
 
-Prefer the script over hand-rolled curl: it handles escaping and waits for the
-verdict.
-
-## Samples
-
-Drop WAV or MP3 files into `public/samples/` and register them with
-`samples({ name: '/samples/file.wav' })`. Real instruments, field recordings, your
-own hits. See `public/samples/README.md`.
-
-Verified external packs, including a lofi drum crate with hundreds of one-shots,
-classic breaks, sax, sitar, guitar, voices and textures, are catalogued for the
-agent in the `/strudel` skill.
+Use `scripts/push.mjs` rather than curl where you can: it handles quoting and waits
+for the result.
 
 ## Voice
 
-The bundled skills speak over macOS `say`, which is macOS only. The stock voices
-are rough and the Siri voices are much better: System Settings, Accessibility,
-Spoken Content, then the info button beside System Voice, search "Siri", download
-one and set it as the system voice.
+The bundled skills can speak through the macOS `say` command, so that part is macOS
+only. The built-in voices are rough; the Siri voices are much better. System
+Settings, Accessibility, Spoken Content, then the info button next to System Voice,
+search for Siri, download one and set it as the system voice.
 
-## Built on
+## Built with
 
-Next.js, Tailwind, and [Strudel](https://github.com/tidalcycles/strudel)
-(`@strudel/repl` bundled locally with a pinned CDN fallback). Worth reading:
-[Strudel docs](https://strudel.cc/learn) and [TidalCycles](https://tidalcycles.org).
+Next.js, Tailwind, and [Strudel](https://github.com/tidalcycles/strudel), bundled
+locally with a pinned CDN fallback. If you want to learn the music side, the
+[Strudel docs](https://strudel.cc/learn) are good, and
+[TidalCycles](https://tidalcycles.org) is where the ideas come from.
 
-## Credits and license
+## Credits and licence
 
-moltek continues development of
-[strudel-claude](https://github.com/renatoworks/strudel-claude), created by Renato
-Costa under the MIT License.
+moltek continues [strudel-claude](https://github.com/renatoworks/strudel-claude) by
+Renato Costa, which was MIT licensed.
 
-Licensed **AGPL-3.0-or-later**. Strudel is AGPL and moltek bundles it, so the
-combined work carries the same terms: build on this freely, but if you ship it,
-including as a hosted service, publish your source too. Full text in `LICENSE`,
-attribution and notices in `NOTICE`.
+moltek is licensed **AGPL-3.0-or-later**, because Strudel is AGPL and moltek bundles
+it. In practice: use it, change it, build on it. If you distribute it or run it as a
+service for other people, publish your source too. Full text in `LICENSE`, notices
+in `NOTICE`.
 
-The mascot is derived from the character Anthropic uses for Claude Code. The
-character design is theirs. This project is not affiliated with, sponsored by, or
-endorsed by Anthropic, and Claude and Claude Code are their trademarks, referred
-to here only to describe one of the agents that can drive this.
+The mascot is based on the character Anthropic uses for Claude Code, and that
+character design is theirs. This project is not affiliated with or endorsed by
+Anthropic. Claude and Claude Code are their trademarks, mentioned here only to say
+which agent the bundled skills are written for.

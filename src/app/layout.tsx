@@ -17,14 +17,14 @@ const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin']
 export const metadata: Metadata = {
   title: 'moltek',
   description:
-    'A live coding music studio that hears itself. Strudel, driven by an agent that records its own output and fixes the mix.',
+    'An AI music studio. Ask for a track and the agent writes it, plays it, listens back to what came out, and mixes it.',
   applicationName: 'moltek',
   icons: {
     icon: '/favicon.svg',
   },
   openGraph: {
     title: 'moltek',
-    description: 'A live coding music studio that hears itself.',
+    description: 'Ask for a track. The agent writes it, plays it, listens back, and mixes it.',
     siteName: 'moltek',
     type: 'website',
     images: ['/moltek.png'],
