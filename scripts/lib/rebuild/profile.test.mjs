@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { synthClip } from '../__fixtures__/make-wav.mjs'
+import { rhythmClip, synthClip } from '../__fixtures__/make-wav.mjs'
 import { profileReference } from './profile.mjs'
 
 describe('profileReference', () => {
@@ -9,16 +9,21 @@ describe('profileReference', () => {
     expect(profile.source.title).toBe('test clip')
   })
 
-  it('reports tempo with a confidence in [0, 1]', () => {
-    // synthClip's sustained triad pollutes onset detection (make-wav.mjs and
-    // this plan's Task 5 finding: the triad's spectral leakage dominates the
-    // novelty function, so the kick contributes nothing and the measured BPM
-    // does not track the clip's actual tempo on this fixture). Assert the
-    // shape, not a specific value - the same treatment already applied to key
-    // detection below for the same reason.
-    expect(profile.tempo.bpm).toBeGreaterThan(0)
-    expect(profile.tempo.confidence).toBeGreaterThanOrEqual(0)
-    expect(profile.tempo.confidence).toBeLessThanOrEqual(1)
+  /**
+   * Tempo gets its own fixture. synthClip's sustained triad is not bin-aligned
+   * to the onset FFT, so its leakage swamps the kicks and the tempo estimate is
+   * read off the leakage - it reports 178.2 for a clip generated at 120.
+   * rhythmClip has no pitched content for exactly this reason and measures
+   * 120.185 at full confidence, so a real assertion is possible here.
+   *
+   * Key cannot ride along on rhythmClip: with nothing pitched, detection is
+   * noise. That is why these are two blocks and two fixtures rather than one.
+   */
+  it('reports the reference tempo, with a confidence in [0, 1]', () => {
+    const rhythmic = profileReference(rhythmClip({ seconds: 12, bpm: 120 }))
+    expect(rhythmic.tempo.bpm).toBeCloseTo(120, 0)
+    expect(rhythmic.tempo.confidence).toBeGreaterThan(0)
+    expect(rhythmic.tempo.confidence).toBeLessThanOrEqual(1)
   })
 
   it('reports key with a confidence derived from the margin over the runner-up', () => {
