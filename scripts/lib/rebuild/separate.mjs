@@ -102,17 +102,21 @@ export async function separate(wavPath, stemsDir, { onProgress } = {}) {
     spawnError = error
   }
 
+  let flattenError = null
   try {
     await flattenStems(nested, stemsDir)
   } catch (error) {
-    // A flatten failure matters when the run itself succeeded. When demucs
-    // already failed, the demucs error is the one worth reporting.
-    if (!spawnError) throw error
+    flattenError = error
+  } finally {
+    // vocals.wav lives in here, so this runs on every path: a clean run, a
+    // failed demucs, and a flatten that threw after demucs succeeded. Keeping
+    // the original recording off disk is not allowed to depend on which.
+    await fsp.rm(nested, { recursive: true, force: true }).catch(() => {})
   }
-  // vocals.wav lives in here; it goes whether or not the run succeeded.
-  await fsp.rm(nested, { recursive: true, force: true }).catch(() => {})
 
+  // The demucs error is the more useful one when both happened.
   if (spawnError) throw spawnError
+  if (flattenError) throw flattenError
 
   if (!cacheComplete(stemsDir)) {
     throw new Error(`demucs finished but did not produce every stem in ${stemsDir}`)

@@ -229,4 +229,27 @@ exit "\${FAKE_DEMUCS_EXIT:-0}"
       restore()
     }
   })
+
+  it('still cleans up htdemucs/ and vocals.wav when demucs succeeds but flatten throws', async () => {
+    const restore = installFakeDemucs({ layout: 'flat', exitCode: 0 })
+    try {
+      const stemsDir = path.join(tmp, 'fake-flatten-throws')
+      const input = fakeInput('fake-flatten-throws-input.wav')
+
+      // A stale directory sitting where a stem file needs to land makes the
+      // rename inside flattenStems throw (EISDIR), even though demucs itself
+      // ran cleanly and wrote every stem, vocals.wav included.
+      fs.mkdirSync(path.join(stemsDir, 'drums.wav'), { recursive: true })
+
+      await expect(separate(input, stemsDir)).rejects.toThrow()
+
+      // The point of this test: the nested output tree - and the vocal stem
+      // inside it - must not survive a flatten failure on an otherwise
+      // successful run.
+      expect(fs.existsSync(path.join(stemsDir, 'htdemucs'))).toBe(false)
+      expect(fs.existsSync(path.join(stemsDir, 'vocals.wav'))).toBe(false)
+    } finally {
+      restore()
+    }
+  })
 })
