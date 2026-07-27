@@ -38,6 +38,33 @@ export function cacheComplete(stemsDir) {
   })
 }
 
+/**
+ * Move the stems we keep up out of demucs' output directory, then delete the rest.
+ *
+ * Demucs' layout depends on `--filename`. The default template inserts a
+ * `<track>/` level; the `{stem}.{ext}` template this module passes does not, and
+ * writes straight into `<out>/<model>/`. Verified against demucs 4.1.0: a run
+ * with `--filename '{stem}.{ext}'` produced `<out>/htdemucs/drums.wav` with no
+ * track directory at all.
+ *
+ * An earlier version only understood the nested layout, so it silently moved
+ * nothing and the caller reported "did not produce every stem" for a run that
+ * had in fact succeeded. Both shapes are handled now.
+ */
+async function flattenStems(nested, stemsDir) {
+  if (!fs.existsSync(nested)) return
+  const dirs = [nested]
+  for (const entry of await fsp.readdir(nested, { withFileTypes: true })) {
+    if (entry.isDirectory()) dirs.push(path.join(nested, entry.name))
+  }
+  for (const dir of dirs) {
+    for (const stem of STEMS) {
+      const from = path.join(dir, `${stem}.wav`)
+      if (fs.existsSync(from)) await fsp.rename(from, path.join(stemsDir, `${stem}.wav`))
+    }
+  }
+}
+
 export async function separate(wavPath, stemsDir, { onProgress } = {}) {
   if (cacheComplete(stemsDir)) return { ...stemPaths(stemsDir), cached: true }
 
@@ -48,6 +75,7 @@ export async function separate(wavPath, stemsDir, { onProgress } = {}) {
 
   const nested = path.join(stemsDir, MODEL)
 
+  let spawnError = null
   try {
     await new Promise((resolve, reject) => {
       const child = spawn('demucs', demucsArgs(wavPath, stemsDir), { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -70,25 +98,21 @@ export async function separate(wavPath, stemsDir, { onProgress } = {}) {
         reject(new Error(`demucs exited ${code}\n${tail.trim().split('\n').slice(-5).join('\n')}`))
       })
     })
-  } finally {
-    // Demucs nests output under <out>/<model>/<track>/, vocals.wav included.
-    // Flatten what we keep and drop the rest whether the run succeeded or
-    // failed - keeping the original recording off disk does not get to
-    // depend on the happy path. Cleanup must never mask the real Demucs
-    // error, so its own failures are swallowed.
-    if (fs.existsSync(nested)) {
-      await (async () => {
-        const trackDirs = await fsp.readdir(nested)
-        for (const dir of trackDirs) {
-          for (const stem of STEMS) {
-            const from = path.join(nested, dir, `${stem}.wav`)
-            if (fs.existsSync(from)) await fsp.rename(from, path.join(stemsDir, `${stem}.wav`))
-          }
-        }
-      })().catch(() => {})
-      await fsp.rm(nested, { recursive: true, force: true }).catch(() => {})
-    }
+  } catch (error) {
+    spawnError = error
   }
+
+  try {
+    await flattenStems(nested, stemsDir)
+  } catch (error) {
+    // A flatten failure matters when the run itself succeeded. When demucs
+    // already failed, the demucs error is the one worth reporting.
+    if (!spawnError) throw error
+  }
+  // vocals.wav lives in here; it goes whether or not the run succeeded.
+  await fsp.rm(nested, { recursive: true, force: true }).catch(() => {})
+
+  if (spawnError) throw spawnError
 
   if (!cacheComplete(stemsDir)) {
     throw new Error(`demucs finished but did not produce every stem in ${stemsDir}`)

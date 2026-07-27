@@ -108,3 +108,125 @@ describe('cacheComplete', () => {
     expect(cacheComplete(dir)).toBe(true)
   })
 })
+
+describe('separate against a fake demucs', () => {
+  // A shell script standing in for the real `demucs` binary. Controlled by
+  // env vars so one script covers every scenario: `--help` (the probe in
+  // requireTool) always succeeds without touching the filesystem; otherwise
+  // it writes stub stem files under `<outDir>/htdemucs/`, either flat or
+  // nested under a fake track directory, and exits with the requested code.
+  const FAKE_DEMUCS_SCRIPT = `#!/bin/sh
+if [ "$1" = "--help" ]; then
+  echo "usage: fake demucs"
+  exit 0
+fi
+
+outDir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) outDir="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+model_dir="$outDir/htdemucs"
+
+if [ "$FAKE_DEMUCS_PARTIAL" = "1" ]; then
+  mkdir -p "$model_dir/sometrack"
+  head -c 2048 /dev/zero > "$model_dir/sometrack/vocals.wav"
+  exit "\${FAKE_DEMUCS_EXIT:-1}"
+fi
+
+if [ "$FAKE_DEMUCS_LAYOUT" = "nested" ]; then
+  target_dir="$model_dir/sometrack"
+else
+  target_dir="$model_dir"
+fi
+mkdir -p "$target_dir"
+for stem in drums bass other vocals; do
+  head -c 2048 /dev/zero > "$target_dir/$stem.wav"
+done
+exit "\${FAKE_DEMUCS_EXIT:-0}"
+`
+
+  // Installs the fake `demucs` at the front of PATH and sets the env vars the
+  // script reads. Returns a restore function that MUST be called in a
+  // `finally` - vitest can share a process across tests in this file, and a
+  // leaked PATH or env var would corrupt whatever runs next.
+  function installFakeDemucs({ layout = 'flat', exitCode = 0, partial = false } = {}) {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moltek-fake-demucs-'))
+    const scriptPath = path.join(binDir, 'demucs')
+    fs.writeFileSync(scriptPath, FAKE_DEMUCS_SCRIPT, { mode: 0o755 })
+    fs.chmodSync(scriptPath, 0o755)
+
+    const originalPath = process.env.PATH
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath}`
+    process.env.FAKE_DEMUCS_LAYOUT = layout
+    process.env.FAKE_DEMUCS_EXIT = String(exitCode)
+    process.env.FAKE_DEMUCS_PARTIAL = partial ? '1' : '0'
+
+    return function restore() {
+      process.env.PATH = originalPath
+      delete process.env.FAKE_DEMUCS_LAYOUT
+      delete process.env.FAKE_DEMUCS_EXIT
+      delete process.env.FAKE_DEMUCS_PARTIAL
+    }
+  }
+
+  function fakeInput(name) {
+    const file = path.join(tmp, name)
+    fs.writeFileSync(file, Buffer.alloc(2048, 1))
+    return file
+  }
+
+  it('flattens a flat demucs layout: kept stems land, vocals and htdemucs/ do not survive', async () => {
+    const restore = installFakeDemucs({ layout: 'flat', exitCode: 0 })
+    try {
+      const stemsDir = path.join(tmp, 'fake-flat')
+      const input = fakeInput('fake-flat-input.wav')
+
+      const result = await separate(input, stemsDir)
+
+      expect(result.cached).toBe(false)
+      for (const stem of STEMS) {
+        expect(fs.existsSync(path.join(stemsDir, `${stem}.wav`))).toBe(true)
+      }
+      expect(fs.existsSync(path.join(stemsDir, 'vocals.wav'))).toBe(false)
+      expect(fs.existsSync(path.join(stemsDir, 'htdemucs'))).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('flattens a nested demucs layout: kept stems land, vocals and htdemucs/ do not survive', async () => {
+    const restore = installFakeDemucs({ layout: 'nested', exitCode: 0 })
+    try {
+      const stemsDir = path.join(tmp, 'fake-nested')
+      const input = fakeInput('fake-nested-input.wav')
+
+      const result = await separate(input, stemsDir)
+
+      expect(result.cached).toBe(false)
+      for (const stem of STEMS) {
+        expect(fs.existsSync(path.join(stemsDir, `${stem}.wav`))).toBe(true)
+      }
+      expect(fs.existsSync(path.join(stemsDir, 'vocals.wav'))).toBe(false)
+      expect(fs.existsSync(path.join(stemsDir, 'htdemucs'))).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('reports the demucs error, not a flatten error, when the run fails partway through', async () => {
+    const restore = installFakeDemucs({ partial: true, exitCode: 1 })
+    try {
+      const stemsDir = path.join(tmp, 'fake-partial-failure')
+      const input = fakeInput('fake-partial-input.wav')
+
+      await expect(separate(input, stemsDir)).rejects.toThrow(/demucs exited 1/)
+      expect(fs.existsSync(path.join(stemsDir, 'htdemucs'))).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+})
