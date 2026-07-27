@@ -46,4 +46,29 @@ describe('toWav', () => {
     fs.writeFileSync(source, Buffer.from('this is not audio at all'))
     await expect(toWav(source, path.join(tmp, 'nope.wav'))).rejects.toThrow(/ffmpeg/i)
   })
+
+  it.skipIf(!hasFfmpeg)('leaves nothing at the output path when the conversion fails', async () => {
+    const source = path.join(tmp, 'not-audio-2.bin')
+    const out = path.join(tmp, 'nope-2.wav')
+    fs.writeFileSync(source, Buffer.from('this is not audio at all'))
+
+    await expect(toWav(source, out)).rejects.toThrow(/ffmpeg/i)
+
+    expect(fs.existsSync(out)).toBe(false)
+    expect(fs.existsSync(`${out}.partial`)).toBe(false)
+  })
+
+  it.skipIf(!hasFfmpeg)('re-encodes rather than trusting a truncated earlier run', async () => {
+    const source = path.join(tmp, 'in-2.wav')
+    const out = path.join(tmp, 'out-2.wav')
+    fs.writeFileSync(source, synthClip({ seconds: 2, bpm: 120, key: 'A minor', sampleRate: 48000 }))
+    // Simulate a crash mid-encode: a stale partial file left behind by an
+    // interrupted earlier run, with nothing at the final path. Nothing should
+    // short-circuit on this - it sits at the temp path, not the cached one.
+    fs.writeFileSync(`${out}.partial`, Buffer.alloc(2044, 1))
+
+    await toWav(source, out)
+
+    expect(() => decodeWav(fs.readFileSync(out))).not.toThrow()
+  })
 })
