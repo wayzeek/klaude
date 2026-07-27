@@ -66,7 +66,8 @@ export async function toWav(inputPath, outputPath) {
     })
     await fs.rename(tempPath, outputPath)
   } catch (error) {
-    await fs.rm(tempPath, { force: true })
+    // Cleanup must never mask the real failure, so its own errors are dropped.
+    await fs.rm(tempPath, { force: true }).catch(() => {})
     throw error
   }
 

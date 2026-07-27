@@ -47,28 +47,37 @@ describe('toWav', () => {
     await expect(toWav(source, path.join(tmp, 'nope.wav'))).rejects.toThrow(/ffmpeg/i)
   })
 
-  it.skipIf(!hasFfmpeg)('leaves nothing at the output path when the conversion fails', async () => {
-    const source = path.join(tmp, 'not-audio-2.bin')
-    const out = path.join(tmp, 'nope-2.wav')
-    fs.writeFileSync(source, Buffer.from('this is not audio at all'))
-
-    await expect(toWav(source, out)).rejects.toThrow(/ffmpeg/i)
-
-    expect(fs.existsSync(out)).toBe(false)
+  it.skipIf(!hasFfmpeg)('produces a WAV the analysis can actually read', async () => {
+    const source = path.join(tmp, 'good.wav')
+    const out = path.join(tmp, 'recover.wav')
+    fs.writeFileSync(source, synthClip({ seconds: 1, bpm: 120, key: 'A minor' }))
+    await toWav(source, out)
+    expect(() => decodeWav(fs.readFileSync(out))).not.toThrow()
     expect(fs.existsSync(`${out}.partial`)).toBe(false)
   })
 
-  it.skipIf(!hasFfmpeg)('re-encodes rather than trusting a truncated earlier run', async () => {
-    const source = path.join(tmp, 'in-2.wav')
-    const out = path.join(tmp, 'out-2.wav')
-    fs.writeFileSync(source, synthClip({ seconds: 2, bpm: 120, key: 'A minor', sampleRate: 48000 }))
-    // Simulate a crash mid-encode: a stale partial file left behind by an
-    // interrupted earlier run, with nothing at the final path. Nothing should
-    // short-circuit on this - it sits at the temp path, not the cached one.
-    fs.writeFileSync(`${out}.partial`, Buffer.alloc(2044, 1))
+  /**
+   * This is the test that actually discriminates the fix from the bug.
+   *
+   * An earlier pair of tests here asserted true things that passed equally
+   * against the broken implementation, which makes them decoration rather than
+   * coverage. The property worth protecting is that the conversion goes through
+   * a temp path, and the way to prove it is to sabotage that path.
+   *
+   * Blocking `<out>.partial` with a directory makes ffmpeg's write fail, so a
+   * correct implementation rejects and leaves the final path empty. An
+   * implementation that wrote straight to the final path would sail past the
+   * obstruction and succeed, failing this test.
+   */
+  it.skipIf(!hasFfmpeg)('writes through a temp path, not straight to the output', async () => {
+    const source = path.join(tmp, 'temp-path.wav')
+    const out = path.join(tmp, 'blocked.wav')
+    fs.writeFileSync(source, synthClip({ seconds: 1, bpm: 120, key: 'A minor' }))
+    fs.mkdirSync(`${out}.partial`, { recursive: true })
 
-    await toWav(source, out)
+    await expect(toWav(source, out)).rejects.toThrow()
+    expect(fs.existsSync(out)).toBe(false)
 
-    expect(() => decodeWav(fs.readFileSync(out))).not.toThrow()
+    fs.rmSync(`${out}.partial`, { recursive: true, force: true })
   })
 })
