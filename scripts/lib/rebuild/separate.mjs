@@ -31,7 +31,7 @@ export function stemPaths(stemsDir) {
   return paths
 }
 
-function cacheComplete(stemsDir) {
+export function cacheComplete(stemsDir) {
   return STEMS.every((stem) => {
     const file = path.join(stemsDir, `${stem}.wav`)
     return fs.existsSync(file) && fs.statSync(file).size > 1024
@@ -46,40 +46,48 @@ export async function separate(wavPath, stemsDir, { onProgress } = {}) {
 
   await fsp.mkdir(stemsDir, { recursive: true })
 
-  await new Promise((resolve, reject) => {
-    const child = spawn('demucs', demucsArgs(wavPath, stemsDir), { stdio: ['ignore', 'pipe', 'pipe'] })
-    let tail = ''
-    const note = (chunk) => {
-      const text = String(chunk)
-      tail = `${tail}${text}`.slice(-2000)
-      if (onProgress) onProgress(text)
-    }
-    child.stdout.on('data', note)
-    child.stderr.on('data', note)
-    child.on('error', (error) =>
-      reject(error.code === 'ENOENT' ? new Error('demucs vanished mid-run') : error),
-    )
-    child.on('close', (code) => {
-      if (code === 0) return resolve()
-      if (/killed|out of memory|cannot allocate/i.test(tail)) {
-        return reject(new Error(`demucs ran out of memory on ${path.basename(wavPath)}`))
-      }
-      reject(new Error(`demucs exited ${code}\n${tail.trim().split('\n').slice(-5).join('\n')}`))
-    })
-  })
-
-  // Demucs nests output under <out>/<model>/<track>/. Flatten what we keep and
-  // drop the rest, vocals included.
   const nested = path.join(stemsDir, MODEL)
-  if (fs.existsSync(nested)) {
-    const trackDirs = await fsp.readdir(nested)
-    for (const dir of trackDirs) {
-      for (const stem of STEMS) {
-        const from = path.join(nested, dir, `${stem}.wav`)
-        if (fs.existsSync(from)) await fsp.rename(from, path.join(stemsDir, `${stem}.wav`))
+
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn('demucs', demucsArgs(wavPath, stemsDir), { stdio: ['ignore', 'pipe', 'pipe'] })
+      let tail = ''
+      const note = (chunk) => {
+        const text = String(chunk)
+        tail = `${tail}${text}`.slice(-2000)
+        if (onProgress) onProgress(text)
       }
+      child.stdout.on('data', note)
+      child.stderr.on('data', note)
+      child.on('error', (error) =>
+        reject(error.code === 'ENOENT' ? new Error('demucs vanished mid-run') : error),
+      )
+      child.on('close', (code) => {
+        if (code === 0) return resolve()
+        if (/killed|out of memory|cannot allocate/i.test(tail)) {
+          return reject(new Error(`demucs ran out of memory on ${path.basename(wavPath)}`))
+        }
+        reject(new Error(`demucs exited ${code}\n${tail.trim().split('\n').slice(-5).join('\n')}`))
+      })
+    })
+  } finally {
+    // Demucs nests output under <out>/<model>/<track>/, vocals.wav included.
+    // Flatten what we keep and drop the rest whether the run succeeded or
+    // failed - keeping the original recording off disk does not get to
+    // depend on the happy path. Cleanup must never mask the real Demucs
+    // error, so its own failures are swallowed.
+    if (fs.existsSync(nested)) {
+      await (async () => {
+        const trackDirs = await fsp.readdir(nested)
+        for (const dir of trackDirs) {
+          for (const stem of STEMS) {
+            const from = path.join(nested, dir, `${stem}.wav`)
+            if (fs.existsSync(from)) await fsp.rename(from, path.join(stemsDir, `${stem}.wav`))
+          }
+        }
+      })().catch(() => {})
+      await fsp.rm(nested, { recursive: true, force: true }).catch(() => {})
     }
-    await fsp.rm(nested, { recursive: true, force: true })
   }
 
   if (!cacheComplete(stemsDir)) {
