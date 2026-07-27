@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { contentHash, ensureRunDir, runDir } from './paths.mjs'
+import { contentHash, ensureRunDir, REPO_ROOT, runDir, stagingDir } from './paths.mjs'
 
 const made = []
 afterEach(() => {
@@ -25,6 +25,30 @@ describe('contentHash', () => {
 describe('runDir', () => {
   it('lands under .moltek/rebuilds, which is gitignored', () => {
     expect(runDir('abc123')).toContain(path.join('.moltek', 'rebuilds', 'abc123'))
+  })
+
+  it('is unaffected by the current working directory', () => {
+    const before = runDir('abc')
+    const originalCwd = process.cwd()
+    try {
+      process.chdir(path.join(REPO_ROOT, 'scripts', 'lib', 'rebuild'))
+      expect(runDir('abc')).toBe(before)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  })
+
+  it('actually sits inside the gitignored .moltek/ tree', () => {
+    const dir = runDir('abc')
+    expect(dir.startsWith(REPO_ROOT)).toBe(true)
+    expect(path.relative(REPO_ROOT, dir).startsWith('.moltek/')).toBe(true)
+  })
+})
+
+describe('stagingDir', () => {
+  it('sits under REPO_ROOT too', () => {
+    expect(stagingDir().startsWith(REPO_ROOT)).toBe(true)
+    expect(path.relative(REPO_ROOT, stagingDir())).toBe(path.join('.moltek', 'staging'))
   })
 })
 

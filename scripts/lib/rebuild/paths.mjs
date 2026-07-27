@@ -8,10 +8,36 @@
  */
 
 import crypto from 'node:crypto'
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = path.resolve(process.cwd(), '.moltek', 'rebuilds')
+/**
+ * The repo root, found by walking up from this file to the nearest package.json.
+ *
+ * Deliberately not `process.cwd()`. The ignore rule is `/.moltek/`, anchored to
+ * the repo root, so a cwd-relative path writes into a directory git does not
+ * ignore the moment anyone runs the CLI from a subdirectory. That turns stems
+ * and downloaded audio into stageable files, which is the one thing this module
+ * exists to prevent.
+ */
+function findRepoRoot() {
+  let dir = path.dirname(fileURLToPath(import.meta.url))
+  while (dir !== path.dirname(dir)) {
+    if (fsSync.existsSync(path.join(dir, 'package.json'))) return dir
+    dir = path.dirname(dir)
+  }
+  throw new Error('Could not locate the repo root: no package.json above scripts/lib/rebuild/')
+}
+
+export const REPO_ROOT = findRepoRoot()
+const ROOT = path.join(REPO_ROOT, '.moltek', 'rebuilds')
+
+/** Where a fetch lands before its content hash is known. */
+export function stagingDir() {
+  return path.join(REPO_ROOT, '.moltek', 'staging')
+}
 
 export function contentHash(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16)
