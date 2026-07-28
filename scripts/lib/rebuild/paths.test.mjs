@@ -46,9 +46,17 @@ describe('runDir', () => {
 })
 
 describe('stagingDir', () => {
-  it('sits under REPO_ROOT too', () => {
-    expect(stagingDir().startsWith(REPO_ROOT)).toBe(true)
-    expect(path.relative(REPO_ROOT, stagingDir())).toBe(path.join('.moltek', 'staging'))
+  it('sits under REPO_ROOT, inside .moltek/staging', () => {
+    const dir = stagingDir()
+    expect(dir.startsWith(REPO_ROOT)).toBe(true)
+    const relative = path.relative(REPO_ROOT, dir)
+    expect(relative.startsWith(path.join('.moltek', 'staging') + path.sep)).toBe(true)
+  })
+
+  it('returns a fresh, unique directory on every call, so concurrent runs cannot collide', () => {
+    const a = stagingDir()
+    const b = stagingDir()
+    expect(a).not.toBe(b)
   })
 })
 

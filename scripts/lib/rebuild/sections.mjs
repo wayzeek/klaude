@@ -28,17 +28,14 @@
  * are not even the same duration - is not a repeat.
  */
 
+import { BANDS } from '../../analyze.mjs'
 import { decodeWav } from '../decoded-audio.mjs'
 import { CHROMA_FFT, fft, makeHann } from '../dsp.mjs'
 
-const BANDS_HZ = [
-  [20, 60],
-  [60, 150],
-  [150, 400],
-  [400, 2000],
-  [2000, 6000],
-  [6000, 16000],
-]
+// Same six bands analyze.mjs and profile.mjs use, restated here only as the
+// raw [lo, hi] pairs FFT bin mapping needs, so a future retune of BANDS
+// cannot silently drift out of sync with this module.
+const BANDS_HZ = BANDS.map((band) => [band.lo, band.hi])
 
 const CHROMA_MIN_HZ = 80
 const CHROMA_MAX_HZ = 2000

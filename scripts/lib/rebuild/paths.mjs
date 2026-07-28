@@ -34,9 +34,19 @@ function findRepoRoot() {
 export const REPO_ROOT = findRepoRoot()
 const ROOT = path.join(REPO_ROOT, '.moltek', 'rebuilds')
 
-/** Where a fetch lands before its content hash is known. */
+/**
+ * Where a fetch lands before its content hash is known.
+ *
+ * Every call returns a fresh, unique subdirectory rather than one shared
+ * path. yt-dlp always writes `source.%(ext)s`, so two runs started close
+ * together would otherwise race on the same filename; a unique directory per
+ * invocation makes that impossible. Callers own the lifetime - remove it once
+ * the content hash and decode have both gone through, or the staged download
+ * accumulates on disk forever. A local file passed directly is never copied
+ * here, so it is never at risk from that cleanup.
+ */
 export function stagingDir() {
-  return path.join(REPO_ROOT, '.moltek', 'staging')
+  return path.join(REPO_ROOT, '.moltek', 'staging', crypto.randomUUID())
 }
 
 export function contentHash(buf) {

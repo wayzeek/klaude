@@ -37,21 +37,33 @@ const say = (message) => {
 
 async function main() {
   // The run directory is keyed by content, which is only knowable after the
-  // fetch, so fetch into a staging directory first.
+  // fetch, so fetch into a staging directory first. Each invocation gets its
+  // own subdirectory (see stagingDir), and it is removed once the content
+  // hash and decode have gone through - win or lose, since a local file is
+  // used in place and was never copied there, so cleanup never touches it.
   const staging = stagingDir()
   await fs.promises.mkdir(staging, { recursive: true })
 
-  say(`fetching ${input}`)
-  const source = await resolveSource(input, staging)
+  let source
+  let hash
+  let dirs
+  let wavPath
+  let wavBuf
+  try {
+    say(`fetching ${input}`)
+    source = await resolveSource(input, staging)
 
-  const hash = contentHash(await fs.promises.readFile(source.path))
-  const dirs = await ensureRunDir(hash)
-  say(`run ${hash}`)
+    hash = contentHash(await fs.promises.readFile(source.path))
+    dirs = await ensureRunDir(hash)
+    say(`run ${hash}`)
 
-  const wavPath = path.join(dirs.source, 'mix.wav')
-  say('decoding')
-  await toWav(source.path, wavPath)
-  const wavBuf = await fs.promises.readFile(wavPath)
+    wavPath = path.join(dirs.source, 'mix.wav')
+    say('decoding')
+    await toWav(source.path, wavPath)
+    wavBuf = await fs.promises.readFile(wavPath)
+  } finally {
+    await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {})
+  }
 
   say('profiling')
   const profile = profileReference(wavBuf, { title: source.title, url: input, source: source.source })
