@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decodeWav } from '../../decoded-audio.mjs'
-import { ONSET_HOP } from '../../dsp.mjs'
+import { ONSET_FFT, ONSET_HOP } from '../../dsp.mjs'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
 import { bandEnergy, bandNovelty, pickBandOnsets } from './bands.mjs'
 
@@ -64,9 +64,19 @@ describe('bandNovelty', () => {
     // the first analysis window.
     expect(onsets.length).toBeGreaterThanOrEqual(6)
     expect(onsets.length).toBeLessThanOrEqual(9)
+    // 20-120Hz only clears 16 bins (MIN_BAND_BINS) at fftSize 8192, so this
+    // call auto-widens from the default 1024. hop stays ONSET_HOP - the curve
+    // is still sampled every 11.6ms - but an 8192-sample (~186ms) window takes
+    // a real fraction of its own width to "see" an attack, so every peak lands
+    // late by a consistent, measured ~0.15-0.16s (see task-3-report.md's
+    // fftSize sweep). That is a bias, not jitter: spacing between onsets is
+    // still tight even though their absolute position is not.
+    for (let i = 1; i < onsets.length; i++) {
+      expect(Math.abs(onsets[i].seconds - onsets[i - 1].seconds - 0.5)).toBeLessThan(0.02)
+    }
     for (const onset of onsets) {
       const nearest = Math.round(onset.seconds / 0.5) * 0.5
-      expect(Math.abs(onset.seconds - nearest)).toBeLessThan(0.04)
+      expect(Math.abs(onset.seconds - nearest)).toBeLessThan(0.2)
     }
   })
 
@@ -115,5 +125,43 @@ describe('bandEnergy', () => {
     const atHit = energy[Math.round(1 * hopsPerSecond)]
     const between = energy[Math.round(1.4 * hopsPerSecond)]
     expect(atHit).toBeGreaterThan(between * 4)
+  })
+})
+
+describe('default fftSize', () => {
+  // hop is fixed at ONSET_HOP regardless of fftSize, so the array length is a
+  // direct fingerprint of which window was actually used: a wider window
+  // fits fewer hops in the same clip. This is what would catch a regression
+  // like "someone forces fftSize back to 1024 for every band" without
+  // reaching into bands.mjs's internals - the kick band's onset rate would
+  // quietly go 6x wrong (see task-3-report.md) while this assertion fails
+  // loudly instead.
+  const hopsFor = (numFrames, fftSize) => Math.floor((numFrames - fftSize) / ONSET_HOP) + 1
+
+  it('widens a narrow low-frequency band past the default window', () => {
+    const audio = decodeWav(twoBandClip())
+    // 20-120Hz clears 16 bins (MIN_BAND_BINS) only at fftSize 8192.
+    const novelty = bandNovelty(audio, { lo: 20, hi: 120 })
+    expect(novelty.length).toBe(hopsFor(audio.numFrames, 8192))
+    expect(novelty.length).not.toBe(hopsFor(audio.numFrames, ONSET_FFT))
+
+    const energy = bandEnergy(audio, { lo: 20, hi: 120 })
+    expect(energy.length).toBe(hopsFor(audio.numFrames, 8192))
+  })
+
+  it('leaves a wide high-frequency band at the default window', () => {
+    const audio = decodeWav(twoBandClip())
+    // 8000-16000Hz already clears 16 bins at the default 1024.
+    const novelty = bandNovelty(audio, { lo: 8000, hi: 16000 })
+    expect(novelty.length).toBe(hopsFor(audio.numFrames, ONSET_FFT))
+
+    const energy = bandEnergy(audio, { lo: 8000, hi: 16000 })
+    expect(energy.length).toBe(hopsFor(audio.numFrames, ONSET_FFT))
+  })
+
+  it('still honours an explicit fftSize override', () => {
+    const audio = decodeWav(twoBandClip())
+    const novelty = bandNovelty(audio, { lo: 20, hi: 120, fftSize: ONSET_FFT })
+    expect(novelty.length).toBe(hopsFor(audio.numFrames, ONSET_FFT))
   })
 })
