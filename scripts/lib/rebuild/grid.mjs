@@ -290,27 +290,28 @@ function contrastAt(beats, period) {
 }
 
 /**
- * How much to trust a beatsPerBar candidate before the audio has said
- * anything at all.
- *
- * This repertoire is techno and adjacent - essentially all of it is in four.
- * A period-2 pattern in the low band (a bassline moving every two beats) is
- * genuinely present in the audio and genuinely nests inside a four-beat bar;
- * the signal alone cannot say whether that pattern IS the bar or sits inside
- * one, because both readings explain the same measurement equally well. The
- * answer comes from what this material actually is, the same reason
- * `tempoPrior` exists. 3 has to overcome this before it can win; 4 does not.
- */
-const BEATS_PER_BAR_PRIOR = { 3: 0.4, 4: 1 }
-
-/**
  * How many beats to a bar.
  *
  * Downbeats carry more low-end energy than other beats - a real kick, and
  * this module's own accented test fixture alike. Score a 3 and a 4 with
- * `contrastAt`, weight by `BEATS_PER_BAR_PRIOR`, and take the better.
- * Anything more exotic is out of scope: the clone emits `arrange()` over
- * bars, and guessing 7/8 wrong is worse than calling it 4.
+ * `contrastAt` and take the better. Anything more exotic is out of scope: the
+ * clone emits `arrange()` over bars, and guessing 7/8 wrong is worse than
+ * calling it 4.
+ *
+ * There is no prior weighting 4 over 3 here. One was added and then measured
+ * away: on all three real recordings this module has, `contrastAt(beats, 4)`
+ * already beats `contrastAt(beats, 3)` by 0.35-0.44 raw, before any prior -
+ * the spread fix (see `contrastAt`) already resolves the bassline-nesting
+ * ambiguity a prior was meant to cover, so the prior was never load-bearing
+ * for anything this module has been measured against. And on a genuinely
+ * three-beat accented fixture, the raw margin for 3 over 4 is just as
+ * decisive (0.41-0.50) - a discount strong enough to matter on real material
+ * would have to be strong enough to turn that decisive a signal into a
+ * refusal, which measured directly at a discount of 0.4, is exactly what
+ * happened: correct beatsPerBar, confidence pushed from ~0.50 to ~0.20,
+ * under the 0.25 gate. A weight that cannot help on anything this module can
+ * check and demonstrably hurts on the one thing it can check is worse than no
+ * weight at all.
  *
  * This takes the decoded audio directly rather than the novelty curve,
  * because the novelty curve is exactly what cannot carry this measurement -
@@ -322,7 +323,15 @@ export function detectMeter(audio, beatSeconds, phaseSeconds) {
   const beats = []
   for (let i = 0; ; i++) {
     const frame = Math.round(phaseFrames + i * beatFrames)
-    if (frame >= audio.numFrames) break
+    // The full BAND_FFT window must fit, not just its start. A beat whose
+    // window runs off the end of the buffer gets zero-padded by
+    // lowBandEnergyAt, which reads as an artificially quiet beat rather than
+    // an absent one - measured directly, a last beat 64% zero-padded read as
+    // the quietest position in its bar-position group, on a clip whose total
+    // beat count happened to divide evenly by 4, concentrating that one
+    // corrupted beat into a single group and manufacturing a bar-length
+    // signal (0.235) that was not in the audio at all.
+    if (frame + BAND_FFT > audio.numFrames) break
     beats.push(lowBandEnergyAt(audio, frame))
   }
   if (beats.length < 8) return { beatsPerBar: 4, downbeatOffset: 0, confidence: 0 }
@@ -330,12 +339,11 @@ export function detectMeter(audio, beatSeconds, phaseSeconds) {
   let best = { beatsPerBar: 4, downbeatOffset: 0, confidence: 0 }
   for (const beatsPerBar of [3, 4]) {
     const own = contrastAt(beats, beatsPerBar)
-    const confidence = own.confidence * BEATS_PER_BAR_PRIOR[beatsPerBar]
     // Which beat of the bar is strongest IS the downbeat. Computing it for a
     // confidence score and then discarding it would leave the grid with beats
     // but no bar one, so bar lines would land on an arbitrary beat: exactly the
     // error this whole module exists to prevent.
-    if (confidence > best.confidence) best = { beatsPerBar, downbeatOffset: own.downbeatOffset, confidence }
+    if (own.confidence > best.confidence) best = { beatsPerBar, downbeatOffset: own.downbeatOffset, confidence: own.confidence }
   }
   return best
 }

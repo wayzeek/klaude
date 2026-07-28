@@ -102,6 +102,35 @@ describe('detectMeter', () => {
     const distanceToNearestAccent = Math.min(offsetIntoBar, barSeconds - offsetIntoBar)
     expect(distanceToNearestAccent).toBeLessThan(beatSeconds * 0.5)
   })
+
+  /**
+   * The branch a `BEATS_PER_BAR_PRIOR` favouring 4 would have suppressed, and
+   * the reason it was removed rather than kept at an unvalidated weight.
+   * Measured directly before removal: on this fixture the raw margin between
+   * `contrastAt(beats, 3)` and `contrastAt(beats, 4)` was 0.41-0.50 across the
+   * full BPM sweep - as decisive as this module's measurements get - yet a
+   * prior discount of 0.4 pushed the correct answer's confidence from ~0.50
+   * down to ~0.20, under the 0.25 gate. A weight that cannot help on any real
+   * recording this module has been checked against (see `detectMeter`'s own
+   * comment) and demonstrably suppresses a decisive correct answer on the one
+   * synthetic case built to test it is worse than no weight.
+   */
+  it('reaches beatsPerBar 3 on a genuine three-beat fixture, and still reaches 4 on a four-beat one', () => {
+    const bpm = 120
+    const beatSeconds = 60 / bpm
+
+    const three = decodedOf(bpm, { accentEvery: 3 })
+    const threePhase = beatPhase(three.novelty, beatSeconds / three.hopSeconds)
+    const threeMeter = detectMeter(three.audio, beatSeconds, threePhase.offsetHops * three.hopSeconds)
+    expect(threeMeter.beatsPerBar).toBe(3)
+    expect(threeMeter.confidence).toBeGreaterThanOrEqual(0.25)
+
+    const four = decodedOf(bpm, { accentEvery: 4 })
+    const fourPhase = beatPhase(four.novelty, beatSeconds / four.hopSeconds)
+    const fourMeter = detectMeter(four.audio, beatSeconds, fourPhase.offsetHops * four.hopSeconds)
+    expect(fourMeter.beatsPerBar).toBe(4)
+    expect(fourMeter.confidence).toBeGreaterThanOrEqual(0.25)
+  })
 })
 
 describe('detectGrid', () => {
@@ -136,15 +165,34 @@ describe('detectGrid', () => {
   })
 
   // Same ten BPMs as the findTempo sweep, now through the full pipeline
-  // including meter - which round 2 could not clear at 90 BPM (0.231,
-  // just under the gate) until the metrical prior and the spread-based
-  // contrast in this round gave it enough margin (0.308).
+  // including meter - which round 2 could not clear at 90 BPM (0.231, just
+  // under the gate) until this round's spread-based contrast and the fix to
+  // a boundary artifact (a zero-padded final beat manufacturing a spurious
+  // bar-length signal on clips whose beat count divided evenly by 4) gave it
+  // enough margin (0.522).
   for (const bpm of [90, 100, 110, 120, 128, 138, 140, 150, 160, 174]) {
-    it(`clears every gate end to end at ${bpm} BPM on an accented fixture`, () => {
+    it(`clears every gate end to end at ${bpm} BPM on a four-beat accented fixture`, () => {
       const grid = detectGrid(rhythmClip({ seconds: 16, bpm, accentEvery: 4 }))
       expect(grid.bpm).toBeCloseTo(bpm, 0)
       expect(grid.beatsPerBar).toBe(4)
       const barSeconds = grid.beatSeconds * 4
+      const offsetIntoBar = ((grid.downbeatSeconds % barSeconds) + barSeconds) % barSeconds
+      const distanceToNearestAccent = Math.min(offsetIntoBar, barSeconds - offsetIntoBar)
+      expect(distanceToNearestAccent).toBeLessThan(grid.beatSeconds * 0.5)
+    })
+  }
+
+  // Mirrors the four-beat sweep above on a genuinely three-beat fixture - the
+  // coverage gap a code reviewer found: nothing in this suite had ever
+  // exercised beatsPerBar 3 winning. Every one of these was the exact case
+  // that exposed the boundary artifact above at 90 BPM specifically (a
+  // zero-padded last beat wrongly flipped 3 to 4 there before the fix).
+  for (const bpm of [90, 100, 110, 120, 128, 138, 140, 150, 160, 174]) {
+    it(`reaches beatsPerBar 3 end to end at ${bpm} BPM on a three-beat accented fixture`, () => {
+      const grid = detectGrid(rhythmClip({ seconds: 16, bpm, accentEvery: 3 }))
+      expect(grid.bpm).toBeCloseTo(bpm, 0)
+      expect(grid.beatsPerBar).toBe(3)
+      const barSeconds = grid.beatSeconds * 3
       const offsetIntoBar = ((grid.downbeatSeconds % barSeconds) + barSeconds) % barSeconds
       const distanceToNearestAccent = Math.min(offsetIntoBar, barSeconds - offsetIntoBar)
       expect(distanceToNearestAccent).toBeLessThan(grid.beatSeconds * 0.5)
