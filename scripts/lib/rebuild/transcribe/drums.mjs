@@ -55,7 +55,12 @@ const DETECTORS = {
  * fundamental starts triggering the curve, and a bass note is not a kick. Its
  * floor of 10 is `bandEnergyRise`'s own calibration, carried over from Task 3.
  * `snare` is the body, not the crack - the crack sits in the hats band and
- * would double every snare as a hat without the suppression rule below.
+ * would double every snare as a hat without `suppressSnareCrack` below. The
+ * same band also catches the kick's own broadband splatter; `suppressKickBleed`
+ * exists because that bleed repeats every bar just like a real kick pattern
+ * does, and a per-section confidence gate has no way to tell the two apart on
+ * sharpness alone - it needed a second signal, not a stricter version of the
+ * first one.
  * `hats` starts at 5 kHz, above where a snare's body ends.
  */
 export const DRUM_ROLES = Object.freeze([
@@ -74,6 +79,25 @@ const MIN_ROLE_CONFIDENCE = 0.15
  *  trimmed because one crash-loud hit would flatten everything else. */
 const VELOCITY_PERCENTILE = 0.9
 /**
+ * A snare hit coinciding with a kick is that kick's own broadband splatter
+ * when the snare band holds less than this share of the kick band's energy
+ * at the same instant.
+ *
+ * Measured on the real drum stem, bars 8-39 (task-4-report.md): every snare
+ * onset that lands on the same step as a kick onset and is confirmed a false
+ * positive against ground truth has a snare/kick raw-level ratio between
+ * 0.109 and 0.658 (median 0.255) - and, in the same window, not one of the
+ * onsets confirmed a true positive coincides with a kick onset at all. The
+ * two populations don't overlap, so this ratio isn't a compromise between two
+ * competing distributions the way `CRACK_SUPPRESSION_RATIO` is - it only has
+ * to clear the confirmed-bleed ceiling. Set to 0.7, just above that 0.658
+ * ceiling: on the whole track this drops the snare role from 533 onsets to
+ * 236 and raises bars-8-39 precision from 19.7% to 45.0% at unchanged recall
+ * (97.8%, the same single miss as before - bar 37's one quiet syncopated
+ * ghost hit, already lost to the kick detector's own floor in Task 3).
+ */
+const KICK_BLEED_RATIO = 0.7
+/**
  * A hat coinciding with a snare is that snare's crack when the hat band holds
  * less than this share of the snare band's energy at the same instant.
  *
@@ -81,22 +105,22 @@ const VELOCITY_PERCENTILE = 0.9
  * normalised against that role's own 90th percentile, so a loud snare and a
  * loud hat both come out near 1 and a ratio between them measures nothing.
  *
- * Measured on the real drum stem (task-4-report.md): of every hat onset
- * landing on the same step as a snare onset (84% of all hat onsets do - the
- * snare band is active almost everywhere in this mix), the hat/snare raw
- * energy ratio has median 0.21 and falls as low as 0.03, because 180-1200 Hz
- * naturally carries far more energy than 5-16 kHz in any mixed track - the
- * reference profile's own band tilt is -25 to -32 dB up there. There is no
- * gap in that distribution separating "this hat is really the snare's crack"
- * from "this hat is real and the mix just has more low-mid energy right now":
- * a placeholder of 0.35 sits at roughly the 75th percentile and would drop
- * three out of every four hat hits in the whole track, most of them real.
- * Set to 0.05 - the 5th percentile - so the rule still exists for a genuinely
- * degenerate case (a hat reading two decades quieter than the snare at the
- * same instant) without gutting ordinary coincidence, which this recording's
- * spectral tilt makes the common case rather than the exception.
+ * Measured on the real drum stem (task-4-report.md), against the snare set
+ * `suppressKickBleed` has already cleaned: of every hat onset landing on the
+ * same step as a (cleaned) snare onset - 210 of 589 hat onsets do, down from
+ * 496 before that cleanup - the hat/snare raw energy ratio has median 0.214
+ * and a 5th percentile of 0.1011, because 180-1200 Hz naturally carries far
+ * more energy than 5-16 kHz in any mixed track - the reference profile's own
+ * band tilt is -25 to -32 dB up there. There is no gap in that distribution
+ * separating "this hat is really the snare's crack" from "this hat is real
+ * and the mix just has more low-mid energy right now": a placeholder of 0.35
+ * sits well above the 90th percentile (0.405) and would drop most hat hits in
+ * the whole track, the great majority of them real. Set to 0.10, matching the
+ * measured 5th percentile (0.1011): on the whole track this drops 10 of the
+ * 210 coincident pairs - 1.7% of all hat onsets - rather than the 74% the
+ * placeholder would have cost.
  */
-const CRACK_SUPPRESSION_RATIO = 0.05
+const CRACK_SUPPRESSION_RATIO = 0.1
 
 /**
  * Every hit in every band, quantised to the grid.
@@ -137,8 +161,38 @@ export function detectDrumHits(audio, grid) {
     }))
   }
 
+  // Order matters: clean the snare role of kick bleed first, then let
+  // `suppressSnareCrack` judge hats against that cleaned set rather than one
+  // still full of onsets that were never a snare in the first place.
+  suppressKickBleed(hits)
   suppressSnareCrack(hits)
   return hits
+}
+
+/**
+ * Drop snare detections that are really a kick's own broadband splatter.
+ *
+ * A kick's attack has energy well above its own band - the same mechanism
+ * that made `bandNovelty` over-trigger on the kick band in Task 3, just seen
+ * from the neighbouring band instead of the kick's own. Left alone, this
+ * track's kick pattern (four-on-the-floor almost everywhere) gets echoed into
+ * the snare role as a confident, densely-repeating loop, even though this
+ * track's real snare-role content is a near-silent ghost pattern. A role that
+ * cannot be heard confidently must come out `null`, not a wrong loop that
+ * happens to repeat every bar because the kick driving it does.
+ */
+function suppressKickBleed(hits) {
+  if (!hits.kick?.length || !hits.snare?.length) return
+  const kickByStep = new Map()
+  for (const hit of hits.kick) {
+    const existing = kickByStep.get(hit.step)
+    if (!existing || hit.level > existing.level) kickByStep.set(hit.step, hit)
+  }
+  hits.snare = hits.snare.filter((snare) => {
+    const kick = kickByStep.get(snare.step)
+    if (!kick) return true
+    return snare.level > kick.level * KICK_BLEED_RATIO
+  })
 }
 
 /**
