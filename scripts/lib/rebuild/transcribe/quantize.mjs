@@ -133,19 +133,42 @@ export function foldToLoop(
   }
 
   // Only candidates that divide the section evenly are usable: a 4-bar loop
-  // over a 6-bar section would silently drop the last two bars.
+  // over a 6-bar section would silently drop the last two bars. 1 always
+  // divides evenly, so `usable` is never empty - the branch below that
+  // assumed it could be is dead code, kept because a caller could still pass
+  // a `candidates` list without 1 in it.
   const usable = candidates.filter((bars) => bars <= section.bars && section.bars % bars === 0)
-  if (usable.length === 0) return { loopBars: section.bars, events: local, agreement: 1 }
+  const result =
+    usable.length === 0
+      ? { loopBars: section.bars, events: local, agreement: 1 }
+      : foldAgainstCandidates(local, usable, perBar, section.bars, minAgreement)
 
+  // `local.length > 0` here - a section with no events returned above - so a
+  // result with no kept events means folding destroyed real content, not that
+  // there was none. That happens whenever the section's bar count shares no
+  // factor with any candidate above 1 (17 is prime, so only the 1-bar
+  // candidate is usable at all): every bar is then a separate "repetition" of
+  // a 1-bar loop, the actual material does not repeat on that schedule, and
+  // the keep-fraction filter drops every bucket. The events already cleared
+  // the caller's own confidence gate before reaching here, so the honest
+  // fallback is the whole section verbatim - longer than #46 wants a loop to
+  // be, but a real transcript beats silently reporting nothing.
+  if (result.events.length === 0) return { loopBars: section.bars, events: local, agreement: 0 }
+  return result
+}
+
+/** Try each usable candidate length, shortest first, returning the first
+ *  that clears `minAgreement` or the best-scoring one if none do. */
+function foldAgainstCandidates(local, usable, perBar, sectionBars, minAgreement) {
   let best = null
   for (const bars of usable) {
-    const scored = scoreFold(local, bars, perBar, section.bars)
+    const scored = scoreFold(local, bars, perBar, sectionBars)
     if (!best || scored.agreement > best.agreement) best = scored
     if (scored.agreement >= minAgreement) return scored
   }
   // Nothing cleared the bar. The longest usable candidate loses the least.
   const longest = usable[usable.length - 1]
-  return scoreFold(local, longest, perBar, section.bars)
+  return scoreFold(local, longest, perBar, sectionBars)
 }
 
 /** Fold at one candidate length and measure how well the repetitions agree. */

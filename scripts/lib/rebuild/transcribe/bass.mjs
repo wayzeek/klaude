@@ -36,22 +36,33 @@ export const BASS_RANGE = Object.freeze({ minHz: 30, maxHz: 400 })
  * Swept windowSize on that same fixture: every value up to 3300 samples
  * quantises all eight notes to their correct step; 3350 and above start
  * missing steps, and 4096 (the default) gets every step but the first wrong.
- * 3072 was chosen from that range rather than the bare minimum, for the
- * headroom stated in `f0.mjs`'s own doc comment: a window must be at least
- * twice the longest period being searched, and at `minHz: 30` that period is
- * 1470 samples (44100/30), so the floor is 2940. 3072 clears that with margin
- * and sits well inside the measured pass range - unlike, say, 2940 exactly,
- * which would leave the lowest note in this track's own key (C1, 32.7 Hz,
- * period 1348, needing 2696) with almost no margin against the floor.
+ *
+ * That upper bound (3300) and `BASS_RANGE.minHz`'s own floor - a window must
+ * be at least twice the longest period being searched, per `f0.mjs`'s own doc
+ * comment, so 2 x 44100/30 = 2940 samples - leave a genuinely narrow gap to
+ * pick from, and where in it matters: 2940 exactly clears the floor by only
+ * 132 samples (4.5%), and `BASS_RANGE` is a general-purpose constant, not one
+ * fitted to this one recording, so that margin has to hold on material this
+ * track doesn't contain. 3200 was chosen from inside the verified-safe range
+ * - comfortably short of the 3350 failure point, confirmed against the full
+ * test file rather than the single assertion the sweep checked - to double
+ * that margin to 260 samples (8.8%) without giving any of it back to the
+ * onset-timing bug above.
+ *
+ * Raising `minHz` instead - the other way to widen this margin - was
+ * measured and rejected: matching `f0.mjs`'s own default margin ratio (4096
+ * against a 2940 floor, 39%) needs `minHz` near 40 Hz, which would exclude
+ * this track's own lowest roots (C1 at 32.7 Hz, Db1 at 34.6 Hz - both under
+ * 40) and break real coverage measured in `task-6-report.md`. `BASS_RANGE`
+ * stays at `minHz: 30`.
  *
  * On the real bass stem this also modestly helps, not just the synthetic
  * fixture: transcribing all twelve sections of `the-chase` and scoring every
- * emitted note against ground truth (`task-6-report.md`), 3072 raises both
- * the pitch-class and exact-MIDI match rate over 4096, because the sections
- * with the sparsest bass content are the ones most sensitive to a note
- * quantising onto the wrong step.
+ * emitted note against ground truth (`task-6-report.md`), 3200 matches
+ * 4096's real-stem accuracy within a fraction of a point while fixing the
+ * synthetic fixture's onset-quantisation failures outright.
  */
-const NOTE_WINDOW = 3072
+const NOTE_WINDOW = 3200
 
 /** A section needs this many notes to be worth emitting a bass layer for. */
 const MIN_NOTES_PER_SECTION = 2

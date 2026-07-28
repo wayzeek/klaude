@@ -157,6 +157,22 @@ describe('foldToLoop', () => {
     expect(folded.agreement).toBe(0)
   })
 
+  it('does not drop a confident section to nothing when its bar count has no usable candidate above 1', () => {
+    // 3 bars is prime: only the 1-bar candidate divides it, so every bar is
+    // treated as a repetition of the same 1-bar loop. Each bar here carries a
+    // different pitch on beat one - a real, confidently-heard line that
+    // simply does not repeat on a 1-bar schedule. Before the fix, each
+    // position/pitch bucket had only 1 of 3 repetitions (below the 50% keep
+    // threshold), so every bucket was dropped and the section came back with
+    // zero events - indistinguishable from "nothing was heard" even though
+    // three notes were. The section's content must survive, even if that
+    // means falling back to the whole section rather than a genuine loop.
+    const events = [ev(0, 41), ev(16, 43), ev(32, 46)]
+    const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid)
+    expect(folded.events).toHaveLength(3)
+    expect(folded.loopBars).toBe(3)
+  })
+
   it('rejects a section length no candidate divides, by using the section', () => {
     // 6 bars: 1 and 2 divide it, 4 does not. A 4-bar loop would drop bars 4-5.
     const events = []
