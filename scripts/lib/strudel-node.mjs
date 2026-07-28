@@ -456,3 +456,29 @@ export function queryEvents(pattern, from, to) {
     }))
     .sort((a, b) => a.begin - b.begin)
 }
+
+export const NOTE_OFFSETS = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }
+
+/**
+ * MIDI number for a hap's pitch, or null if it has none.
+ *
+ * Only `note` counts. `n` looks like a pitch but usually is not: on a sampled
+ * sound it selects the variant, so `s("conga").n(2)` means the third conga
+ * recording, not D-1. Strudel already converts `n()` to `note` wherever it is
+ * genuinely pitched (via `.scale()`), so reading `n` would only ever misread
+ * drums as deep bass and invent register collisions.
+ */
+export function midiOf(value) {
+  const note = value.note
+  if (typeof note === 'number') return note
+  if (typeof note !== 'string') return null
+  // Strudel accepts s/f as sharp/flat aliases alongside #/b.
+  const match = note.match(/^([a-gA-G])((?:[b#sf])*)(-?\d+)?$/)
+  if (!match) return null
+  const [, letter, accidentals, octave] = match
+  let semis = NOTE_OFFSETS[letter.toLowerCase()]
+  for (const accidental of accidentals) {
+    semis += accidental === '#' || accidental === 's' ? 1 : -1
+  }
+  return (Number(octave ?? 3) + 1) * 12 + semis
+}

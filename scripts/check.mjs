@@ -22,7 +22,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadStrudel, queryEvents, withCapturedLogs } from './lib/strudel-node.mjs'
+import { loadStrudel, midiOf, queryEvents, withCapturedLogs } from './lib/strudel-node.mjs'
 
 /** Cycles of the pattern to query when looking for repetition and balance. */
 const ANALYSIS_CYCLES = 64
@@ -380,32 +380,6 @@ function median(values) {
   const sorted = [...values].sort((a, b) => a - b)
   const mid = Math.floor(sorted.length / 2)
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-}
-
-const NOTE_OFFSETS = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }
-
-/**
- * MIDI number for a hap's pitch, or null if it has none.
- *
- * Only `note` counts. `n` looks like a pitch but usually is not: on a sampled
- * sound it selects the variant, so `s("conga").n(2)` means the third conga
- * recording, not D-1. Strudel already converts `n()` to `note` wherever it is
- * genuinely pitched (via `.scale()`), so reading `n` would only ever misread
- * drums as deep bass and invent register collisions.
- */
-function midiOf(value) {
-  const note = value.note
-  if (typeof note === 'number') return note
-  if (typeof note !== 'string') return null
-  // Strudel accepts s/f as sharp/flat aliases alongside #/b.
-  const match = note.match(/^([a-gA-G])((?:[b#sf])*)(-?\d+)?$/)
-  if (!match) return null
-  const [, letter, accidentals, octave] = match
-  let semis = NOTE_OFFSETS[letter.toLowerCase()]
-  for (const accidental of accidentals) {
-    semis += accidental === '#' || accidental === 's' ? 1 : -1
-  }
-  return (Number(octave ?? 3) + 1) * 12 + semis
 }
 
 /** Track files keep their code in a single ```javascript block. */
