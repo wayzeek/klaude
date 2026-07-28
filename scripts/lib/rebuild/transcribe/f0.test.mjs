@@ -32,6 +32,39 @@ function toneSequence(notes, { silenceBetween = 0, harmonics = [1, 0.5, 0.25] } 
   return writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
 }
 
+/** Deterministic band-limited noise: many sinusoids at random frequencies and
+ *  phases within [minHz, maxHz], so there is no single dominant period -
+ *  genuinely non-tonal - even though it carries plenty of energy in the bass
+ *  register. Uses the same seeded LCG as this codebase's other DSP fixtures
+ *  (see bands.test.mjs); no Math.random(). This exists to exercise the
+ *  clarity gate on `voiced`: silence is already caught by the RMS floor, so a
+ *  fixture that is loud but not periodic is the only way to prove the gate
+ *  does anything. */
+function bandLimitedNoise(seconds, { minHz = 30, maxHz = 400, components = 80, seed = 777 } = {}) {
+  let state = seed
+  const rand = () => {
+    state = (state * 1103515245 + 12345) & 0x7fffffff
+    return state / 0x7fffffff
+  }
+  const frames = Math.floor(seconds * SAMPLE_RATE)
+  const out = new Float32Array(frames)
+  const freqs = []
+  const phases = []
+  for (let c = 0; c < components; c++) {
+    freqs.push(minHz + rand() * (maxHz - minHz))
+    phases.push(rand() * 2 * Math.PI)
+  }
+  const amp = 1 / components
+  for (let i = 0; i < frames; i++) {
+    let value = 0
+    for (let c = 0; c < components; c++) {
+      value += amp * Math.sin((2 * Math.PI * freqs[c] * i) / SAMPLE_RATE + phases[c])
+    }
+    out[i] = value
+  }
+  return writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
+}
+
 describe('pitch conversion', () => {
   it('round-trips A440 as MIDI 69', () => {
     expect(hzToMidi(440)).toBeCloseTo(69, 10)
@@ -45,13 +78,18 @@ describe('pitch conversion', () => {
 
 describe('trackF0', () => {
   it('finds the fundamental, not the octave below', () => {
-    // MIDI 41 is F2, 87.3 Hz. Plain autocorrelation frequently reports 43.6.
+    // MIDI 41 is F2, 87.3 Hz. Plain autocorrelation frequently reports 43.6
+    // (MIDI 29, an octave down) instead. A median over ~80 frames of a clean
+    // tone would not budge from a single bad frame - checked by mutation,
+    // taking the global minimum of the raw (unnormalised) difference function
+    // still gives a median of 41.000 while one frame reads 29 - so assert on
+    // every voiced frame individually rather than a central statistic.
     const audio = decodeWav(toneSequence([{ midi: 41, seconds: 1 }]))
     const { frames } = trackF0(audio, { minHz: 30, maxHz: 400 })
     const voiced = frames.filter((f) => f.voiced)
     expect(voiced.length).toBeGreaterThan(frames.length * 0.7)
-    const median = medianOf(voiced.map((f) => f.midi))
-    expect(median).toBeCloseTo(41, 0)
+    const wrongOctave = voiced.filter((f) => Math.abs(f.midi - 41) > 1)
+    expect(wrongOctave).toEqual([])
   })
 
   it('tracks a change of note', () => {
@@ -82,6 +120,19 @@ describe('trackF0', () => {
     const { frames } = trackF0(audio, { minHz: 30, maxHz: 400 })
     const voiced = frames.filter((f) => f.voiced)
     expect(medianOf(voiced.map((f) => f.clarity))).toBeGreaterThan(0.7)
+  })
+
+  it('marks loud, non-tonal signal unvoiced rather than pitch-matching noise', () => {
+    // Silence is already caught by the RMS floor; this fixture is loud
+    // (comfortably above it) but has no dominant period, so this is the only
+    // fixture that actually exercises the clarity gate. Checked by mutation:
+    // dropping `clarity >= voicedThreshold` from the voiced expression takes
+    // this from 0/79 voiced to 79/79.
+    const audio = decodeWav(bandLimitedNoise(1))
+    const { frames } = trackF0(audio, { minHz: 30, maxHz: 400 })
+    expect(Math.min(...frames.map((f) => f.rms))).toBeGreaterThan(0.01)
+    const voiced = frames.filter((f) => f.voiced)
+    expect(voiced.length).toBeLessThan(frames.length * 0.1)
   })
 
   it('works in the lead register too', () => {
