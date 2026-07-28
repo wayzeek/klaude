@@ -159,7 +159,39 @@ export function structuralNovelty(matrix, n, kernelSize) {
   return novelty
 }
 
-export function findBoundaries(novelty, { minBeats }) {
+/**
+ * How far below (or above) the novelty curve's mean a peak is allowed to sit
+ * and still count as a boundary, in standard deviations.
+ *
+ * A missed boundary and a spurious one are not equally costly downstream.
+ * Each section becomes exactly one transcribed loop. Miss a boundary and two
+ * genuinely different sections get merged into one: that single transcription
+ * is drawn from a non-representative sample of heterogeneous material, and
+ * roughly half the merged section then plays wrong notes - not recoverable
+ * without re-detecting the split. Add a spurious boundary and homogeneous
+ * material just gets cut in two: both halves transcribe to the same content,
+ * and `matchRepeats`'s length-ratio gate (both halves are close to the same
+ * length) tends to catch the second as a repeat of the first for free. Cost:
+ * some redundant work. The music is still right either way. That asymmetry
+ * means the threshold should lean toward catching more boundaries, not fewer.
+ *
+ * Measured against `the-chase` (ground truth from its saved `arrange()`
+ * source, 16 interior boundaries, matched within 1 bar): the default of 1.0
+ * (a full standard deviation above the mean) catches 4 of them, all correct
+ * (precision 1.00, recall 0.25) - badly under-sensitive. Lowering the
+ * multiplier trades threshold height for recall at no precision cost for a
+ * while: 0.0 reaches 8/16 (recall 0.50, still precision 1.00), and -0.2
+ * reaches 11/16 (recall 0.69, still precision 1.00). That is where it stops
+ * being free: pushing to -0.25 gains nothing further on `the-chase` (still
+ * 11/16) while nearly tripling the boundary count on a second recording
+ * (blackout goes from 12 to 36 boundaries at that exact step) - a cliff, not
+ * a trend, and a sign of fitting one file's noise floor rather than finding
+ * a real boundary. -0.2 is the most sensitive setting that still shows a
+ * measured gain on the one file this module has ground truth for.
+ */
+const DEFAULT_THRESHOLD_MULTIPLIER = -0.2
+
+export function findBoundaries(novelty, { minBeats, thresholdMultiplier = DEFAULT_THRESHOLD_MULTIPLIER }) {
   let mean = 0
   let count = 0
   for (const value of novelty) {
@@ -173,7 +205,7 @@ export function findBoundaries(novelty, { minBeats }) {
   let variance = 0
   for (const value of novelty) if (value !== 0) variance += (value - mean) ** 2
   const stdDev = count ? Math.sqrt(variance / count) : 0
-  const threshold = mean + stdDev
+  const threshold = mean + thresholdMultiplier * stdDev
 
   const peaks = []
   for (let i = 1; i < novelty.length - 1; i++) {
@@ -262,7 +294,12 @@ export function matchRepeats(sections, vectors, { threshold, minLengthRatio = DE
 export function findSections(
   wavBuf,
   grid,
-  { minBars = 4, repeatThreshold = 0.9, minLengthRatio = DEFAULT_MIN_LENGTH_RATIO } = {},
+  {
+    minBars = 4,
+    repeatThreshold = 0.9,
+    minLengthRatio = DEFAULT_MIN_LENGTH_RATIO,
+    thresholdMultiplier = DEFAULT_THRESHOLD_MULTIPLIER,
+  } = {},
 ) {
   const audio = decodeWav(wavBuf)
   const { vectors } = beatFeatures(audio, grid)
@@ -287,7 +324,7 @@ export function findSections(
   const matrix = similarityMatrix(vectors)
   const kernel = grid.beatsPerBar * 4
   const novelty = structuralNovelty(matrix, n, kernel)
-  const peaks = findBoundaries(novelty, { minBeats: grid.beatsPerBar * minBars })
+  const peaks = findBoundaries(novelty, { minBeats: grid.beatsPerBar * minBars, thresholdMultiplier })
 
   // Snap every boundary to a bar line, then drop duplicates the snap created.
   const beatsPerBar = grid.beatsPerBar
