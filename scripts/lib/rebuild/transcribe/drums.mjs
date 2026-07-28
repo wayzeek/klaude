@@ -62,6 +62,16 @@ const DETECTORS = {
  * sharpness alone - it needed a second signal, not a stricter version of the
  * first one.
  * `hats` starts at 5 kHz, above where a snare's body ends.
+ *
+ * `snare` also absorbs rim, stick and clap content by design, per #41's own
+ * scope note at the top of this file: those have no home in moltek's three
+ * roles, and the nearest one is the intended landing spot, not a bug. That
+ * makes scoring the snare role against a single snare-family sound (e.g.
+ * `crate_sd` ghost notes alone) understate it badly - a real, measured
+ * example on the-chase (task-4-report.md): 37.9% precision against `crate_sd`
+ * alone, 88.3% precision once `crate_stick` (rim/stick) is folded into the
+ * reference too. Score this role against every percussion sound plausibly
+ * living in 180-1200 Hz, not just the one named "snare" in the source.
  */
 export const DRUM_ROLES = Object.freeze([
   Object.freeze({ name: 'kick', lo: 20, hi: 100, detector: 'energyRise', floor: 10 }),
