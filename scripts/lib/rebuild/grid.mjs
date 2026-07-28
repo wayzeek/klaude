@@ -257,13 +257,60 @@ function lowBandEnergyAt(audio, startFrame) {
 }
 
 /**
+ * How much one beat-of-bar position stands clear of the others, grouping the
+ * per-beat low-band energy by a given period.
+ *
+ * The spread is the full range across positions (loudest minus quietest)
+ * relative to the overall level, not the loudest position minus the overall
+ * mean. Those read the same on a genuinely single-peaked pattern (one real
+ * downbeat, everything else quiet) but not on a pattern that nests - a
+ * bassline alternating every two beats groups at period 4 into two nearly
+ * tied loud positions and two nearly tied quiet ones. "Loudest minus the
+ * mean" is diluted by the *other* loud position pulling the mean up toward
+ * it: measured on a real recording, that read 0.237, half the 0.466 that
+ * "loudest minus quietest" reads on the exact same beats, because the mean
+ * sits roughly halfway between the two levels while the quietest position
+ * does not.
+ */
+function contrastAt(beats, period) {
+  const positions = new Array(period).fill(0)
+  const counts = new Array(period).fill(0)
+  for (let i = 0; i < beats.length; i++) {
+    positions[i % period] += beats[i]
+    counts[i % period]++
+  }
+  const means = positions.map((total, i) => (counts[i] ? total / counts[i] : 0))
+  const overall = means.reduce((a, b) => a + b, 0) / period
+  const strongest = Math.max(...means)
+  const quietest = Math.min(...means)
+  return {
+    downbeatOffset: means.indexOf(strongest),
+    confidence: overall > 0 ? clamp01((strongest - quietest) / overall) : 0,
+  }
+}
+
+/**
+ * How much to trust a beatsPerBar candidate before the audio has said
+ * anything at all.
+ *
+ * This repertoire is techno and adjacent - essentially all of it is in four.
+ * A period-2 pattern in the low band (a bassline moving every two beats) is
+ * genuinely present in the audio and genuinely nests inside a four-beat bar;
+ * the signal alone cannot say whether that pattern IS the bar or sits inside
+ * one, because both readings explain the same measurement equally well. The
+ * answer comes from what this material actually is, the same reason
+ * `tempoPrior` exists. 3 has to overcome this before it can win; 4 does not.
+ */
+const BEATS_PER_BAR_PRIOR = { 3: 0.4, 4: 1 }
+
+/**
  * How many beats to a bar.
  *
  * Downbeats carry more low-end energy than other beats - a real kick, and
- * this module's own accented test fixture alike. Score a 3 and a 4 by how
- * much the strongest beat-of-bar position stands clear of the others, and
- * take the better. Anything more exotic is out of scope: the clone emits
- * `arrange()` over bars, and guessing 7/8 wrong is worse than calling it 4.
+ * this module's own accented test fixture alike. Score a 3 and a 4 with
+ * `contrastAt`, weight by `BEATS_PER_BAR_PRIOR`, and take the better.
+ * Anything more exotic is out of scope: the clone emits `arrange()` over
+ * bars, and guessing 7/8 wrong is worse than calling it 4.
  *
  * This takes the decoded audio directly rather than the novelty curve,
  * because the novelty curve is exactly what cannot carry this measurement -
@@ -282,22 +329,13 @@ export function detectMeter(audio, beatSeconds, phaseSeconds) {
 
   let best = { beatsPerBar: 4, downbeatOffset: 0, confidence: 0 }
   for (const beatsPerBar of [3, 4]) {
-    const positions = new Array(beatsPerBar).fill(0)
-    const counts = new Array(beatsPerBar).fill(0)
-    for (let i = 0; i < beats.length; i++) {
-      positions[i % beatsPerBar] += beats[i]
-      counts[i % beatsPerBar]++
-    }
-    const means = positions.map((total, i) => (counts[i] ? total / counts[i] : 0))
-    const overall = means.reduce((a, b) => a + b, 0) / beatsPerBar
-    const strongest = Math.max(...means)
+    const own = contrastAt(beats, beatsPerBar)
+    const confidence = own.confidence * BEATS_PER_BAR_PRIOR[beatsPerBar]
     // Which beat of the bar is strongest IS the downbeat. Computing it for a
     // confidence score and then discarding it would leave the grid with beats
     // but no bar one, so bar lines would land on an arbitrary beat: exactly the
     // error this whole module exists to prevent.
-    const downbeatOffset = means.indexOf(strongest)
-    const confidence = overall > 0 ? clamp01((strongest - overall) / overall) : 0
-    if (confidence > best.confidence) best = { beatsPerBar, downbeatOffset, confidence }
+    if (confidence > best.confidence) best = { beatsPerBar, downbeatOffset: own.downbeatOffset, confidence }
   }
   return best
 }
