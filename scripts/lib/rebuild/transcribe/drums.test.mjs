@@ -86,34 +86,35 @@ describe('transcribeDrums', () => {
     expect(kick.events.map((e) => e.step)).toEqual([0, 4, 8, 12])
   })
 
-  it('omits a snare that only ever coincides with the kick', () => {
+  it('recovers the snare on the backbeat', () => {
     // `drumClip`'s kick fires on every beat and its snare fires only on beats
-    // two and four, so every snare hit in this fixture coincides with a kick
-    // hit at the same step - there is no beat where one fires without the
-    // other. `suppressKickBleed` (task-4-report.md, "Critical" follow-up)
-    // measures a snare hit's raw level against the raw level of a coincident
-    // kick hit, because on the real drum stem that ratio cleanly separates a
-    // kick's own broadband splatter (ratio 0.11-0.66) from every confirmed
-    // real snare hit (none of which coincide with a kick at all). Comparing
-    // raw magnitude across a 2-bin kick band and a 23-bin snare band has no
-    // gain at which a noise-based snare wins that comparison against a
-    // tonal kick sharing its step - swept snareGain from 0.6 to 8x drumClip's
-    // default and the ratio topped out at 0.2, still short of the measured
-    // 0.7 floor. A backbeat that always lands under the kick is exactly the
-    // case this mechanism cannot tell apart from bleed, so the honest result
-    // here is `null`, not a guessed-at [4, 12]: silence is correct when the
-    // classifier genuinely can't distinguish signal from bleed, the same as
-    // when there is no signal at all.
+    // two and four, so every snare hit here coincides with a kick hit at the
+    // same step - the standard four-on-the-floor-plus-backbeat pattern this
+    // whole classifier exists to serve. An earlier version of
+    // `suppressKickBleed` compared raw levels across the kick and snare
+    // bands and could not recover this case at any gain (task-4-report.md):
+    // `bandEnergy` divides by bin count, so a kick concentrated in ~2 bins
+    // always reads louder than a noise-based snare spread across ~23,
+    // regardless of which one is real - overfitting the rule to this one
+    // recording's near-silent ghost pattern by breaking the genre's most
+    // common pattern. `bandFlatness` (see its doc comment in bands.mjs)
+    // replaced that comparison with one that never touches the kick band at
+    // all, so a real backbeat snare is recovered correctly here.
     const result = transcribeDrums(drumClip(), grid, SECTIONS)
-    expect(result.snare[0]).toBeNull()
+    const snare = result.snare[0]
+    expect(snare).not.toBeNull()
+    expect(snare.events.map((e) => e.step)).toEqual([4, 12])
   })
 
   it('drops a snare hit that is really the kick\'s own splatter, keeps one that is not', () => {
     // An instant-attack kick (no ramp-in) on every beat, exactly the shape
     // Task 3 identified as spectrally broad regardless of decay time - it
-    // splatters into the snare band at every kick step. One isolated, real
-    // snare-band burst sits off the beat (step 6 of each bar) where no kick
-    // plays at all.
+    // splatters into the snare band at every kick step, but as a few
+    // discrete tones (the kick's harmonics), not broadband noise, so
+    // `bandFlatness` reads it as low there. One isolated, real snare-band
+    // burst sits off the beat (step 6 of each bar) where no kick plays at
+    // all, and survives regardless of flatness since it has no coincident
+    // kick to be judged against.
     const beatSeconds = 60 / BPM
     const bars = 4
     const frames = Math.ceil(bars * 4 * beatSeconds * SAMPLE_RATE)

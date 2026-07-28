@@ -33,7 +33,7 @@
 
 import { decodeWav } from '../../decoded-audio.mjs'
 import { ONSET_HOP } from '../../dsp.mjs'
-import { bandEnergy, bandEnergyRise, bandNovelty, pickBandOnsets } from './bands.mjs'
+import { bandEnergy, bandEnergyRise, bandFlatness, bandNovelty, pickBandOnsets } from './bands.mjs'
 import { foldToLoop, sectionRange, stepAt, stepDrift } from './quantize.mjs'
 
 /**
@@ -79,24 +79,49 @@ const MIN_ROLE_CONFIDENCE = 0.15
  *  trimmed because one crash-loud hit would flatten everything else. */
 const VELOCITY_PERCENTILE = 0.9
 /**
- * A snare hit coinciding with a kick is that kick's own broadband splatter
- * when the snare band holds less than this share of the kick band's energy
- * at the same instant.
+ * A snare hit coinciding with a kick is that kick's own splatter, not a real
+ * hit, when the snare band's content at that instant is more tonal than
+ * broadband - `bandFlatness` below this.
  *
- * Measured on the real drum stem, bars 8-39 (task-4-report.md): every snare
- * onset that lands on the same step as a kick onset and is confirmed a false
- * positive against ground truth has a snare/kick raw-level ratio between
- * 0.109 and 0.658 (median 0.255) - and, in the same window, not one of the
- * onsets confirmed a true positive coincides with a kick onset at all. The
- * two populations don't overlap, so this ratio isn't a compromise between two
- * competing distributions the way `CRACK_SUPPRESSION_RATIO` is - it only has
- * to clear the confirmed-bleed ceiling. Set to 0.7, just above that 0.658
- * ceiling: on the whole track this drops the snare role from 533 onsets to
- * 236 and raises bars-8-39 precision from 19.7% to 45.0% at unchanged recall
- * (97.8%, the same single miss as before - bar 37's one quiet syncopated
- * ghost hit, already lost to the kick detector's own floor in Task 3).
+ * The first version of this rule compared raw levels across the kick and
+ * snare bands (`snare.level > kick.level * ratio`), the same shape as
+ * `suppressSnareCrack`. It shipped, then failed review: `bandEnergy` divides
+ * by bin count, so a kick concentrated in ~2 bins reads a systematically
+ * higher level than a snare spread across ~23, for reasons that have nothing
+ * to do with which one is real. Checked whether comparing bandwidth-corrected
+ * (total, not per-bin) energy fixes it - it cannot, and not by a small margin:
+ * that correction is an exact multiplicative rescale by a fixed constant
+ * (sqrt(23/2) ≈ 3.39, verified against the measured numbers to four
+ * decimals), so it moves every ratio by the same factor and changes no
+ * threshold decision at all. The actual problem sits one level down: a
+ * synthetic backbeat snare - the standard kick-every-beat, snare-on-two-
+ * and-four pattern this rule must not break - never gets its raw level
+ * (in *either* unit) above the ceiling this recording's real kick bleed sets,
+ * even at 8x its normal gain. A tonal kick's energy concentrates into a
+ * couple of bins; a noise-based snare's spreads across many; no rescaling of
+ * the *same* magnitude ratio changes that relationship, in any units.
+ *
+ * `bandFlatness` sidesteps the whole comparison: it never touches the kick
+ * band at all. A kick's harmonics bleeding into the snare band are still a
+ * few discrete tones there, and read as low flatness in the snare band on
+ * their own terms; a real snare hit (or a real backbeat snare landing on a
+ * kick step) is broadband noise in that band regardless of what else is
+ * happening in a completely different band. Measured on the real drum stem's
+ * bars 8-39, against `hits.kick` exactly as this module produces it (floor
+ * 10, not a lower one - an earlier sweep used the wrong floor and looked
+ * better than it is): precision is flat at 45.0% - the ratio rule's own
+ * number - for every threshold from 0.68 to 0.84, with recall unchanged at
+ * 97.8% across that whole range. The plateau's ceiling, not its exact value,
+ * is what matters here: pushing the threshold higher stops helping because
+ * the residual false positives left at 45.0% are themselves broadband
+ * (most likely footstep bleed, left unaddressed - see task-4-report.md), not
+ * tonal, so flatness alone cannot tell them from a real hit either. 0.75 sits
+ * in the middle of that plateau, comfortably clear of both a synthetic
+ * backbeat snare's minimum (0.84-0.96) and confirmed kick splatter's maximum
+ * (0.68) on one side, and this module's own dedicated bleed fixture (0.54-
+ * 0.58) on the other.
  */
-const KICK_BLEED_RATIO = 0.7
+const SNARE_FLATNESS_THRESHOLD = 0.75
 /**
  * A hat coinciding with a snare is that snare's crack when the hat band holds
  * less than this share of the snare band's energy at the same instant.
@@ -164,13 +189,15 @@ export function detectDrumHits(audio, grid) {
   // Order matters: clean the snare role of kick bleed first, then let
   // `suppressSnareCrack` judge hats against that cleaned set rather than one
   // still full of onsets that were never a snare in the first place.
-  suppressKickBleed(hits)
+  const snareRole = DRUM_ROLES.find((role) => role.name === 'snare')
+  const snareFlatness = snareRole ? bandFlatness(audio, snareRole) : null
+  suppressKickBleed(hits, snareFlatness, hopSeconds)
   suppressSnareCrack(hits)
   return hits
 }
 
 /**
- * Drop snare detections that are really a kick's own broadband splatter.
+ * Drop snare detections that are really a kick's own splatter.
  *
  * A kick's attack has energy well above its own band - the same mechanism
  * that made `bandNovelty` over-trigger on the kick band in Task 3, just seen
@@ -180,18 +207,21 @@ export function detectDrumHits(audio, grid) {
  * track's real snare-role content is a near-silent ghost pattern. A role that
  * cannot be heard confidently must come out `null`, not a wrong loop that
  * happens to repeat every bar because the kick driving it does.
+ *
+ * Only a snare hit that lands on the *same step* as a kick hit is even
+ * examined - a snare with no coincident kick has nothing to be suspicious
+ * of. Among those, `bandFlatness` (see its own doc comment and
+ * `SNARE_FLATNESS_THRESHOLD` above for why this replaced a raw-level ratio)
+ * decides whether the snare band's content there looks like the kick's own
+ * tonal bleed or like a genuine broadband hit.
  */
-function suppressKickBleed(hits) {
-  if (!hits.kick?.length || !hits.snare?.length) return
-  const kickByStep = new Map()
-  for (const hit of hits.kick) {
-    const existing = kickByStep.get(hit.step)
-    if (!existing || hit.level > existing.level) kickByStep.set(hit.step, hit)
-  }
+function suppressKickBleed(hits, snareFlatness, hopSeconds) {
+  if (!hits.kick?.length || !hits.snare?.length || !snareFlatness) return
+  const kickSteps = new Set(hits.kick.map((hit) => hit.step))
   hits.snare = hits.snare.filter((snare) => {
-    const kick = kickByStep.get(snare.step)
-    if (!kick) return true
-    return snare.level > kick.level * KICK_BLEED_RATIO
+    if (!kickSteps.has(snare.step)) return true
+    const hop = Math.min(snareFlatness.length - 1, Math.round(snare.seconds / hopSeconds))
+    return snareFlatness[hop] >= SNARE_FLATNESS_THRESHOLD
   })
 }
 

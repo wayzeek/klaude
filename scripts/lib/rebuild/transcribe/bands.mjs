@@ -147,6 +147,65 @@ export function bandEnergy(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HOP
 }
 
 /**
+ * Spectral flatness inside one band, per hop: the geometric mean of the bins'
+ * magnitudes divided by their arithmetic mean. Near 0 for energy concentrated
+ * in a few bins (a tone and its harmonics), near 1 for energy spread evenly
+ * across the whole band (noise).
+ *
+ * This is a ratio of two means taken over the *same* set of bins, so unlike
+ * comparing `bandEnergy` between two differently-sized bands, it carries no
+ * bin-count bias to correct for - the geometric and arithmetic mean of N
+ * numbers are both already normalised by that same N, so it cancels out of
+ * the ratio exactly. That makes it the right tool for a question `bandEnergy`
+ * cannot safely answer on its own: not "how loud is this band" but "does this
+ * band's content look like this band's own instrument, or like the tail of
+ * something tonal bleeding in from next door."
+ *
+ * Built for exactly that second question. A kick's harmonics land in a few
+ * discrete bins of the snare band and read as low flatness there; a real
+ * snare or hat's broadband noise spreads across the whole band and reads
+ * high. Measured on the-chase (task-4-report.md): kick bleed coincident with
+ * a kick hit in the snare band reads 0.12-0.68 (bars 8-39: confirmed false
+ * positives top out at 0.68); a synthetic backbeat snare genuinely coincident
+ * with a kick on every hit reads 0.84-0.96. The two do not overlap.
+ */
+export function bandFlatness(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HOP }) {
+  const { numFrames, sampleRate, readMono } = audio
+  if (numFrames < fftSize * 2) return null
+  const { from, to } = bandBins(sampleRate, fftSize, lo, hi)
+  if (to < from) return null
+
+  const window = makeHann(fftSize)
+  const re = new Float32Array(fftSize)
+  const im = new Float32Array(fftSize)
+  const hops = Math.floor((numFrames - fftSize) / hop) + 1
+  const flatness = new Float32Array(hops)
+  const width = to - from + 1
+  // Keeps log(0) from producing -Infinity in a silent bin without measurably
+  // biasing a bin that actually has signal in it.
+  const EPSILON = 1e-12
+
+  for (let index = 0; index < hops; index++) {
+    const start = index * hop
+    for (let i = 0; i < fftSize; i++) {
+      re[i] = readMono(start + i) * window[i]
+      im[i] = 0
+    }
+    fft(re, im)
+    let logSum = 0
+    let sum = 0
+    for (let bin = from; bin <= to; bin++) {
+      const magnitude = Math.sqrt(re[bin] * re[bin] + im[bin] * im[bin]) + EPSILON
+      logSum += Math.log(magnitude)
+      sum += magnitude
+    }
+    const arithmeticMean = sum / width
+    flatness[index] = arithmeticMean > 0 ? Math.exp(logSum / width) / arithmeticMean : 0
+  }
+  return flatness
+}
+
+/**
  * Positive frame-to-frame rise in a band's own energy envelope.
  *
  * Where `bandNovelty` normalises flux by the band's own magnitude - wrong for
