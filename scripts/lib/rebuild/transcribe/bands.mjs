@@ -25,27 +25,27 @@ const FLOOR = 0.045
 const MIN_SEPARATION_SECONDS = 0.03
 
 /**
- * Minimum FFT bins a band needs before its self-normalised flux ratio is
- * measuring anything rather than noise.
- *
- * Below this, "the band's own magnitude" is an average of a handful of bins,
- * and the ratio swings on almost nothing. Measured on the-chase's real drum
- * stem (20-120Hz, the kick band) against its true four-on-the-floor rate of
- * ~2.3 onsets/s: 2 bins (fftSize 1024) reads 14.39/s, 5 bins (2048) reads
- * 13.60/s, 10 bins (4096) reads 10.14/s, 19 bins (8192) reads 4.76/s - stable
- * only once the window is wide enough to clear this count. Snare (23 bins)
- * and hats (255 bins) already clear it at the default 1024, so this only
- * escalates bands narrow enough to need it. Full sweep in task-3-report.md.
+ * `fftSize` is deliberately flat at `ONSET_FFT` for every band, not widened
+ * for narrow ones - this was tried and measured off. A narrow band like the
+ * kick's (20-120Hz, 2 bins at 1024) does have an unstable raw onset rate: on
+ * the-chase's real drum stem it reads 14.39/s against a true ~2.3/s, improving
+ * to 13.60/s at 2048 and 10.14/s at 4096. But raw rate is not what downstream
+ * consumes - every onset gets quantised to a sixteenth, so what matters is how
+ * many *distinct steps per bar* survive, and measured against ground truth
+ * (`the-chase-truth.json`'s `bySound.bd`, bars 8-39, plain four-on-the-floor)
+ * none of 1024/2048/4096 is remotely usable: all three predict 14-15 of the
+ * 16 sixteenths in nearly every bar, because the raw rate is dense enough that
+ * quantising to a 108ms-wide step still fills almost every slot. Only 8192
+ * (19 bins) brings the raw rate near true, but it also delays every peak by a
+ * measured, systematic ~0.15s - more than a full sixteenth at 138 BPM - which
+ * quantises onsets to the *wrong* step with full confidence, a worse failure
+ * than the current over-triggering. There is no window in this range that
+ * both fixes the step-level accuracy and keeps timing honest, so none is
+ * chosen; a real fix belongs to whatever narrows the false positives at the
+ * step level directly (the drum task's classifier), not to this primitive
+ * guessing at a bigger window. Full sweep and the ground-truth comparison are
+ * in task-3-report.md.
  */
-const MIN_BAND_BINS = 16
-
-/** Widest window `autoFftSize` will reach for. Doubling further keeps buying
- *  bins but each doubling also roughly doubles the window's time span, and
- *  every callsite in this file still hops at ONSET_HOP - a wider window does
- *  not cost hop-to-hop timing resolution, only how sharply one transient is
- *  localised inside it. 8192 (186ms at 44.1kHz) is the largest measured in
- *  the sweep above; there was no real-stem case that needed to go further. */
-const MAX_AUTO_FFT = 8192
 
 /** Map each FFT bin to whether it falls inside [lo, hi). */
 function bandBins(sampleRate, fftSize, lo, hi) {
@@ -57,21 +57,6 @@ function bandBins(sampleRate, fftSize, lo, hi) {
 }
 
 /**
- * The smallest power-of-two window (from `ONSET_FFT` up to `MAX_AUTO_FFT`)
- * that gives a band at least `MIN_BAND_BINS` bins to average.
- *
- * Callers can still override `fftSize` explicitly; this only picks the
- * default. Hop is never touched here - see `MAX_AUTO_FFT`.
- */
-function autoFftSize(sampleRate, lo, hi) {
-  for (let fftSize = ONSET_FFT; fftSize <= MAX_AUTO_FFT; fftSize *= 2) {
-    const { from, to } = bandBins(sampleRate, fftSize, lo, hi)
-    if (to - from + 1 >= MIN_BAND_BINS) return fftSize
-  }
-  return MAX_AUTO_FFT
-}
-
-/**
  * Positive frame-to-frame magnitude change inside one band, normalised by the
  * band's own magnitude.
  *
@@ -79,14 +64,8 @@ function autoFftSize(sampleRate, lo, hi) {
  * raw flux scales with loudness, so a quiet hat attack would score below the
  * jitter of a loud sustained bass note. The ratio is near zero for anything
  * steady and large only for a genuine attack, at any level.
- *
- * `fftSize` defaults to whatever `autoFftSize` picks for this band, not a
- * flat `ONSET_FFT` - a narrow band like a kick's needs a wider window before
- * the ratio means anything (see `MIN_BAND_BINS`). `hop` always defaults to
- * `ONSET_HOP` regardless of window size, so the curve's time resolution never
- * moves; only how sharply one transient is localised inside it does.
  */
-export function bandNovelty(audio, { lo, hi, fftSize = autoFftSize(audio.sampleRate, lo, hi), hop = ONSET_HOP }) {
+export function bandNovelty(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HOP }) {
   const { numFrames, sampleRate, readMono } = audio
   if (numFrames < fftSize * 2) return null
   const { from, to } = bandBins(sampleRate, fftSize, lo, hi)
@@ -129,10 +108,8 @@ export function bandNovelty(audio, { lo, hi, fftSize = autoFftSize(audio.sampleR
 }
 
 /** RMS magnitude inside one band, per hop. Used for velocity, where what
- *  matters is how loud the hit was rather than how abruptly it started.
- *  Shares `bandNovelty`'s auto-sized default `fftSize` so the two curves stay
- *  aligned hop-for-hop on the same band. */
-export function bandEnergy(audio, { lo, hi, fftSize = autoFftSize(audio.sampleRate, lo, hi), hop = ONSET_HOP }) {
+ *  matters is how loud the hit was rather than how abruptly it started. */
+export function bandEnergy(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HOP }) {
   const { numFrames, sampleRate, readMono } = audio
   if (numFrames < fftSize * 2) return null
   const { from, to } = bandBins(sampleRate, fftSize, lo, hi)
