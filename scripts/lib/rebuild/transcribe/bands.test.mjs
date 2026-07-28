@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { decodeWav } from '../../decoded-audio.mjs'
 import { ONSET_FFT, ONSET_HOP } from '../../dsp.mjs'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
-import { bandEnergy, bandNovelty, pickBandOnsets } from './bands.mjs'
+import { bandEnergy, bandEnergyRise, bandNovelty, pickBandOnsets } from './bands.mjs'
 
 const SAMPLE_RATE = 44100
 const HOP_SECONDS = ONSET_HOP / SAMPLE_RATE
@@ -115,6 +115,49 @@ describe('bandEnergy', () => {
     const atHit = energy[Math.round(1 * hopsPerSecond)]
     const between = energy[Math.round(1.4 * hopsPerSecond)]
     expect(atHit).toBeGreaterThan(between * 4)
+  })
+})
+
+describe('bandEnergyRise', () => {
+  // bandNovelty's self-normalised ratio measurably fails on a kick-style band:
+  // ground truth on the-chase's real stem showed 130/130 recall but a kick
+  // predicted on 14 of 16 sixteenths per bar (359 spurious against 130 real),
+  // because the ratio's own denominator shrinks through a decay and lets
+  // ordinary jitter clear the floor for the whole tail. bandEnergyRise looks
+  // at the absolute envelope instead - a decay has no positive rise in it, by
+  // definition - and raised precision to 99% at floor~10 on real material (see
+  // task-3-report.md for the full candidate comparison). This block proves
+  // that mechanism on the synthetic fixture: same clip, same thud, a curve
+  // built from bandEnergy instead of bandNovelty.
+  it('returns null when energy is null', () => {
+    expect(bandEnergyRise(null)).toBeNull()
+  })
+
+  it('finds the low thud with tight timing, across a wide range of floors', () => {
+    const audio = decodeWav(twoBandClip())
+    const rise = bandEnergyRise(bandEnergy(audio, { lo: 20, hi: 120 }))
+    // The absolute floor for a raw envelope isn't the 0-1 ratio scale
+    // pickBandOnsets defaults to; unlike that default, though, this mechanism
+    // isn't sensitive to the exact value - 1 through 20 all land the same
+    // seven onsets in this fixture (see task-3-report.md's sweep).
+    for (const floor of [1, 5, 10, 20]) {
+      const onsets = pickBandOnsets(rise, HOP_SECONDS, { floor })
+      expect(onsets.length).toBeGreaterThanOrEqual(6)
+      expect(onsets.length).toBeLessThanOrEqual(9)
+      for (const onset of onsets) {
+        const nearest = Math.round(onset.seconds / 0.5) * 0.5
+        expect(Math.abs(onset.seconds - nearest)).toBeLessThan(0.04)
+      }
+    }
+  })
+
+  it('does not reintroduce cross-band leakage from the high tick', () => {
+    const audio = decodeWav(twoBandClip())
+    const rise = bandEnergyRise(bandEnergy(audio, { lo: 20, hi: 120 }))
+    const onsets = pickBandOnsets(rise, HOP_SECONDS, { floor: 10 })
+    // Eight real thuds; leakage from the sixteen high ticks would push this
+    // well past that.
+    expect(onsets.length).toBeLessThanOrEqual(9)
   })
 })
 

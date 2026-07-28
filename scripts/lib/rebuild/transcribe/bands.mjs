@@ -7,6 +7,17 @@
  * pull them apart. One curve per band fixes that, at the cost of running the
  * FFT once per band. A hit with energy in two bands appears in both, which is
  * correct - a snare really does have a body and a crack.
+ *
+ * `bandNovelty`'s self-normalised ratio is the right tool for a band with real
+ * texture to compare against itself (a snare's crack, a hat's shimmer), but it
+ * is measurably the wrong one for a band that is close to a single decaying
+ * resonance, like a kick's: during the decay, the ratio's own denominator (the
+ * band's recent magnitude) keeps shrinking, so ordinary jitter left over from
+ * the hit keeps clearing the floor for the whole tail. Measured on the-chase's
+ * kick band (20-120Hz): 130/130 true steps found, but a kick predicted on 14
+ * of every 16 sixteenths, 359 spurious against 130 real. `bandEnergyRise`
+ * exists for exactly this case - see its doc comment and task-3-report.md for
+ * the full comparison against unnormalised flux and a raised flux floor.
  */
 
 import { ONSET_FFT, ONSET_HOP, fft, makeHann } from '../../dsp.mjs'
@@ -40,11 +51,10 @@ const MIN_SEPARATION_SECONDS = 0.03
  * measured, systematic ~0.15s - more than a full sixteenth at 138 BPM - which
  * quantises onsets to the *wrong* step with full confidence, a worse failure
  * than the current over-triggering. There is no window in this range that
- * both fixes the step-level accuracy and keeps timing honest, so none is
- * chosen; a real fix belongs to whatever narrows the false positives at the
- * step level directly (the drum task's classifier), not to this primitive
- * guessing at a bigger window. Full sweep and the ground-truth comparison are
- * in task-3-report.md.
+ * both fixes the step-level accuracy and keeps timing honest, so the fix is
+ * not a window size at all - it turned out to be the wrong curve, not the
+ * wrong resolution. See `bandEnergyRise`. Full sweep and the ground-truth
+ * comparison are in task-3-report.md.
  */
 
 /** Map each FFT bin to whether it falls inside [lo, hi). */
@@ -133,6 +143,36 @@ export function bandEnergy(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HOP
     energy[index] = Math.sqrt(sum / (to - from + 1))
   }
   return energy
+}
+
+/**
+ * Positive frame-to-frame rise in a band's own energy envelope.
+ *
+ * Where `bandNovelty` normalises flux by the band's own magnitude - wrong for
+ * a band close to a single decaying resonance, because the magnitude keeps
+ * shrinking through the decay and inflates the ratio right back up - this
+ * looks at the absolute envelope instead. A decay, almost by definition, has
+ * no positive rise in it; only a genuine attack does. Feed the result straight
+ * into `pickBandOnsets`, same as `bandNovelty`'s output.
+ *
+ * The units here are the band's own absolute magnitude, not a 0-1 ratio, so
+ * `pickBandOnsets`'s default `floor` (tuned for the normalised case) does not
+ * apply - a caller needs to pass a `floor` measured on their own material.
+ * On the-chase's kick band (20-120Hz, fftSize 1024) a floor around 10 took
+ * step-level precision from 27% (via `bandNovelty`) to 99%, at a cost of one
+ * missed step out of 130 - see task-3-report.md. That number is calibrated to
+ * this recording's gain staging, not universal; it is not exported as a
+ * default because doing so would hide exactly the per-band judgement call
+ * this function exists to make explicit.
+ */
+export function bandEnergyRise(energy) {
+  if (!energy) return null
+  const rise = new Float32Array(energy.length)
+  for (let i = 1; i < energy.length; i++) {
+    const delta = energy[i] - energy[i - 1]
+    if (delta > 0) rise[i] = delta
+  }
+  return rise
 }
 
 /**
