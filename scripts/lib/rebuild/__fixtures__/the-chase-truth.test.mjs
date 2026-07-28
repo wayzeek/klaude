@@ -13,11 +13,23 @@ describe('the-chase ground truth', () => {
     expect(truth.boundaries).toEqual([0, 4, 8, 14, 20, 26, 30, 40, 43, 51, 57, 63, 67, 71, 83, 91, 97])
   })
 
-  it('spans the whole arrangement, not just its first bars', () => {
-    // The tell for the track.layers trap: if events were read from a stacked
-    // per-layer channel they would all pile onto the first few bars.
-    const lastBar = Math.max(...truth.events.map((e) => e.bar))
-    expect(lastBar).toBeGreaterThan(truth.bars - 6)
+  it('gives the kick real arrangement-driven gaps, not a periodic pile', () => {
+    // The tell for the track.layers trap: layers() hands back the raw,
+    // un-arranged pattern, which is periodic and repeats forever once queried.
+    // Over a wide arc that does NOT collapse into the first few bars (Strudel
+    // replays a periodic pattern across the whole query range) - so a maximum-
+    // bar check alone cannot catch it. What a layers() read erases is the
+    // arrangement's actual shape: the real track drops the kick out for its
+    // outro (bars 91-100) and only fires it in 78 of 101 bars. Measured by
+    // querying track.layers.get('kick') the wrong way over the same [0, 101)
+    // range: 6220 events (vs the true 428), covering all 101 bars including
+    // every bar of that outro, because the isolated pattern has no memory of
+    // where in the arrangement it belongs.
+    const bdBars = new Set(truth.bySound.bd.map((e) => e.bar))
+    expect(bdBars.size).toBeLessThan(90) // true fixture: 78/101 - real margin either side of the cut
+    const outro = Array.from({ length: 10 }, (_, i) => 91 + i)
+    expect(outro.filter((bar) => bdBars.has(bar))).toEqual([]) // the outro is genuinely kickless
+    expect(truth.bySound.bd.length).toBeLessThan(truth.bars * truth.beatsPerBar * 2) // true fixture: 428, well under 808
   })
 
   it('has the sounds the transcribers try to recover', () => {
