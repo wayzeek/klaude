@@ -118,7 +118,8 @@ export function bandNovelty(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HO
 }
 
 /** RMS magnitude inside one band, per hop. Used for velocity, where what
- *  matters is how loud the hit was rather than how abruptly it started. */
+ *  matters is how loud the hit was rather than how abruptly it started - and
+ *  as the input to `bandEnergyRise`, where abruptness is exactly the point. */
 export function bandEnergy(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HOP }) {
   const { numFrames, sampleRate, readMono } = audio
   if (numFrames < fftSize * 2) return null

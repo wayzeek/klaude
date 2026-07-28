@@ -118,6 +118,37 @@ describe('bandEnergy', () => {
   })
 })
 
+/**
+ * A single low tone repeated on a schedule, each hit rising slowly to its
+ * peak (100ms raised-cosine ramp) and then decaying much more slowly still
+ * (500ms time constant), so the envelope's absolute peak and the point of
+ * fastest rise are nowhere near each other in time, and each hit is still
+ * substantially elevated across the whole neighbourhood `pickBandOnsets`
+ * looks at (+-8 hops, ~93ms). That second property is what makes this
+ * fixture discriminating: on `twoBandClip`'s fast-attack thud, a pass-through
+ * `bandEnergyRise` is *not* caught, because the neighbourhood around its peak
+ * still spans quiet lead-in time, so the adaptive threshold clears anyway.
+ * Here it can't - the neighbourhood is uniformly high, so raw energy fed
+ * straight into `pickBandOnsets` never clears its own local mean by the
+ * required factor and finds nothing at any floor, while the actual rising
+ * edge is still a sharp, isolated spike against near-zero on either side.
+ */
+function slowRiseSlowDecayClip({ seconds = 4, every = 1, riseMs = 100, decayMs = 500, freq = 60 } = {}) {
+  const frames = Math.floor(seconds * SAMPLE_RATE)
+  const left = new Float32Array(frames)
+  const rise = Math.round((SAMPLE_RATE * riseMs) / 1000)
+  const decayTau = (SAMPLE_RATE * decayMs) / 1000
+  for (let t = 0; t < seconds; t += every) {
+    const start = Math.floor(t * SAMPLE_RATE)
+    const dur = rise + Math.round(decayTau * 4)
+    for (let i = 0; i < dur && start + i < frames; i++) {
+      const env = i < rise ? 0.5 * (1 - Math.cos((Math.PI * i) / rise)) : Math.exp(-(i - rise) / decayTau)
+      left[start + i] += 0.9 * env * Math.sin((2 * Math.PI * freq * i) / SAMPLE_RATE)
+    }
+  }
+  return writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [left] })
+}
+
 describe('bandEnergyRise', () => {
   // bandNovelty's self-normalised ratio measurably fails on a kick-style band:
   // ground truth on the-chase's real stem showed 130/130 recall but a kick
@@ -158,6 +189,34 @@ describe('bandEnergyRise', () => {
     // Eight real thuds; leakage from the sixteen high ticks would push this
     // well past that.
     expect(onsets.length).toBeLessThanOrEqual(9)
+  })
+
+  it('finds the four slow hits that a pass-through cannot', () => {
+    // This is the test that would fail if bandEnergyRise were simplified to
+    // `return energy` - proven below, not asserted. Confirmed by temporarily
+    // making that exact change and rerunning this file: only this test
+    // failed (0 onsets where 3-5 were expected), and it passed again once
+    // reverted.
+    const audio = decodeWav(slowRiseSlowDecayClip())
+    const energy = bandEnergy(audio, { lo: 20, hi: 120 })
+
+    for (const floor of [1, 5, 10, 20]) {
+      // The mechanism this test exists to guard: differencing before picking.
+      const riseOnsets = pickBandOnsets(bandEnergyRise(energy), HOP_SECONDS, { floor })
+      expect(riseOnsets.length).toBeGreaterThanOrEqual(3)
+      expect(riseOnsets.length).toBeLessThanOrEqual(5)
+      for (const onset of riseOnsets) {
+        const nearest = Math.round(onset.seconds)
+        expect(Math.abs(onset.seconds - nearest)).toBeLessThan(0.1)
+      }
+
+      // The failure mode this test exists to catch: picking straight off the
+      // envelope. Every hit is still substantially elevated across the whole
+      // neighbourhood pickBandOnsets compares against, so the adaptive
+      // threshold never clears and a pass-through finds nothing at all.
+      const passThroughOnsets = pickBandOnsets(energy, HOP_SECONDS, { floor })
+      expect(passThroughOnsets.length).toBe(0)
+    }
   })
 })
 
