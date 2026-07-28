@@ -32,6 +32,7 @@
     "check": "node scripts/check.mjs",
     "listen": "node scripts/listen.mjs",
     "analyze": "node scripts/analyze.mjs",
+    "rebuild": "node scripts/rebuild.mjs",
     "share": "node scripts/share.mjs",
     "smoke": "node scripts/smoke.mjs",
     "validate:tracks": "node scripts/validate-tracks.mjs",
