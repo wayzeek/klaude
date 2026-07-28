@@ -1,17 +1,25 @@
 /**
  * The bar grid: tempo, where beat one falls, and how many beats are in a bar.
  *
- * estimateTempo answers only the first of those, and folds its answer into 70
- * to 180 BPM by doubling and halving, so a confident result can still be half
- * or double time. A BPM without a downbeat places every bar line at an
- * arbitrary offset, and every quantised note downstream inherits that error.
+ * This is a direct BPM search over the novelty curve, not a wrapper around
+ * `estimateTempo`. That function is frozen (analyze.mjs and its baseline depend
+ * on its exact output) and, measured directly, its integer-hop autocorrelation
+ * plus a power-of-two fold cannot reach every tempo: on a 120 BPM test clip it
+ * locked onto a period roughly three times the beat and folded to 83.35 BPM, a
+ * factor-of-three error no amount of doubling repairs. A ratio search built on
+ * top of that peak inherited the same shape of problem one level up: scored on
+ * a real recording at a known 138 BPM, it locked onto a 2/3 ratio (91.875 BPM)
+ * confidently enough to pass its own gate. Searching BPM directly removes the
+ * dependency on which peak `estimateTempo` happened to find.
  *
- * This is the pipeline's most important gate. Nothing further can detect a bad
- * grid, so a grid that cannot be measured confidently stops the run here.
+ * A BPM without a downbeat places every bar line at an arbitrary offset, and
+ * every quantised note downstream inherits that error. This is the pipeline's
+ * most important gate: nothing further can detect a bad grid, so a grid that
+ * cannot be measured confidently stops the run here.
  */
 
 import { decodeWav } from '../decoded-audio.mjs'
-import { ONSET_HOP, computeNovelty, estimateTempo } from '../dsp.mjs'
+import { ONSET_HOP, computeNovelty } from '../dsp.mjs'
 
 export class LowConfidenceGridError extends Error {
   constructor(field, grid) {
@@ -31,6 +39,15 @@ const clamp01 = (value) => Math.max(0, Math.min(1, value))
 /**
  * Sum the novelty curve at every beat position for a given phase.
  *
+ * `beatHops` is a float, not a rounded hop count. A beat period is almost never
+ * an integer number of hops, and re-deriving each beat's position from `offset
+ * + i * beatHops` (rounding only when indexing) tracks the true continuous grid
+ * across the whole clip. Rounding the period itself once and then striding by
+ * that integer compounds the rounding error beat after beat, which drifts the
+ * sampled position away from the real onset by a growing fraction of a hop -
+ * measured on a 120 BPM click clip, that drift alone produced a spurious 10-20%
+ * spread across bar positions with no accent anywhere in the audio.
+ *
  * The phase whose beats land on the most onset energy is the one where beat one
  * actually falls. Comparing the winner to the mean over all phases gives a
  * confidence: on a strongly pulsed track one phase stands far clear, and on
@@ -46,7 +63,9 @@ export function beatPhase(novelty, beatHops) {
   for (let offset = 0; offset < period; offset++) {
     let score = 0
     let beats = 0
-    for (let hop = offset; hop < novelty.length; hop += period) {
+    for (let i = 0; ; i++) {
+      const hop = Math.round(offset + i * beatHops)
+      if (hop >= novelty.length) break
       score += novelty[hop]
       beats++
     }
@@ -78,76 +97,85 @@ export function beatPhase(novelty, beatHops) {
  * empty; at half-time they are full of kicks. So the score is onset energy on
  * the beats minus onset energy halfway between them, which punishes a period
  * that is too slow and a period that is too fast for opposite reasons.
+ *
+ * Both totals, not means. A wrong candidate period is not just wrong, it is
+ * usually sparser or denser than the truth over the same clip - a candidate at
+ * two-thirds the correct tempo covers fewer beats in 16 seconds than the truth
+ * does. Dividing by beat count throws that away: measured on a 128 BPM clip, a
+ * musically meaningless two-thirds-ratio candidate had a slightly higher
+ * per-beat mean than the true tempo (0.092 vs 0.086) purely because it sampled
+ * fewer, luckier hops, and would have won. Summed rather than averaged, the
+ * true tempo's larger beat count wins decisively (2.92 vs 2.09) because it is
+ * the candidate that actually explains where the record's onset energy went.
  */
 function periodScore(novelty, beatHops) {
-  const period = Math.max(2, Math.round(beatHops))
-  const { offsetHops } = beatPhase(novelty, period)
+  const { offsetHops } = beatPhase(novelty, beatHops)
   let onBeat = 0
-  let onBeatCount = 0
   let offBeat = 0
-  let offBeatCount = 0
-  const half = Math.floor(period / 2)
-
-  for (let hop = offsetHops; hop < novelty.length; hop += period) {
+  for (let i = 0; ; i++) {
+    const hop = Math.round(offsetHops + i * beatHops)
+    if (hop >= novelty.length) break
     onBeat += novelty[hop]
-    onBeatCount++
-    const mid = hop + half
-    if (mid < novelty.length) {
-      offBeat += novelty[mid]
-      offBeatCount++
-    }
+    const mid = Math.round(offsetHops + (i + 0.5) * beatHops)
+    if (mid >= 0 && mid < novelty.length) offBeat += novelty[mid]
   }
-  if (onBeatCount === 0) return 0
-  return onBeat / onBeatCount - (offBeatCount ? offBeat / offBeatCount : 0)
+  return onBeat - offBeat
 }
 
 /**
- * Recover the true beat period from an ambiguous autocorrelation estimate.
+ * Find the tempo by scoring the BPM range directly, rather than folding
+ * whatever peak `estimateTempo`'s autocorrelation happened to find.
  *
  * Autocorrelation on a periodic novelty curve peaks at the beat period and at
- * every integer multiple of it, with near-identical scores. Which one wins is
- * close to arbitrary. `estimateTempo` then folds its answer into 70 to 180 BPM
- * by doubling and halving, which only repairs errors that are a power of two.
+ * every integer multiple of it, with near-identical scores, and only searching
+ * lags at whole-hop resolution adds a quantisation error that grows with BPM
+ * (~5 BPM steps near 160 BPM - too coarse to land within half a BPM of the
+ * truth). Any correction layered on top of that peak - octave folding, ratio
+ * search - inherits both problems: it can only reach the true tempo if the
+ * true tempo is a simple multiple of whatever the peak was, and it can only
+ * land as precisely as the peak did.
  *
- * That gap is not hypothetical: on a synthetic clip generated at exactly 120
- * BPM, `estimateTempo` locked onto a period roughly three times the beat and
- * folded it to 83.35 BPM. No amount of doubling reaches 120 from there, because
- * the error was a factor of three.
- *
- * So the candidate set covers the simple ratios a beat tracker actually
- * confuses, not just octaves, and each is scored by `periodScore` rather than
- * by phase clarity alone.
+ * Scoring every BPM in the plausible range directly removes both problems at
+ * once. 60 to 200 BPM at 0.25 BPM resolution is 561 candidates, each an O(n)
+ * pass over the novelty curve - milliseconds of work, not a hot path.
  */
-const RATIOS = [1 / 4, 1 / 3, 1 / 2, 2 / 3, 1, 3 / 2, 2, 3, 4]
+const MIN_BPM = 60
+const MAX_BPM = 200
+const BPM_STEP = 0.25
 
-export function resolveOctave(novelty, bpm, hopSeconds) {
-  const seen = new Set()
-  const candidates = []
-  for (const ratio of RATIOS) {
-    const value = bpm * ratio
-    if (value < 60 || value > 200) continue
-    const key = value.toFixed(3)
-    if (seen.has(key)) continue
-    seen.add(key)
-    candidates.push(value)
+/**
+ * How far a competing candidate's BPM must sit from the winner's before it
+ * counts as a genuinely different hypothesis rather than a neighbour the scan
+ * resolution manufactured.
+ *
+ * At 0.25 BPM resolution, the candidates immediately either side of the true
+ * peak score almost identically to it by construction - they are measuring the
+ * same beat, just fractionally off. Comparing the winner to one of those
+ * neighbours rather than to a real competitor (double time, half time, a wrong
+ * ratio) collapses confidence to near zero on every input, telling nothing
+ * apart. Excluding anything within 3% of the winner's BPM clears the scan's own
+ * neighbours - at 120 BPM that is +/-3.6 BPM, well past the 0.25 BPM step - while
+ * still comparing against real alternatives like 60 or 240 BPM.
+ */
+const DISTINCT_BAND = 0.03
+
+export function findTempo(novelty, hopSeconds) {
+  const scored = []
+  for (let bpm = MIN_BPM; bpm <= MAX_BPM; bpm += BPM_STEP) {
+    const beatHops = 60 / bpm / hopSeconds
+    scored.push({ bpm, score: periodScore(novelty, beatHops) })
   }
-  if (candidates.length === 0) return { bpm, confidence: 0 }
-
-  const scored = candidates.map((candidate) => ({
-    bpm: candidate,
-    score: periodScore(novelty, 60 / candidate / hopSeconds),
-  }))
   scored.sort((a, b) => b.score - a.score)
 
   const best = scored[0]
-  const runnerUp = scored[1]
-  // Confidence is the margin over the next best candidate. A curve that
-  // explains one period far better than any other is one to trust; a field of
-  // near-ties means the tracker is guessing, and downstream work should not be
-  // built on a guess.
-  const confidence =
-    best.score > 0 && runnerUp ? clamp01((best.score - Math.max(0, runnerUp.score)) / best.score) : best.score > 0 ? 1 : 0
+  if (best.score <= 0) return { bpm: best.bpm, confidence: 0 }
 
+  const runnerUp = scored.find((candidate) => Math.abs(candidate.bpm - best.bpm) / best.bpm > DISTINCT_BAND)
+  // Confidence is the margin over the nearest genuinely different candidate. A
+  // curve that explains one tempo far better than any real alternative is one
+  // to trust; a field of near-ties means the tracker is guessing, and
+  // downstream work should not be built on a guess.
+  const confidence = runnerUp ? clamp01((best.score - Math.max(0, runnerUp.score)) / best.score) : 1
   return { bpm: best.bpm, confidence }
 }
 
@@ -160,10 +188,13 @@ export function resolveOctave(novelty, bpm, hopSeconds) {
  * over bars, and guessing 7/8 wrong is worse than calling it 4.
  */
 export function detectMeter(novelty, beatHops, phaseHops) {
-  const period = Math.max(1, Math.round(beatHops))
   const beats = []
-  for (let hop = phaseHops; hop < novelty.length; hop += period) beats.push(novelty[hop])
-  if (beats.length < 8) return { beatsPerBar: 4, confidence: 0 }
+  for (let i = 0; ; i++) {
+    const hop = Math.round(phaseHops + i * beatHops)
+    if (hop >= novelty.length) break
+    beats.push(novelty[hop])
+  }
+  if (beats.length < 8) return { beatsPerBar: 4, downbeatOffset: 0, confidence: 0 }
 
   let best = { beatsPerBar: 4, downbeatOffset: 0, confidence: 0 }
   for (const beatsPerBar of [3, 4]) {
@@ -191,11 +222,9 @@ export function detectGrid(wavBuf, { minConfidence = 0.25 } = {}) {
   const audio = decodeWav(wavBuf)
   const hopSeconds = ONSET_HOP / audio.sampleRate
   const novelty = computeNovelty(audio.readSample, audio.numFrames, audio.channels)
+  if (!novelty) throw new LowConfidenceGridError('tempo', { bpm: null, confidence: 0 })
 
-  const rough = novelty ? estimateTempo(novelty, hopSeconds) : null
-  if (!rough) throw new LowConfidenceGridError('tempo', { bpm: null, confidence: 0 })
-
-  const tempo = resolveOctave(novelty, rough.bpm, hopSeconds)
+  const tempo = findTempo(novelty, hopSeconds)
   const measured = { bpm: tempo.bpm, tempoConfidence: tempo.confidence }
   if (tempo.confidence < minConfidence) throw new LowConfidenceGridError('tempo', measured)
 

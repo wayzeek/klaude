@@ -93,6 +93,8 @@ export function synthClip({ sampleRate = 44100, seconds, bpm, key, channels = 2 
 /** Kick frequency and decay, chosen so onset detection can resolve the hits. */
 const RHYTHM_KICK_HZ = 150
 const RHYTHM_KICK_DECAY = 0.03
+/** How much louder an accented kick is than a plain one. */
+const RHYTHM_ACCENT_GAIN = 1.6
 
 /**
  * A rhythm-only clip: one kick per beat, nothing pitched.
@@ -109,17 +111,26 @@ const RHYTHM_KICK_DECAY = 0.03
  * And 55 Hz is too low to resolve. Its 18 ms period against a 23 ms window
  * yields roughly two onsets per hit, 31 for 16 kicks. At 150 Hz over a 30 ms
  * decay the detector reports 15, which is correct to within an edge frame.
+ *
+ * `accentEvery` makes every Nth kick (starting with the first) louder than the
+ * rest, so a meter detector has an actual downbeat to find. Without it every
+ * beat is bit-identical, which is a meter detector's null case, not a fixture
+ * that can prove one works. Default is 0 (no accent, every kick identical) so
+ * every existing caller's fixture bytes are unchanged.
  */
-export function rhythmClip({ sampleRate = 44100, seconds, bpm, channels = 2 }) {
+export function rhythmClip({ sampleRate = 44100, seconds, bpm, channels = 2, accentEvery = 0 }) {
   const numFrames = Math.round(seconds * sampleRate)
   const beatFrames = Math.round((60 / bpm) * sampleRate)
   const decayFrames = Math.round(RHYTHM_KICK_DECAY * sampleRate)
   const mono = new Float32Array(numFrames)
 
-  for (let beatStart = 0; beatStart < numFrames; beatStart += beatFrames) {
+  let beatIndex = 0
+  for (let beatStart = 0; beatStart < numFrames; beatStart += beatFrames, beatIndex++) {
+    const accented = accentEvery > 0 && beatIndex % accentEvery === 0
+    const gain = accented ? 0.6 * RHYTHM_ACCENT_GAIN : 0.6
     for (let i = 0; i < decayFrames && beatStart + i < numFrames; i++) {
       const envelope = Math.exp(-6 * (i / decayFrames))
-      mono[beatStart + i] += 0.6 * envelope * Math.sin((2 * Math.PI * RHYTHM_KICK_HZ * i) / sampleRate)
+      mono[beatStart + i] += gain * envelope * Math.sin((2 * Math.PI * RHYTHM_KICK_HZ * i) / sampleRate)
     }
   }
 
