@@ -164,4 +164,40 @@ describe('foldToLoop', () => {
     const folded = foldToLoop(events, { startBar: 0, bars: 6 }, grid)
     expect([1, 2]).toContain(folded.loopBars)
   })
+
+  it('keeps the true unrounded median velocity, not an integer', () => {
+    // Same step every bar, differing velocity. Median of {0.2, 0.4, 0.6, 0.9}
+    // is 0.5 - fractional, so a rounding implementation visibly fails, and
+    // fed in scrambled order so an implementation that skips sorting and
+    // reads members[0] (0.9) fails too.
+    const velocities = [0.9, 0.2, 0.6, 0.4]
+    const events = velocities.map((velocity, bar) => ({ ...ev(bar * 16), velocity }))
+    const folded = foldToLoop(events, section, grid, { candidates: [1] })
+    const merged = folded.events.find((e) => e.step === 0)
+    expect(merged.velocity).toBeCloseTo(0.5, 6)
+    expect(Number.isInteger(merged.velocity)).toBe(false)
+  })
+
+  it('keeps the correct whole-number median length', () => {
+    // Same step every bar, differing length. True median of {1, 2, 3, 10} is
+    // 2.5, which must round to 3 - not the mean (4) and not members[0] (10,
+    // the scrambled first-inserted value).
+    const lengths = [10, 1, 2, 3]
+    const events = lengths.map((length, bar) => ({ ...ev(bar * 16), length }))
+    const folded = foldToLoop(events, section, grid, { candidates: [1] })
+    const merged = folded.events.find((e) => e.step === 0)
+    expect(merged.length).toBe(3)
+    expect(Number.isInteger(merged.length)).toBe(true)
+  })
+
+  it('averages driftSteps across repetitions, not the median', () => {
+    // Same step every bar, differing drift. Mean of {1, 0, 0, 0} is 0.25;
+    // the median of the same set is 0, so this fails if drift is merged by
+    // median instead of mean, and fails if it reads members[0] (1) raw.
+    const drifts = [1, 0, 0, 0]
+    const events = drifts.map((driftSteps, bar) => ({ ...ev(bar * 16), driftSteps }))
+    const folded = foldToLoop(events, section, grid, { candidates: [1] })
+    const merged = folded.events.find((e) => e.step === 0)
+    expect(merged.driftSteps).toBeCloseTo(0.25, 6)
+  })
 })
