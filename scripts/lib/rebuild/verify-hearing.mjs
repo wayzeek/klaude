@@ -34,11 +34,53 @@ import { LAYERS, gridFromJson, sectionRange } from './transcribe/quantize.mjs'
 import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
 
 /**
- * Provisional. Task 14 calibrates these from the round-trip run and replaces
- * them with measured values; until then they are the value at which a layer is
- * more likely right than wrong, which is the weakest defensible claim.
+ * Calibrated 2026-07-29 from Task 11's Step 5 self-consistency probe: a
+ * transcription scored against a synthesis of itself, so nothing in the fixture
+ * can be wrong and the resulting score is each layer's ceiling. Not measured
+ * against a recording - a real stem has bleed, timbre and background content a
+ * synthetic fixture does not, so this is the best case, not a typical one.
+ *
+ * Measured ceiling: kick 1.000, snare 0.861, hats 0.998, bass 0.994, chords
+ * 1.000. Each threshold is half its own layer's ceiling, rounded to two
+ * decimals - half is the fraction that admits a layer more right than wrong.
+ *
+ * Per layer rather than one number per family, because snare's ceiling sits
+ * well below the other drum roles': a kick's broadband splatter leaks into the
+ * snare band regardless of transcription quality (see `detectorCurve` above),
+ * so even a perfect snare transcription cannot correlate as tightly as kick or
+ * hats can. A single `drums` threshold set from kick and hats would reject
+ * correct snares; snare is calibrated against its own ceiling instead.
+ *
+ * `lead` has no entry: that transcriber is disabled (see melody.mjs) and never
+ * reaches this check, so there is no ceiling to calibrate it against.
+ *
+ * These numbers rest on one synthetic fixture, calibrated to one real track
+ * (the-chase) for the round trip that exercises them - the same n=1 limitation
+ * the beat grid carries.
+ *
+ * Consequence measured on the-chase, worth flagging rather than burying: kick
+ * and snare score near 0 on nearly every section of *real* audio, at any
+ * threshold below their ceiling - not because the transcription is wrong (the
+ * pre-hearing-check kick transcription hits 288/302 true onsets, and its stem
+ * slices peak within 4 analysis hops, ~46ms, of the real recording's own
+ * energy peaks) but because `detectorCurve`'s `bandEnergyRise` is far sparser
+ * for a resynthesised decaying tone than for a real drum's messier, bleed-
+ * carrying decay: correlating the two *rise* curves lands near 0 even where
+ * correlating the underlying (non-derivative) `bandEnergy` curves lands
+ * around 0.5. Task 11's self-consistency ceiling can't expose this because
+ * both sides of that probe are the same synthetic curve. Raising or lowering
+ * `HEARING_THRESHOLDS.kick`/`.snare` cannot fix it - the scores cluster at the
+ * bottom of the range regardless of threshold - so this is left as a known
+ * limitation for whoever next touches `detectorCurve` or the drum voices in
+ * resynth.mjs, not patched here.
  */
-export const HEARING_THRESHOLDS = { pitched: 0.5, drums: 0.5 }
+export const HEARING_THRESHOLDS = {
+  kick: 0.5,
+  snare: 0.43,
+  hats: 0.5,
+  bass: 0.5,
+  chords: 0.5,
+}
 
 /** How much of a pitched layer's score its octave can cost. At 0.7 an octave
  *  error caps the layer near 0.7 of its harmonic (chroma) score, enough to push
@@ -249,7 +291,7 @@ export function verifyHearing(transcription, stemBuffers, { thresholds = HEARING
       }
       const slice = sliceAudio(stem, range.fromSec, range.toSec)
       const score = scoreLayer(rendered[layer], slice, layer, grid)
-      const threshold = DRUM_ROLES.some((role) => role.name === layer) ? thresholds.drums : thresholds.pitched
+      const threshold = thresholds[layer] ?? Infinity
       layers[layer] = { score, pass: score >= threshold }
       allScores.push(score)
     }

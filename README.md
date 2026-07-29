@@ -82,6 +82,30 @@ else needs a little setup, covered in the reference below.
 Nothing is hidden, by the way. The music is real, readable code sitting in the
 editor, and you can change it yourself whenever you like. You do not have to.
 
+## Rebuilding a song
+
+Point moltek at a record and get an editable track back:
+
+```bash
+node scripts/rebuild.mjs <url-or-file>
+```
+
+It fetches the audio, splits it into stems, measures the tempo, key and section
+boundaries, transcribes drums, bass and chords, then writes a moltek track you
+can open and change. Everything lands in `.moltek/rebuilds/`. (Lead-line
+transcription exists in the codebase but is disabled - it wasn't reliable
+enough to ship - so the clone never has a melody layer.)
+
+Needs `ffmpeg`, `yt-dlp` and `demucs` on your PATH; the command tells you how to
+install whichever is missing.
+
+The clone plays the right notes with moltek's own sounds. It will not sound like
+the record, and dense material transcribes far worse than sparse electronic
+music.
+
+The command is `node scripts/rebuild.mjs` or `pnpm run rebuild` — bare `pnpm
+rebuild` collides with pnpm's own built-in rebuild command and does not work.
+
 ## Under the hood
 
 The music engine is [Strudel](https://strudel.cc), an excellent open source project
