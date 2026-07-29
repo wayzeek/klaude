@@ -85,6 +85,41 @@ const WINDOWS_PER_BEAT = 3
  * track found bar margins as low as 0.020-0.032 in three of them - so this
  * threshold does cost a small number of real bars (see task-8-report.md's
  * addendum for the exact count); it does not cost whole sections.
+ *
+ * What kind of guarantee this actually is - three different cases, not one:
+ *
+ * Flat chroma (equal energy on every pitch class) is rejected *by
+ * construction*: every template ties, margin is exactly 0, and nothing
+ * about `MARGIN_THRESHOLD`'s value matters for that case.
+ *
+ * Realistic bleed - modelled as small, independent perturbations around a
+ * roughly-flat baseline, one draw per beat, then averaged into a bar the
+ * same way `barMargins` does - is rejected *empirically*, and the range
+ * this holds over was measured, not assumed: a bar-level false-accept rate
+ * of 0.000% at relative noise CV 0.1 and 0.15 (0 and 8 hits respectively out
+ * of 50,000 trials), climbing to 0.53% at CV 0.2 and 7.76% at CV 0.3. Below
+ * roughly CV 0.15 this threshold is solid; past roughly CV 0.3 it is not,
+ * and nothing here would detect the difference on a recording this module
+ * has not been measured against.
+ *
+ * I.i.d. uniform noise per pitch class - each of the 12 components drawn
+ * independently and uniformly, no shared shape at all - is *not* reliably
+ * rejected: at the same bar-level aggregation, the median bar margin is
+ * 0.0284 and 45.65% of trials clear 0.03 outright (N=20,000). This is a
+ * different, much less structured process than anything an audio stem's
+ * bleed actually produces - real noise is coloured, not twelve independent
+ * dice rolls - which is why the empirical case above holds while this one
+ * does not. Anyone retuning this constant should know which of these three
+ * guarantees they are relying on, and should not read a low false-accept
+ * rate on realistic bleed as proof against arbitrary noise; it is not one.
+ *
+ * Raising the threshold to also cover the uniform-noise case is not the fix:
+ * this pipeline's actual inputs look like the empirical case (correlated,
+ * structured bleed - reverb tails, room tone, a wind sample), not like
+ * uncorrelated per-bin noise, and task-8-report.md's addendum measures the
+ * real cost of 0.03 already (four real bars, in three sections). A higher
+ * threshold buys protection against a distribution this pipeline does not
+ * see and pays for it in bars that do carry real harmony.
  */
 const MARGIN_THRESHOLD = 0.03
 

@@ -162,6 +162,47 @@ describe('transcribeHarmony', () => {
     expect(transcribeHarmony(silent, grid, SECTION_4, { key: 'F minor' })[0]).toBeNull()
   })
 
+  it('returns null for real, non-silent content with no chord in it', () => {
+    // Twelve equal-gain tones, one per pitch class - real, substantial audio
+    // energy (unlike the digital-silence fixture above, which the margin
+    // gate rejects for the trivial reason that its chroma is exactly zero).
+    // This one has plenty of signal; it just isn't a chord, and every
+    // template ties against it the same way a flat chroma vector does.
+    const chromatic = chordClip([
+      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
+      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
+      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
+      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
+    ])
+    expect(transcribeHarmony(chromatic, grid, SECTION_4, { key: 'F minor' })[0]).toBeNull()
+  })
+
+  it('still recovers a chord under moderate, realistic interference', () => {
+    // Fm held for 4 bars with fourteen inharmonic partials mixed in underneath
+    // it, at less than a tenth of the chord's own gain - a stand-in for the
+    // bleed and room noise a real stem carries, not a pristine synthetic
+    // triad. The chord still dominates and the gate should not be so strict
+    // that ordinary interference like this defeats it.
+    const partials = [211, 233, 251, 277, 307, 337, 367, 397, 431, 461, 499, 523, 557, 587]
+    const barSeconds = (60 / BPM) * 4
+    const frames = Math.ceil(4 * barSeconds * SAMPLE_RATE)
+    const out = new Float32Array(frames)
+    for (const midi of FM) {
+      const hz = midiToHz(midi)
+      for (let i = 0; i < frames; i++) {
+        const fade = Math.min(1, i / (SAMPLE_RATE * 0.01), (frames - i) / (SAMPLE_RATE * 0.01))
+        out[i] += 0.25 * fade * Math.sin((2 * Math.PI * hz * i) / SAMPLE_RATE)
+      }
+    }
+    for (const hz of partials) {
+      for (let i = 0; i < frames; i++) out[i] += 0.02 * Math.sin((2 * Math.PI * hz * i) / SAMPLE_RATE + hz)
+    }
+    const noisy = writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
+    const loop = transcribeHarmony(noisy, grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.every((e) => e.symbol === 'Fm')).toBe(true)
+  })
+
   it('carries confidence and a symbol on every event, and no MIDI', () => {
     const loop = transcribeHarmony(chordClip([FM, CSHARP, FM, CSHARP]), grid, SECTION_4, { key: 'F minor' })[0]
     for (const event of loop.events) {
