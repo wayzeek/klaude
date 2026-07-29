@@ -90,6 +90,18 @@ export function scoreChroma(chroma) {
  * chroma and the extra precision would be spent on noise.
  */
 export function smoothChordPath(rows, { selfBonus = 0.15 } = {}) {
+  if (selfBonus < 0) {
+    throw new Error(
+      `smoothChordPath: selfBonus must be non-negative, got ${selfBonus}. The O(n) ` +
+        "shortcut below picks a single global-best predecessor instead of running the " +
+        'full O(n^2) recurrence, which only reproduces Viterbi\'s answer when "staying ' +
+        'put" can never lose to a worse-scoring neighbour being mistaken for the true ' +
+        'best-of-the-others. A negative bonus breaks that: it lets `moving` win using ' +
+        "previous[bestPrevious] as a stand-in for the best predecessor *other than i*, " +
+        'which is wrong precisely when i itself is bestPrevious. That divergence is ' +
+        'silent - no throw, no NaN - so it must be caught here instead.',
+    )
+  }
   if (!rows.length) return []
   const n = CHORD_TEMPLATES.length
   let previous = Float32Array.from(rows[0])

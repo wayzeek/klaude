@@ -94,6 +94,55 @@ describe('smoothChordPath', () => {
     expect(path.every((index) => index === fm)).toBe(true)
   })
 
+  it('holds a chord through two consecutive ambiguous beats', () => {
+    // A single bad beat doesn't distinguish real smoothing from a plain
+    // per-row argmax that happens to get lucky; two in a row does, because
+    // argmax has no memory and would flip both.
+    const fm = indexOf('Fm')
+    const c7 = indexOf('C7')
+    const rows = []
+    for (let beat = 0; beat < 8; beat++) {
+      const row = new Float32Array(84).fill(0.1)
+      if (beat === 3 || beat === 4) { row[c7] = 0.72; row[fm] = 0.70 } else { row[fm] = 0.9 }
+      rows.push(row)
+    }
+    const path = smoothChordPath(rows, { selfBonus: 0.15 })
+    expect(path.every((index) => index === fm)).toBe(true)
+  })
+
+  it('breaks a tie between staying and moving in favour of staying', () => {
+    // Beat 0 scores C7 higher than Fm on its own (0.75 vs 0.5), so a plain
+    // argmax reads it as C7. But with selfBonus 0.25, staying at Fm from beat
+    // 0 (0.5 + 0.25 = 0.75) scores exactly the same as moving to whatever's
+    // globally best at beat 0 (C7, also 0.75) once beat 1 strongly favours Fm.
+    // `staying >= moving` must resolve that exact tie in favour of staying,
+    // or the reconstructed beat 0 flips to C7 even though Fm dominates
+    // everywhere else.
+    const fm = indexOf('Fm')
+    const c7 = indexOf('C7')
+    const rows = []
+    const first = new Float32Array(84).fill(0.1)
+    first[fm] = 0.5
+    first[c7] = 0.75
+    rows.push(first)
+    for (let beat = 1; beat < 4; beat++) {
+      const row = new Float32Array(84).fill(0.1)
+      row[fm] = 0.9
+      rows.push(row)
+    }
+    const path = smoothChordPath(rows, { selfBonus: 0.25 })
+    expect(path.every((index) => index === fm)).toBe(true)
+  })
+
+  it('rejects a negative selfBonus instead of silently diverging from Viterbi', () => {
+    // The O(n) shortcut only matches the full O(n^2) recurrence because
+    // "staying" can never lose to a competitor being mistaken for the best
+    // predecessor other than itself. A negative bonus breaks that guarantee
+    // silently - no throw, no NaN - so the guard has to live here.
+    const rows = [new Float32Array(84).fill(0.5), new Float32Array(84).fill(0.5)]
+    expect(() => smoothChordPath(rows, { selfBonus: -0.1 })).toThrow(/non-negative/)
+  })
+
   it('still follows a real change', () => {
     const fm = indexOf('Fm')
     const db = indexOf('C#^7') // the flat sixth of F minor, PITCH_NAMES spelling
