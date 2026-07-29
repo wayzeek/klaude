@@ -44,6 +44,19 @@ const VISUAL_METHODS = [
 let cached = null
 
 /**
+ * The runtime from the most recent `loadStrudel()` call, or null if none has
+ * resolved yet. Synchronous, unlike `loadStrudel` itself, for callers that
+ * need `core.State`/`core.TimeSpan` to build a query by hand rather than
+ * through `queryArc` - see `queryEvents` below for why `queryArc` cannot be
+ * that path. Safe to call only after `loadStrudel()` has resolved at least
+ * once in this process; `loadStrudel`'s own module-graph setup guarantees
+ * exactly that for every caller downstream of it.
+ */
+export function cachedStrudel() {
+  return cached
+}
+
+/**
  * Load and configure the Strudel runtime. Idempotent - the module graph and
  * the global eval scope are process-wide, so repeated calls share one setup.
  */
@@ -435,9 +448,18 @@ async function evaluateTrack({ core, transpiler }, code) {
 /**
  * Query a pattern and return plain event objects, sorted by onset.
  *
- * queryArc throws on patterns that need a value they never got (an `.add()`
- * against silence, for instance); callers get an empty list rather than a
- * crash, and the linter reports the failure separately.
+ * `Pattern.prototype.queryArc` already wraps its own query in a try/catch and
+ * logs-then-swallows anything that goes wrong (`.fast("not-a-number")`, for
+ * instance, or `.voicing()` on an unknown chord) - measured directly against
+ * the installed `@strudel/core`, not assumed. So the try/catch below never
+ * actually fires; it is kept because failing loudly on a `null` pattern still
+ * matters, and removing dead code that costs nothing to keep is not this
+ * function's job. A caller that needs a *genuine* thrown exception - the
+ * emission check in `verify-emission.mjs` does, to tell a broken pattern from
+ * a silent one - cannot get one through `queryArc` at all and has to build
+ * the query by hand with `cachedStrudel().core.State`/`TimeSpan` and call
+ * `pattern.query()` directly, which is the one entry point Strudel does not
+ * guard.
  */
 export function queryEvents(pattern, from, to) {
   if (!pattern) return []
