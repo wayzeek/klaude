@@ -168,12 +168,13 @@ describe('transcribeHarmony', () => {
     // gate rejects for the trivial reason that its chroma is exactly zero).
     // This one has plenty of signal; it just isn't a chord, and every
     // template ties against it the same way a flat chroma vector does.
-    const chromatic = chordClip([
-      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
-      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
-      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
-      [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
-    ])
+    // Gain 0.05 keeps twelve summed tones under +/-1 (worst case 12 * 0.05 =
+    // 0.6) - chordClip's own default of 0.25 is sized for two or three
+    // simultaneous notes and clips hard with twelve of them, which would
+    // make this fixture partly about distortion rather than about the
+    // twelve-tone ambiguity it claims to demonstrate.
+    const notes = [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71]
+    const chromatic = chordClip([notes, notes, notes, notes], { gain: 0.05 })
     expect(transcribeHarmony(chromatic, grid, SECTION_4, { key: 'F minor' })[0]).toBeNull()
   })
 
