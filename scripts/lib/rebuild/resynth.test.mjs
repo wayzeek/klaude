@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { RESYNTH_SAMPLE_RATE, makeNoise, renderLoop, renderSection } from './resynth.mjs'
-import { gridFromJson } from './transcribe/quantize.mjs'
+import { gridFromJson, stepsPerBar } from './transcribe/quantize.mjs'
 
 const BPM = 120
 const grid = gridFromJson({
@@ -112,6 +112,56 @@ describe('renderLoop', () => {
     const buffer = renderLoop(null, 'kick', grid, { bars: 2 })
     expect(buffer.length).toBe(oneBarFrames * 2)
     expect(rms(buffer)).toBe(0)
+  })
+
+  // loopBars > 1 is the ordinary case - LOOP_BAR_CANDIDATES is [1, 2, 4] - but
+  // every fixture above uses loopBars: 1. A regression that treats every loop
+  // as one bar long would still produce a buffer of the right length (bars is
+  // an independent argument), so these check what actually landed in each
+  // bar rather than just how many frames came out.
+  const hzOf = (midi) => 440 * 2 ** ((midi - 69) / 12)
+  const estimateHz = (buffer, sampleRate = RESYNTH_SAMPLE_RATE) =>
+    zeroCrossings(buffer) / (2 * (buffer.length / sampleRate))
+
+  it('plays a genuinely different note on each bar of a two-bar loop', () => {
+    const perBarSteps = stepsPerBar(grid)
+    const midiA = 41 // ~87.3 Hz
+    const midiB = 50 // ~146.8 Hz
+    const loop = {
+      loopBars: 2,
+      events: [noteEvent(0, midiA, perBarSteps), noteEvent(perBarSteps, midiB, perBarSteps)],
+      confidence: 1,
+    }
+    // Two repetitions of the loop, so bar order must alternate A, B, A, B -
+    // not just place A and B once and then repeat the whole thing wrong.
+    const buffer = renderLoop(loop, 'bass', grid, { bars: 4 })
+    const barAt = (bar) => buffer.slice(bar * oneBarFrames, (bar + 1) * oneBarFrames)
+
+    for (const [bar, midi] of [[0, midiA], [1, midiB], [2, midiA], [3, midiB]]) {
+      const estimated = estimateHz(barAt(bar))
+      const expected = hzOf(midi)
+      expect(estimated).toBeGreaterThan(expected * 0.9)
+      expect(estimated).toBeLessThan(expected * 1.1)
+    }
+  })
+
+  it('plays a genuinely different note on each bar of a four-bar loop', () => {
+    const perBarSteps = stepsPerBar(grid)
+    const midis = [36, 44, 51, 58] // spread out, no octave duplicates
+    const loop = {
+      loopBars: 4,
+      events: midis.map((midi, bar) => noteEvent(bar * perBarSteps, midi, perBarSteps)),
+      confidence: 1,
+    }
+    const buffer = renderLoop(loop, 'bass', grid, { bars: 4 })
+    const barAt = (bar) => buffer.slice(bar * oneBarFrames, (bar + 1) * oneBarFrames)
+
+    midis.forEach((midi, bar) => {
+      const estimated = estimateHz(barAt(bar))
+      const expected = hzOf(midi)
+      expect(estimated).toBeGreaterThan(expected * 0.9)
+      expect(estimated).toBeLessThan(expected * 1.1)
+    })
   })
 })
 
