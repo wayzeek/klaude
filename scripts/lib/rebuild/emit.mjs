@@ -187,16 +187,48 @@ function tokenFor(event, layer, { flats }) {
   return midiToNoteName(event.midi ?? 60, { flats })
 }
 
-/** The wrapper around a layer's mini-notation. */
+/**
+ * Break a long mini-notation (or gain) string onto several physical lines,
+ * at token boundaries. Mini-notation treats any run of whitespace - a single
+ * space or a newline - identically, so this changes nothing about what the
+ * pattern plays; it exists because a bass line slowed across seventeen bars,
+ * or a hi-hat gain array with one value per hit, is a 500-1200 character
+ * single line otherwise, which fails #46's readability criterion outright.
+ * Short strings pass through untouched (`lines.length` never exceeds 1), so
+ * this only changes output for the loops it needs to.
+ */
+function wrapTokens(str, { width = 90, indent = '  ' } = {}) {
+  const tokens = str.split(' ')
+  const lines = []
+  let current = ''
+  for (const token of tokens) {
+    const candidate = current ? `${current} ${token}` : token
+    if (current && candidate.length > width) {
+      lines.push(current)
+      current = token
+    } else {
+      current = candidate
+    }
+  }
+  if (current) lines.push(current)
+  return lines.join(`\n${indent}`)
+}
+
+/** The wrapper around a layer's mini-notation. Template literals rather than
+ *  quoted strings throughout, so a wrapped (multi-line) pattern is still
+ *  valid JS - and so a short, unwrapped one costs nothing by using the same
+ *  quoting. */
 function layerExpression(loop, layer, perBar, { flats, anchor }) {
   const sound = SOUNDS[layer]
   const { mini, gains, slow } = loopToPatterns(loop, layer, perBar, { flats })
-  const tail = `.gain("${gains}")${slow > 1 ? `.slow(${slow})` : ''}`
-  if (sound.kind === 'sample') return `s("${mini}")${sound.suffix}${tail}`
+  const wrappedMini = wrapTokens(mini)
+  const wrappedGains = wrapTokens(gains)
+  const tail = `.gain(\`${wrappedGains}\`)${slow > 1 ? `.slow(${slow})` : ''}`
+  if (sound.kind === 'sample') return `s(\`${wrappedMini}\`)${sound.suffix}${tail}`
   if (sound.kind === 'chord') {
-    return `chord("${mini}").anchor("${anchor}").mode("above")${sound.suffix}${tail}`
+    return `chord(\`${wrappedMini}\`).anchor("${anchor}").mode("above")${sound.suffix}${tail}`
   }
-  return `note("${mini}")${sound.suffix}${tail}`
+  return `note(\`${wrappedMini}\`)${sound.suffix}${tail}`
 }
 
 /**

@@ -221,7 +221,10 @@ describe('emitTrack', () => {
     const code = emitTrack(transcription([
       { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: loud } },
     ]))
-    const match = /\.gain\("([^"]+)"\)/.exec(code)
+    // `layerExpression` quotes with backticks (not double quotes) so a
+    // wrapped, multi-line pattern is still valid JS; this loop is short
+    // enough to stay on one line either way.
+    const match = /\.gain\(`([^`]+)`\)/.exec(code)
     expect(match).not.toBeNull()
     const values = match[1].split(' ').map((token) => Number(token.split('@')[0]))
     // The accented hit must come out clearly louder than the ghost.

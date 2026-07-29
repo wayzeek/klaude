@@ -48,6 +48,13 @@ function stemsFromTranscription(transcription) {
   return { drums: wrap(drums), bass: wrap(layers.bass), other: wrap(other) }
 }
 
+// Bass scoring now runs `trackF0` (YIN) over both the rendered buffer and the
+// stem, twice per `verifyHearing` call in tests that compare a correct and a
+// corrupted score - real work, not the near-instant math the other layers
+// use, and slow enough on these fixtures (~2s per verifyHearing call
+// measured directly) to need a longer-than-default test timeout.
+const BASS_TEST_TIMEOUT = 15000
+
 describe('verifyHearing', () => {
   it('scores a transcription against a synthesis of itself near perfect', () => {
     const transcription = transcriptionWith(BASE_LOOPS)
@@ -55,7 +62,7 @@ describe('verifyHearing', () => {
     expect(result.sections[0].layers.kick.score).toBeGreaterThan(0.85)
     expect(result.sections[0].layers.bass.score).toBeGreaterThan(0.85)
     expect(result.overall).toBeGreaterThan(0.85)
-  })
+  }, BASS_TEST_TIMEOUT)
 
   it('scores lower when the bass is transposed a semitone', () => {
     const truth = transcriptionWith(BASE_LOOPS)
@@ -77,7 +84,7 @@ describe('verifyHearing', () => {
     console.log(`semitone-off bass: correct=${right.toFixed(3)} wrong=${off.toFixed(3)}`)
     expect(right).toBeGreaterThan(0.85)
     expect(off).toBeLessThan(right - 0.1)
-  })
+  }, BASS_TEST_TIMEOUT)
 
   it('scores lower when the drums are shifted by a step', () => {
     const truth = transcriptionWith(BASE_LOOPS)
@@ -96,7 +103,7 @@ describe('verifyHearing', () => {
     console.log(`step-shifted kick: correct=${right.toFixed(3)} shifted=${off.toFixed(3)}`)
     expect(right).toBeGreaterThan(0.85)
     expect(off).toBeLessThan(right - 0.1)
-  })
+  }, BASS_TEST_TIMEOUT)
 
   it('scores lower when half the drum hits are dropped', () => {
     const truth = transcriptionWith(BASE_LOOPS)
@@ -111,7 +118,7 @@ describe('verifyHearing', () => {
     console.log(`half-dropped kick: correct=${right.toFixed(3)} sparse=${off.toFixed(3)}`)
     expect(right).toBeGreaterThan(0.85)
     expect(off).toBeLessThan(right)
-  })
+  }, BASS_TEST_TIMEOUT)
 
   it('passes a correct layer and fails a nonsense one', () => {
     // Both halves matter. Asserting only that the wrong layer fails would be
@@ -125,15 +132,18 @@ describe('verifyHearing', () => {
       bass: { loopBars: 1, events: [note(0, 70, 16)], confidence: 0.8 },
     })
     expect(verifyHearing(nonsense, stems).sections[0].layers.bass.pass).toBe(false)
-  })
+  }, BASS_TEST_TIMEOUT)
 
   it('notices a bassline transcribed an octave low', () => {
-    // Chroma alone cannot see this - the pitch classes are identical - so this
-    // test fails against any implementation that scores on chroma only. It is
-    // the reason scoreLayer carries a register term. This only proves the
-    // register term catches an octave error against the *right* instrument's
-    // stem; it says nothing about content that is genuinely in-band but
-    // belongs to a different source (see the module doc comment).
+    // `bassAgreement` compares full MIDI pitch from `trackF0`, not pitch
+    // class, so an octave error is just a wrong note to it - unlike chroma,
+    // which folds octaves together on purpose and would need a separate
+    // register term to catch this at all (see verify-hearing.mjs's history:
+    // that used to be true here too, back when bass scored on chroma).
+    // Measured directly: this fixture scores 1.000 correct and 0.000 octave
+    // down, not a partial credit - #42's headline criterion (correct octave)
+    // fails completely rather than plausibly for a bass line, which is
+    // exactly what should happen.
     const truth = transcriptionWith(BASE_LOOPS)
     const stems = stemsFromTranscription(truth)
     const octaveDown = transcriptionWith({
@@ -148,23 +158,15 @@ describe('verifyHearing', () => {
     const low = verifyHearing(octaveDown, stems).sections[0].layers.bass.score
     console.log(`octave-low bass: correct=${right.toFixed(3)} octave-down=${low.toFixed(3)}`)
     expect(right).toBeGreaterThan(0.85)
-    // A wide margin, not the usual 0.1: the octave-down note's own second
-    // harmonic lands exactly on the correct note's fundamental (that is what
-    // "an octave down" means), so chroma alone - with no register term at all
-    // - still reports a deceptively high 0.886 here on aliased harmonic
-    // content. 0.2 is comfortably below this implementation's real gap
-    // (~0.37) and above that alias floor, so a register term that stopped
-    // doing anything (e.g. always agreeing) would fail this assertion instead
-    // of sliding through on the alias.
     expect(low).toBeLessThan(right - 0.2)
-  })
+  }, BASS_TEST_TIMEOUT)
 
   it('reports null for an omitted layer rather than a zero score', () => {
     const transcription = transcriptionWith(BASE_LOOPS)
     const result = verifyHearing(transcription, stemsFromTranscription(transcription))
     expect(result.sections[0].layers.snare).toBeNull()
     expect(result.sections[0].layers.lead).toBeNull()
-  })
+  }, BASS_TEST_TIMEOUT)
 
   it('handles a section with no layers at all', () => {
     const empty = transcriptionWith({

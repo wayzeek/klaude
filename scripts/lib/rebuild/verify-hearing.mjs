@@ -28,102 +28,99 @@
 import { decodeWav } from '../decoded-audio.mjs'
 import { CHROMA_FFT, ONSET_HOP, fft, makeHann } from '../dsp.mjs'
 import { bandEnergy, bandEnergyRise, bandNovelty, pickBandOnsets } from './transcribe/bands.mjs'
+import { BASS_RANGE } from './transcribe/bass.mjs'
 import { DRUM_ROLES } from './transcribe/drums.mjs'
+import { trackF0 } from './transcribe/f0.mjs'
 import { beatChroma } from './transcribe/harmony.mjs'
 import { LAYERS, gridFromJson, sectionRange } from './transcribe/quantize.mjs'
 import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
 
 /**
- * Recalibrated 2026-07-29, replacing a same-day calibration that shipped from
- * the wrong measurement. That first pass set every threshold at half of Task
- * 11's *self-consistency* ceiling - a transcription scored against a
- * synthesis of itself, so nothing in the fixture can be wrong. That number
- * says how consistent the check is with itself; it says nothing about what a
- * correct transcription scores against a *real* stem, which is the only
- * measurement a real threshold can be based on. The gap was not small: on
- * the-chase, a 95%-accurate real kick transcription (288/302 true onsets,
- * ground truth) scored 0.000-0.035 against the real drums stem under the
- * self-consistency-calibrated method, so kick and snare were dropped from
- * effectively every section regardless of how well they were transcribed.
- * `pnpm run rebuild` on the-chase went from 44 layers before the drop to 10
- * after it.
+ * Recalibrated across two rounds on 2026-07-29, each correcting a wrong
+ * measurement basis in the previous one. The first calibration set every
+ * threshold at half of Task 11's *self-consistency* ceiling (a transcription
+ * scored against a synthesis of itself, so nothing could be wrong) - that
+ * dropped kick and snare from nearly every the-chase section regardless of
+ * accuracy, fixed by moving drum scoring to `onsetAgreement`. That fix was
+ * declared done without asking the same question of bass and chords, which
+ * is the mistake this second round corrects: bass's chroma-based comparison
+ * turned out to be just as broken as the drums' curve-correlation had been,
+ * for an unrelated reason, and a review reproduced hats scoring a corrupted
+ * section as ~correct because the first hats corruption test was itself
+ * flawed (see below). Every number here is a known-good transcription (a
+ * loop built from the-chase's ground-truth event list, not from the
+ * transcriber's own output) scored against the *real* stem, then corrupted
+ * and rescored, on every the-chase section with true content for that layer.
  *
- * Two things changed:
+ * **Bass moved off chroma entirely** (see `bassAgreement`'s comment): chroma
+ * excludes everything below 80 Hz, and this track's bass roots (MIDI 24-41,
+ * 32.7-87.3 Hz) sit mostly below that floor, so chroma was scoring harmonics
+ * that don't reliably track the true note - a single wrong note held across
+ * an entire section scored *higher* (0.510) than a correct transcription
+ * (0.322 mean). Bass now compares F0 pitch directly via `trackF0`, the same
+ * machinery `transcribeBass` already uses and for the same documented reason
+ * (f0.mjs's own module comment already said chroma can't do this). Correct
+ * scores 0.530 across 11 sections; every corruption tried (semitone, tritone,
+ * octave, a fixed wrong pattern, a held drone) scores 0.000-0.056 - the
+ * gap is real and large, unlike chroma's.
  *
- * 1. Drum scoring (kick/snare/hats) moved from correlating the role's raw
- *    detection curve to `onsetAgreement`'s tolerance-matched onset F1 - see
- *    that function's comment for why the curve correlation could not work.
- *    Bass and chords are untouched: both already score in a sensible range
- *    against real stems (chords measured 0.87-0.90 in several the-chase
- *    sections), so the fix is scoped to the mechanism that was actually
- *    broken.
+ * **Hats' apparent "cannot discriminate a half-dropped pattern" finding did
+ * not reproduce, and the reason matters as much as the correction.** The
+ * ground-truth hi-hat loop was built from the-chase's `hh`/`oh` event list
+ * without deduplicating first; 467 of 575 real hi-hat positions have a
+ * near-duplicate entry at the exact same bar/step (two overlapping hi-hat
+ * voices in the source track), so filtering "every other array index"
+ * mostly dropped redundant copies rather than distinct onsets and understated
+ * the corruption (0.764 vs a 0.774 ceiling). Deduplicating first and testing
+ * three independently-shaped half-drops gives a real gap: correct 0.774,
+ * half-dropped 0.551-0.560 depending on which half. The corrected threshold
+ * (0.67) still lets roughly one in seven half-dropped sections through where
+ * the old one (0.51) let five of seven through - a real improvement, not a
+ * full fix; see the disclosed limit below.
  *
- * 2. Every threshold is now set from a *known-good transcription scored
- *    against its real stem*, not a synthetic ceiling. For kick/snare/hats
- *    "known good" means a loop built directly from the-chase's ground-truth
- *    event list (`scripts/lib/rebuild/__fixtures__/the-chase-truth.json`),
- *    not the transcriber's own output - transcribeDrums's own snare recall
- *    against ground truth is only ~43%, so its output cannot serve as "known
- *    good" the way its kick output (95%) can. Bass and chords keep their
- *    already-existing real-stem scores (the actual transcribed output,
- *    independently confirmed accurate for bass via ground truth - 130/130
- *    pitch-class and exact-MIDI - and taken on inspection for chords).
+ * **Chords keep chroma** - it measures real signal against real stems (0.817
+ * mean correct, a tritone transposition falls to 0.349, cleanly separable)
+ * - but a same-key wrong chord (the track's own tonic substituted throughout)
+ * is only partly caught (0.685 mean, overlapping the correct range at the
+ * tails). The threshold is set to catch the clean case; the same-key case is
+ * a disclosed limit, not a fixed one.
  *
- * Measured real-stem ceiling (mean of per-section scores across every
- * the-chase section with true content; median for chords, to avoid a few
- * sections with unverified chord accuracy dragging the average down):
- *   kick 0.805 (8 sections)   snare 0.637 (9 sections)   hats 0.774 (7 sections)
- *   bass 0.322 (8 sections)   chords 0.758 (10 sections)
- *
- * For kick/snare/hats the threshold is *not* half of this ceiling - proven
- * necessary, not assumed: corrupting the same known-good loop (shifted a
- * step, half its hits dropped, replaced with an unrelated fixed pattern) and
- * rescoring against the real stem shows half-of-ceiling would still pass the
- * worst corruption for every drum role (e.g. kick's dropped-half corruption
- * still averages 0.605, well above half of 0.805). Each drum threshold is
- * instead the midpoint between the correct mean and the *worst discriminable*
- * corruption's mean - the highest threshold that still passes every measured
- * correct section:
- *   kick:  correct 0.805, worst corruption (drop-half) 0.605 -> exact midpoint 0.705, rounded
- *          down to 0.70 (not up to 0.71): the-chase's own section 6 kick scores
- *          0.7089, a correct section that 0.71 would have dropped by one
- *          thousandth - rounding toward "more likely right than wrong" costs
- *          nothing against the corruption gap (still far above 0.605) and
- *          keeps a real, measured, correct section
- *   snare: correct 0.637, worst corruption (drop-half) 0.344 -> 0.49
- *   hats:  correct 0.774, worst *discriminable* corruption (replace) 0.244 -> 0.51
- * Bass and chords keep the original half-of-ceiling rule, since their
- * mechanism wasn't touched: bass 0.322/2 -> 0.16, chords 0.758/2 -> 0.38.
+ * Thresholds are the midpoint between the correct mean and the worst
+ * *discriminable* corruption's mean - proven per layer, not assumed as half
+ * of any ceiling (half-of-ceiling was checked and would still pass the worst
+ * corruption for every layer touched here):
+ *   kick:   correct 0.805, worst (drop-half) 0.605 -> 0.70 (rounded down from
+ *           the exact midpoint 0.705 - the-chase's own section 6 kick scores
+ *           0.7089, and 0.71 would have dropped a real correct section)
+ *   snare:  correct 0.637, worst (drop-half) 0.344 -> 0.49
+ *   hats:   correct 0.774, worst (drop-half, deduplicated) 0.560 -> 0.67
+ *   bass:   correct 0.530, worst (random) 0.056 -> 0.29
+ *   chords: correct 0.817, worst *discriminable* (tritone) 0.349 -> 0.58
  *
  * `lead` has no entry: that transcriber is disabled (see melody.mjs) and
  * never reaches this check.
  *
  * Honest limits, not smoothed over:
- * - hats cannot be made to discriminate "half the hits dropped" on real
- *   audio - every method tried (current correlation, raw energy, smoothed
- *   rise, onset F1) scores a hats loop missing half its true hits within
- *   0.01-0.03 of the correct score, because hi-hats in this recording carry
- *   enough continuous high-band energy that a depleted onset set still lands
- *   close to real onsets. `HEARING_THRESHOLDS.hats` catches a shifted or
- *   wrong pattern but not a thinned-out one. Lowering the threshold further
- *   would not fix this - the scores are already this close together - so it
- *   is left as a measured, disclosed gap.
- * - Kick's "replace with an unrelated pattern" test needed a pattern that
- *   does not resemble any other the-chase section's real kick, because the
- *   first attempt (borrow another section's true pattern) undersold the
- *   corruption: the-chase's kick is a four-on-the-floor variant almost
- *   everywhere, so two real sections' patterns are often too similar for
- *   swapping them to be a meaningful wrong answer. Swapping is still
- *   measured (kick correct 0.805 vs swap 0.596, some individual sections
- *   overlapping) and reported for transparency, but the fixed fixed-pattern
- *   corruption (kick correct 0.805 vs replace 0.161) is what set the
- *   threshold.
- * - Even the chosen threshold does not perfectly separate correct from
- *   corrupted at the individual-section level (e.g. one section's dropped-
- *   half kick scores 0.815, above another section's correct score of 0.730);
- *   it separates the *means* with a real margin. A single scalar threshold
- *   over noisy real audio cannot do better than that without also rejecting
- *   some correct sections, which is the trade this plan avoids on purpose.
+ * - Hats still cannot fully discriminate a half-dropped pattern even after
+ *   the deduplication fix - the corrected gap (~0.21) is real but not large
+ *   enough for a single threshold to reject every half-dropped section
+ *   without also rejecting some correct ones; 0.67 accepts every correct
+ *   section measured and roughly one in seven half-dropped sections still
+ *   slips through.
+ * - Chords do not reliably catch a same-key wrong chord (see above) - only a
+ *   change of key or quality that moves the chroma vector further than that.
+ * - Kick and hats both needed a "replace with an unrelated pattern" corruption
+ *   distinct from swapping in another section's real pattern, because
+ *   the-chase's own material (four-on-the-floor kick, dense regular hats) is
+ *   similar enough section to section that swapping real patterns understates
+ *   the corruption. Swap scores are still reported for transparency but did
+ *   not set the threshold.
+ * - None of these thresholds perfectly separate correct from corrupted at the
+ *   individual-section level (e.g. kick: one dropped-half section scores
+ *   0.815, above another section's correct 0.730). They separate the *means*
+ *   with a real, measured margin - a single scalar threshold over noisy real
+ *   audio cannot do better than that without also rejecting some correct
+ *   sections, which is the trade this plan avoids on purpose.
  *
  * These numbers rest on one real track (the-chase, the only recording with
  * exact ground truth) - the same n=1 limitation the beat grid carries.
@@ -131,9 +128,9 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
 export const HEARING_THRESHOLDS = {
   kick: 0.7,
   snare: 0.49,
-  hats: 0.51,
-  bass: 0.16,
-  chords: 0.38,
+  hats: 0.67,
+  bass: 0.29,
+  chords: 0.58,
 }
 
 /** How much of a pitched layer's score its octave can cost. At 0.7 an octave
@@ -272,17 +269,63 @@ function onsetAgreement(rendered, stemSlice, role, sampleRate) {
   return precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0
 }
 
+/** Bass F0 tracking window, matching `transcribeBass`'s own (unexported)
+ *  `NOTE_WINDOW` - the same value for the same reason: at 44.1kHz a 30Hz
+ *  fundamental (`BASS_RANGE.minHz`) needs a window at least twice its
+ *  ~1470-sample period to find a full cycle. */
+const BASS_F0_WINDOW = 3200
+
+/** How close two F0 estimates may sit, in semitones, and still count as the
+ *  same note - wide enough for ordinary YIN jitter, narrow enough that a
+ *  genuine semitone error still fails. */
+const BASS_PITCH_TOLERANCE_SEMITONES = 0.5
+
+/**
+ * Fraction of frames where both sides are confidently voiced *and* agree on
+ * pitch - full pitch, not pitch class, so an octave error costs the same as
+ * any other wrong note.
+ *
+ * Bass-specific, and not a small tweak: chroma (used for chords and, if it
+ * were ever enabled, lead) excludes everything below `CHROMA_MIN_HZ` (80 Hz,
+ * see harmony.mjs), and this track's bass roots sit at MIDI 24-41 - 32.7 to
+ * 87.3 Hz - so chroma was scoring mostly harmonics, never the fundamental.
+ * Measured directly against the-chase: a known-good bass transcription (its
+ * events built straight from ground truth, not from `transcribeBass`) scored
+ * a 0.322 mean by chroma against the real bass stem, and a single wrong note
+ * held across an entire section - the harshest corruption tried - scored
+ * 0.510, *higher* than correct, because chroma had no reliable signal to
+ * lose in the first place. `trackF0` reads the fundamental directly (bass.mjs
+ * already relies on it for the same reason, per its own module comment,
+ * which says as much about chroma and basslines explicitly) and gives a real
+ * gap on the same sections: correct scores 0.530, and every corruption tried
+ * (a semitone, a tritone, an octave, a fixed wrong pattern, a held drone)
+ * scores 0.000-0.056.
+ */
+function bassAgreement(rendered, stemSlice) {
+  const a = trackF0(asAudio(rendered), { ...BASS_RANGE, windowSize: BASS_F0_WINDOW }).frames
+  const b = trackF0(asAudio(stemSlice), { ...BASS_RANGE, windowSize: BASS_F0_WINDOW }).frames
+  if (!a.length || !b.length) return 0
+  const n = Math.min(a.length, b.length)
+  let voicedBoth = 0
+  let agree = 0
+  for (let i = 0; i < n; i++) {
+    if (!a[i].voiced || !b[i].voiced) continue
+    voicedBoth++
+    if (Math.abs(a[i].midi - b[i].midi) <= BASS_PITCH_TOLERANCE_SEMITONES) agree++
+  }
+  return voicedBoth > 0 ? agree / voicedBoth : 0
+}
+
 /**
  * How well a rendered layer matches the stem it came from.
  *
- * Pitched layers compare chroma, because chroma is invariant to the things
- * resynthesis gets wrong on purpose - timbre, voicing, octave register of the
- * synthesis voice - and sensitive to the thing that matters, which is which
- * notes are sounding. Chroma alone cannot see an octave error, so single-voice
- * pitched layers (not chords - `.voicing()` chooses its own register by
- * design) also carry a register term: the spectral centroid moves with the
- * octave even though chroma does not, and getting the octave right is #42's
- * headline criterion.
+ * Bass compares fundamental frequency directly (`bassAgreement`), not
+ * chroma - see that function's comment for why chroma cannot work for a bass
+ * line at all. Chords keep chroma: it discards voicing, inversion and octave
+ * on purpose, which is correct for a `.voicing()`-chosen chord register, and
+ * it measures real signal against real stems (0.82 mean correct, a tritone
+ * transposition falls to 0.35) even though a same-key wrong chord is only
+ * partly caught (see `HEARING_THRESHOLDS`'s comment).
  *
  * Drums compare onset timing rather than pitch, because a drum layer has no
  * pitch content and what we want to know is whether hits land where we said
@@ -306,6 +349,10 @@ export function scoreLayer(rendered, stemSlice, layer, grid) {
   const role = DRUM_ROLES.find((candidate) => candidate.name === layer)
   if (role) {
     return onsetAgreement(rendered, stemSlice, role, RESYNTH_SAMPLE_RATE)
+  }
+
+  if (layer === 'bass') {
+    return bassAgreement(rendered, stemSlice)
   }
 
   // A grid anchored at zero, because both buffers start at the section's
