@@ -1,15 +1,53 @@
 /**
- * Lead line transcription from the harmony stem's residual.
+ * Lead line transcription from the harmony stem - disabled by default.
  *
- * This is the most likely of the four transcribers to produce nothing usable,
- * and that is an acceptable outcome. Omitting the layer is always better than
- * inventing a melody: a wrong hook is immediately obvious and a missing one is
- * not. Every threshold below is set to omit when unsure.
+ * `detectMelody` below is the full pipeline: track the strongest pitch in the
+ * lead register, gate on how much of a line there is, and discard any line
+ * that turns out to be the chords' own top voice rather than a part. It works
+ * exactly as designed and produces zero false positives on the real track
+ * (`the-chase`): every section it emits a lead for genuinely has the sax
+ * playing, and every section with no sax stays silent.
  *
- * "Residual" here does not mean spectral subtraction - that would need the
- * chords rendered back to audio, which is Task 10's job and circular here.
- * It means: track the strongest pitch in the lead register, then discard any
- * line that turns out to be the chords' own top voice rather than a part.
+ * It is not, however, what ships. Measured directly (task-9-report.md's
+ * addendum): the emitted notes barely correlate with the true part even in
+ * the sections that pass every gate. Section 9 has 180 real sax events and
+ * this pipeline surfaces 2 notes, exact-MIDI agreement 0%. Section 8 has one
+ * real sax note in five bars and this pipeline emits eighteen, chasing
+ * whatever else is loud in the stem - onset match against the true part 5%.
+ * Aggregate exact-MIDI agreement across every emitted section: 9 of 129, ~7%,
+ * chance level. A lead in the right place playing uncorrelated notes is
+ * exactly the wrong hook #44 says is worse than silence, and the gates above
+ * cannot fix it: MIN_NOTES/MIN_CLARITY/MIN_VOICED_FRACTION only ask "is there
+ * a clear pitched line," which the epiano and sawtooth sharing this stem
+ * satisfy as well as the sax does, and MAX_CHORD_TONE_FRACTION only catches
+ * the specific case where that other content is also the detected chord's own
+ * tones.
+ *
+ * The suspected cause - this stem carries several pitched instruments at
+ * once and the tracker follows whichever is loudest, not necessarily the lead
+ * - was tested directly. Chord tones already known from `transcribeHarmony`
+ * were synthesised (summed sine partials across three octaves) and spectrally
+ * subtracted from the stem per analysis frame, least-squares scaled to best
+ * explain each frame before subtracting. Verified this was real cancellation,
+ * not a no-op: up to 100% reduction at the targeted bins in a chord-heavy
+ * frame, 72% of that frame's total energy removed, 6-16% of RMS energy
+ * removed across the two sections measured end to end. It did not move the
+ * result: section 9's detected pitches were byte-identical before and after
+ * (Ab4, F3 either way), section 8's were the same scattered, uncorrelated set
+ * either way, and neither section's onset/pitch-class/exact-MIDI agreement
+ * against ground truth changed at all. The confound is not chord energy this
+ * module can subtract its way out of in the pitch domain - it is a tenor sax
+ * sharing a stem with an electric piano and other pitched layers this module
+ * has no way to tell apart, which is a source-separation problem, not a
+ * thresholding one.
+ *
+ * So `transcribeMelody`, the function anything downstream actually calls,
+ * omits every section unconditionally. `detectMelody` and its tests stay: the
+ * gates and the chord-tone check are correct on their own terms and worth
+ * keeping if a future task adds real separation for this stem (a different
+ * technique than the pitch-domain residual tried here, which was ruled out
+ * above) rather than a threshold change - `transcribeMelody` is the one line
+ * to change to point back at it.
  */
 
 import { decodeWav } from '../../decoded-audio.mjs'
@@ -35,7 +73,21 @@ const MIN_DISTINCT_PITCHES = 2
  *  underneath, the "lead" is the harmony's top voice and gets dropped. */
 const MAX_CHORD_TONE_FRACTION = 0.9
 
-export function transcribeMelody(wavBuf, grid, sections, { chords = [] } = {}) {
+/**
+ * The real entry point. Always omits - see the module doc comment for the
+ * measurement that justifies it. Keeps `detectMelody`'s signature so
+ * re-enabling it later (once this stem has real separation to run on) is a
+ * one-line change here, not a caller-side change.
+ */
+export function transcribeMelody(wavBuf, grid, sections) {
+  return sections.map(() => null)
+}
+
+/** The full detection pipeline. Not called by `transcribeMelody` - see the
+ *  module doc comment. Kept, and still tested, because the gates and the
+ *  chord-tone check are correct on their own terms; the problem is upstream
+ *  of them. */
+export function detectMelody(wavBuf, grid, sections, { chords = [] } = {}) {
   const audio = decodeWav(wavBuf)
   const track = trackF0(audio, { ...LEAD_RANGE, windowSize: 2048, hop: 512 })
   const notes = segmentNotes(track, { minFrames: 3, semitoneTolerance: 0.7 })

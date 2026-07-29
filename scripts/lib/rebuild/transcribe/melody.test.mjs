@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
 import { midiToHz } from './f0.mjs'
+import { detectMelody, transcribeMelody } from './melody.mjs'
 import { gridFromJson } from './quantize.mjs'
-import { transcribeMelody } from './melody.mjs'
 
 const SAMPLE_RATE = 44100
 const BPM = 120
@@ -58,9 +58,14 @@ const phrase = [
 ]
 const fourBars = [...phrase, ...phrase, ...phrase, ...phrase]
 
-describe('transcribeMelody', () => {
+// `detectMelody` is the full pitch-tracking pipeline. It is not what ships -
+// see melody.mjs's module doc comment and task-9-report.md's addendum for the
+// measurement that took it out of `transcribeMelody` - but the gates and the
+// chord-tone check are correct on their own terms, so this suite still pins
+// them down directly.
+describe('detectMelody', () => {
   it('recovers a repeating phrase as a one-bar loop', () => {
-    const loop = transcribeMelody(leadClip(fourBars), grid, SECTION_4, { chords: NO_CHORDS })[0]
+    const loop = detectMelody(leadClip(fourBars), grid, SECTION_4, { chords: NO_CHORDS })[0]
     expect(loop).not.toBeNull()
     expect(loop.loopBars).toBe(1)
     expect(loop.events.map((e) => e.midi)).toEqual([65, 68, 72, 68])
@@ -70,7 +75,7 @@ describe('transcribeMelody', () => {
     const line = [
       { midi: 60, beats: 1 }, { midi: 72, beats: 1 }, { midi: 60, beats: 1 }, { midi: 72, beats: 1 },
     ]
-    const loop = transcribeMelody(leadClip([...line, ...line, ...line, ...line]), grid, SECTION_4, {
+    const loop = detectMelody(leadClip([...line, ...line, ...line, ...line]), grid, SECTION_4, {
       chords: NO_CHORDS,
     })[0]
     expect(loop.events.map((e) => e.midi)).toEqual([60, 72, 60, 72])
@@ -79,7 +84,7 @@ describe('transcribeMelody', () => {
   it('omits the layer when there is only a pad', () => {
     // A held triad and nothing else: harmony, not a lead.
     const held = [{ midi: null, beats: 16 }]
-    const loop = transcribeMelody(leadClip(held, { padMidi: [53, 56, 60] }), grid, SECTION_4, {
+    const loop = detectMelody(leadClip(held, { padMidi: [53, 56, 60] }), grid, SECTION_4, {
       chords: NO_CHORDS,
     })[0]
     expect(loop).toBeNull()
@@ -91,17 +96,17 @@ describe('transcribeMelody', () => {
       channels: 1,
       samples: [new Float32Array(Math.ceil(8 * SAMPLE_RATE))],
     })
-    expect(transcribeMelody(silent, grid, SECTION_4, { chords: NO_CHORDS })[0]).toBeNull()
+    expect(detectMelody(silent, grid, SECTION_4, { chords: NO_CHORDS })[0]).toBeNull()
   })
 
   it('omits the layer when the line is too short to be a hook', () => {
     // Two notes in four bars is not a melody.
     const sparse = [{ midi: 65, beats: 1 }, { midi: null, beats: 14 }, { midi: 68, beats: 1 }]
-    expect(transcribeMelody(leadClip(sparse), grid, SECTION_4, { chords: NO_CHORDS })[0]).toBeNull()
+    expect(detectMelody(leadClip(sparse), grid, SECTION_4, { chords: NO_CHORDS })[0]).toBeNull()
   })
 
   it('carries confidence and no chord symbol on every note', () => {
-    const loop = transcribeMelody(leadClip(fourBars), grid, SECTION_4, { chords: NO_CHORDS })[0]
+    const loop = detectMelody(leadClip(fourBars), grid, SECTION_4, { chords: NO_CHORDS })[0]
     for (const event of loop.events) {
       expect(event.confidence).toBeGreaterThan(0)
       expect(event.confidence).toBeLessThanOrEqual(1)
@@ -115,7 +120,7 @@ describe('transcribeMelody', () => {
       { index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null },
       { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
     ]
-    const result = transcribeMelody(leadClip(fourBars), grid, sections, { chords: [null, null] })
+    const result = detectMelody(leadClip(fourBars), grid, sections, { chords: [null, null] })
     expect(result).toHaveLength(2)
   })
 
@@ -136,7 +141,7 @@ describe('transcribeMelody', () => {
       { midi: 65, beats: 1 }, { midi: 68, beats: 1 }, { midi: 72, beats: 1 }, { midi: 68, beats: 1 },
     ]
     const line = [...arp, ...arp, ...arp, ...arp]
-    expect(transcribeMelody(leadClip(line), grid, SECTION_4, { chords: [chordLoop] })[0]).toBeNull()
+    expect(detectMelody(leadClip(line), grid, SECTION_4, { chords: [chordLoop] })[0]).toBeNull()
   })
 
   it('keeps a line that leaves the chord', () => {
@@ -154,6 +159,32 @@ describe('transcribeMelody', () => {
       { midi: 65, beats: 1 }, { midi: 67, beats: 1 }, { midi: 70, beats: 1 }, { midi: 67, beats: 1 },
     ]
     const line = [...arp, ...arp, ...arp, ...arp]
-    expect(transcribeMelody(leadClip(line), grid, SECTION_4, { chords: [chordLoop] })[0]).not.toBeNull()
+    expect(detectMelody(leadClip(line), grid, SECTION_4, { chords: [chordLoop] })[0]).not.toBeNull()
+  })
+})
+
+// `transcribeMelody` is what the rebuild pipeline actually calls. Measured
+// (task-9-report.md's addendum): even where `detectMelody` clears every gate,
+// its notes barely correlate with the true lead - aggregate exact-MIDI
+// agreement of 9/129 (~7%, chance level) against the real sax part, and one
+// section emitted 18 notes against a single true one. A wrong hook is worse
+// than a missing one, so this function omits unconditionally until a future
+// task gives it a real separated source to read instead of a shared stem.
+describe('transcribeMelody', () => {
+  it('omits every section regardless of how strong the underlying line is', () => {
+    // fourBars is the exact fixture detectMelody recovers cleanly as a loop
+    // (see the first `detectMelody` test above) - proof this is a deliberate
+    // override, not a fixture that would fail to find anything anyway.
+    const result = transcribeMelody(leadClip(fourBars), grid, SECTION_4)
+    expect(result).toEqual([null])
+  })
+
+  it('returns one null per section', () => {
+    const sections = [
+      { index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null },
+      { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
+    ]
+    const result = transcribeMelody(leadClip(fourBars), grid, sections)
+    expect(result).toEqual([null, null])
   })
 })
