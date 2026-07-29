@@ -115,6 +115,12 @@ export function barToMini(slots) {
  * notes to survive as ghost notes, and they only do if the dynamics reach the
  * output. Rest positions repeat the base gain rather than `~` so every slot has
  * a defined value and the two strings stay aligned by weight.
+ *
+ * `SOUNDS[layer].gain` is the loudest an event on that layer ever gets - the
+ * ceiling, not a midpoint - matching `resynth.mjs` (`voice.gain * velocity`,
+ * no extra factor) and the hand-authored gains in tracks/MINUIT. A layer whose
+ * transcriber never varies velocity (bass.mjs hardcodes 0.8; nothing in this
+ * pipeline emits higher) must still land at or under its own base gain.
  */
 function loopToPatterns(loop, layer, perBar, { flats }) {
   const total = loop.loopBars * perBar
@@ -127,7 +133,7 @@ function loopToPatterns(loop, layer, perBar, { flats }) {
       // Clamp to the loop's end, not the bar's: a note may legitimately sustain
       // across a bar line and clipping it there silently shortens every pad.
       length: Math.max(1, Math.min(event.length, total - event.step)),
-      gain: round2(base * (event.velocity ?? 0.8) * 2),
+      gain: round2(base * (event.velocity ?? 0.8)),
     }
   }
 
@@ -153,7 +159,7 @@ function loopToPatterns(loop, layer, perBar, { flats }) {
 
 /** The gain string, walked exactly as `barToMini` walks the tokens so the two
  *  line up weight for weight. */
-function barToGains(slots, base) {
+export function barToGains(slots, base) {
   const tokens = []
   let index = 0
   while (index < slots.length) {
@@ -210,7 +216,7 @@ export function emitTrack(transcription, { title = null, source = null } = {}) {
 
   const lines = []
   lines.push('// ═══════════════════════════════════════════════════════════')
-  lines.push(`//  ${title ?? 'rebuild'}  ·  ${keyName} · ${Math.round(grid.bpm)} BPM`)
+  lines.push(`//  ${(title ?? 'rebuild').toUpperCase()}  ·  ${keyName} · ${Math.round(grid.bpm)} BPM`)
   if (source) lines.push(`//  rebuilt from ${source}`)
   lines.push('// ═══════════════════════════════════════════════════════════')
   lines.push("samples('github:tidalcycles/dirt-samples')")

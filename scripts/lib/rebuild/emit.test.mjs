@@ -226,8 +226,10 @@ describe('emitTrack', () => {
     const values = match[1].split(' ').map((token) => Number(token.split('@')[0]))
     // The accented hit must come out clearly louder than the ghost.
     expect(Math.max(...values)).toBeGreaterThan(Math.min(...values) * 2)
-    // And the layer's staging sets the scale.
-    expect(Math.max(...values)).toBeLessThanOrEqual(SOUNDS.kick.gain * 2)
+    // And the layer's own base gain is the ceiling - a velocity-1 hit lands
+    // at it exactly, matching resynth.mjs's `voice.gain * velocity` and the
+    // hand-authored gains in tracks/MINUIT (no extra headroom factor).
+    expect(Math.max(...values)).toBeLessThanOrEqual(SOUNDS.kick.gain)
   })
 
   it('sustains a chord across a bar line instead of clipping it', () => {
@@ -245,7 +247,9 @@ describe('emitTrack', () => {
     const code = emitTrack(transcription([
       { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
     ]), { title: 'the chase', source: 'recordings/the-chase.wav' })
-    expect(code).toContain('the chase')
+    // tracks/MINUIT/02-the-chase.md:12 renders its own title in caps
+    // ("THE CHASE"); the header matches that house style.
+    expect(code).toContain('THE CHASE')
     expect(code).toContain('138 BPM')
     expect(code).toContain('F minor')
   })
