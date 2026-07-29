@@ -39,6 +39,36 @@ const FM = [53, 56, 60]
 const CSHARP = [61, 65, 68]
 const SECTION_4 = [{ index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null }]
 
+/**
+ * A chord held for `bars` bars, with a second, different chord mixed in at
+ * equal gain for exactly one beat in the middle - real ambiguity, not the
+ * absence of any competing signal `chordClip`'s held-chord fixtures have.
+ * At this gain, that one beat's own raw per-beat winner is the *blip*
+ * chord, not the held one (verified directly against `chords.mjs`'s
+ * `scoreChroma`) - a plain per-row argmax reads that beat as the wrong
+ * chord. Only the surrounding beats' evidence, carried through
+ * `smoothChordPath`'s self-transition bonus, can hold the true chord
+ * through it.
+ */
+function heldChordWithBlip(chord, bars, blipChord, blipBeat, { gain = 0.25 } = {}) {
+  const barSeconds = (60 / BPM) * 4
+  const beatSeconds = 60 / BPM
+  const frames = Math.ceil(bars * barSeconds * SAMPLE_RATE)
+  const out = new Float32Array(frames)
+  const addTone = (midi, start, length, level) => {
+    const hz = midiToHz(midi)
+    for (let i = 0; i < length && start + i < frames; i++) {
+      const fade = Math.min(1, i / (SAMPLE_RATE * 0.01), (length - i) / (SAMPLE_RATE * 0.01))
+      out[start + i] += level * fade * Math.sin((2 * Math.PI * hz * i) / SAMPLE_RATE)
+    }
+  }
+  for (const midi of chord) addTone(midi, 0, frames, gain)
+  const blipStart = Math.floor(blipBeat * beatSeconds * SAMPLE_RATE)
+  const blipLength = Math.floor(beatSeconds * SAMPLE_RATE)
+  for (const midi of blipChord) addTone(midi, blipStart, blipLength, gain)
+  return writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
+}
+
 describe('beatChroma', () => {
   it('gives one twelve-value vector per beat', () => {
     const audio = decodeWav(chordClip([FM, FM]))
@@ -97,6 +127,15 @@ describe('transcribeHarmony', () => {
   it('does not flicker between neighbouring chords', () => {
     const loop = transcribeHarmony(chordClip([FM, FM, FM, FM]), grid, SECTION_4, { key: 'F minor' })[0]
     expect(new Set(loop.events.map((e) => e.symbol)).size).toBe(1)
+  })
+
+  it('holds the true chord through one beat of real competing evidence', () => {
+    // Fm held for 4 bars, with a C# major triad mixed in at equal gain for
+    // beat 8 (bar 2's downbeat) alone. That beat's own evidence genuinely
+    // favours C# - this is smoothing doing its job, not a clean fixture.
+    const loop = transcribeHarmony(heldChordWithBlip(FM, 4, CSHARP, 8), grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop).not.toBeNull()
+    expect(new Set(loop.events.map((e) => e.symbol))).toEqual(new Set(['Fm']))
   })
 
   it('reports how much of the progression sits outside the key', () => {

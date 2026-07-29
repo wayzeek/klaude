@@ -49,8 +49,58 @@ const MAX_CENTS_FROM_PITCH = 35
  *  nothing and costs an FFT each. */
 const WINDOWS_PER_BEAT = 3
 
-/** A section needs a chord path this confident before it is worth emitting. */
-const MIN_CHORD_SCORE = 0.55
+/**
+ * How far the best-scoring template must stand clear of the runner-up, in
+ * cosine-similarity units, before a bar is trusted enough to contribute a
+ * chord event, averaged over the bar's beats.
+ *
+ * An absolute floor on the best score cannot do this job: with seven
+ * qualities across twelve roots, some template always fits any vector
+ * reasonably well. A perfectly flat chroma vector scores `sqrt(4/12) =
+ * 0.5774` against every four-note template at once (a triad's own floor is
+ * `sqrt(3/12) = 0.5`) - a threshold has to clear that structural ceiling to
+ * reject anything, and this module's first version, `MIN_CHORD_SCORE: 0.55`,
+ * did not. Measured on the real `other` stem (`the-chase`,
+ * task-8-report.md's addendum): two sections with no harmony instrument at
+ * all in the source (`kickSoft`/`stepsLone`/`air` only) both averaged a
+ * *raw* top score above 0.70 per bar - comfortably past 0.55 - while their
+ * *margin* to the runner-up averaged 0.016-0.020 and never exceeded 0.028 in
+ * either section. Noise ties templates; a real chord does not.
+ *
+ * Bar, not beat: a single beat's margin is noisy even inside genuinely good
+ * material (measured minima near zero in sections that are otherwise
+ * confidently and correctly detected - a chord-change instant, or a beat
+ * where two candidates are both plausible). A bar is the grid's own
+ * chord-change rate here - every progression in `tracks/MINUIT/02-the-
+ * chase.md` changes at most once per bar - so averaging margin over a bar
+ * is not an arbitrary smoothing window, it is the unit the thing being
+ * measured actually varies at. Measured at that grain on the boundary
+ * between two adjacent 6-bar halves of one detected section - `bassA` only
+ * for the first half, `keysA` entering exactly at the second - bar margins
+ * are 0.004-0.027 through the silent half and jump to 0.085-0.111 the beat
+ * `keysA` starts, a clean order-of-magnitude gap with no threshold-picking
+ * required. 0.03 sits just above the noisy half's measured ceiling (0.028)
+ * and comfortably below the real half's floor (0.085). The same measurement
+ * on five sections with real, correctly-detected harmony elsewhere in the
+ * track found bar margins as low as 0.020-0.032 in three of them - so this
+ * threshold does cost a small number of real bars (see task-8-report.md's
+ * addendum for the exact count); it does not cost whole sections.
+ */
+const MARGIN_THRESHOLD = 0.03
+
+/**
+ * A section needs at least this many confident bars, not just one, before
+ * its chords are worth emitting.
+ *
+ * `MARGIN_THRESHOLD` is a per-bar average, not a hard floor with zero
+ * false-positive rate - a noise bar can cross it by chance on material this
+ * module has not been measured against. Requiring more than one such bar
+ * before trusting the result is the same shape of guard as
+ * `MIN_HITS_PER_SECTION`/`MIN_NOTES_PER_SECTION` elsewhere in this plan's
+ * other transcribers, sized the same way: the smallest number above "one."
+ */
+const MIN_CONFIDENT_BARS = 2
+
 /** Self-transition bonus for the Viterbi pass. Large enough to hold a chord
  *  through one ambiguous beat, small enough that a real change still wins. */
 const SELF_BONUS = 0.15
@@ -124,12 +174,52 @@ export function beatChroma(audio, grid) {
   return { times, vectors }
 }
 
+/** Best-template score minus runner-up score, per beat - the contrast
+ *  measure `MARGIN_THRESHOLD` gates on, computed once from the raw (not
+ *  Viterbi-smoothed) per-beat scores. */
+function beatMargins(rows) {
+  return rows.map((row) => {
+    let top1 = -Infinity
+    let top2 = -Infinity
+    for (const value of row) {
+      if (value > top1) {
+        top2 = top1
+        top1 = value
+      } else if (value > top2) {
+        top2 = value
+      }
+    }
+    return top1 - top2
+  })
+}
+
+/** Mean margin per whole bar, indexed by bar number from the track's
+ *  downbeat. A bar with fewer than `beatsPerBar` beats of data (the last,
+ *  partial bar `beatChroma` produced) is left out rather than padded, so a
+ *  short trailing bar cannot average out artificially high or low. */
+function barMargins(margins, beatsPerBar) {
+  const bars = []
+  for (let bar = 0; bar * beatsPerBar + beatsPerBar <= margins.length; bar++) {
+    let sum = 0
+    for (let b = bar * beatsPerBar; b < bar * beatsPerBar + beatsPerBar; b++) sum += margins[b]
+    bars.push(sum / beatsPerBar)
+  }
+  return bars
+}
+
 /**
  * One chord progression per section.
  *
  * The Viterbi pass runs over the whole track rather than per section, so a
  * chord held across a section boundary stays one chord. Sections are cut out
  * of the resulting path afterwards.
+ *
+ * Confidence is decided per bar, not per section, before events are formed:
+ * a section can straddle the exact point where real harmony starts (see
+ * `MARGIN_THRESHOLD`'s doc comment), and a single section-wide gate cannot
+ * tell an unconfident half from a confident one - it can only accept or
+ * reject the whole thing. An unconfident bar contributes no event at all,
+ * which both ends a run in progress and opens a gap no run can cross.
  */
 export function transcribeHarmony(wavBuf, grid, sections, { key = null } = {}) {
   const audio = decodeWav(wavBuf)
@@ -139,25 +229,30 @@ export function transcribeHarmony(wavBuf, grid, sections, { key = null } = {}) {
   const rows = vectors.map((vector) => scoreChroma(vector))
   const path = smoothChordPath(rows, { selfBonus: SELF_BONUS })
   const inKey = diatonicTemplates(key)
+  const beatsPerBar = grid.beatsPerBar
+  const confidentBars = barMargins(beatMargins(rows), beatsPerBar).map((margin) => margin >= MARGIN_THRESHOLD)
+  const confidentBeat = (beat) => confidentBars[Math.floor(beat / beatsPerBar)] === true
 
   return sections.map((section) => {
-    const beatsPerBar = grid.beatsPerBar
     const fromBeat = section.startBar * beatsPerBar
     const toBeat = Math.min(path.length, (section.startBar + section.bars) * beatsPerBar)
     if (toBeat - fromBeat < beatsPerBar) return null
 
-    // Collapse runs of the same template into one chord event each.
+    // Collapse runs of the same template into one chord event each. A run
+    // also ends - without opening a new one - the moment a beat's bar is not
+    // confident, so an unconfident stretch is a gap, never an event.
     const events = []
-    let runStart = fromBeat
-    for (let beat = fromBeat + 1; beat <= toBeat; beat++) {
-      if (beat < toBeat && path[beat] === path[runStart]) continue
+    let runStart = null
+    let confidentBeats = 0
+    const closeRun = (end) => {
+      if (runStart === null) return
       const template = CHORD_TEMPLATES[path[runStart]]
       let score = 0
-      for (let b = runStart; b < beat; b++) score += rows[b][path[runStart]]
-      score /= beat - runStart
+      for (let b = runStart; b < end; b++) score += rows[b][path[runStart]]
+      score /= end - runStart
       events.push({
         step: (runStart - fromBeat) * STEPS_PER_BEAT + section.startBar * beatsPerBar * STEPS_PER_BEAT,
-        length: (beat - runStart) * STEPS_PER_BEAT,
+        length: (end - runStart) * STEPS_PER_BEAT,
         velocity: 0.7,
         confidence: Math.max(0, Math.min(1, score)),
         midi: null,
@@ -165,12 +260,21 @@ export function transcribeHarmony(wavBuf, grid, sections, { key = null } = {}) {
         driftSteps: 0,
         templateIndex: template.index,
       })
-      runStart = beat
+      runStart = null
     }
-    if (!events.length) return null
+    for (let beat = fromBeat; beat < toBeat; beat++) {
+      if (!confidentBeat(beat)) {
+        closeRun(beat)
+        continue
+      }
+      confidentBeats++
+      if (runStart !== null && path[beat] !== path[runStart]) closeRun(beat)
+      if (runStart === null) runStart = beat
+    }
+    closeRun(toBeat)
+    if (!events.length || confidentBeats < MIN_CONFIDENT_BARS * beatsPerBar) return null
 
     const meanScore = events.reduce((sum, event) => sum + event.confidence, 0) / events.length
-    if (meanScore < MIN_CHORD_SCORE) return null
 
     const folded = foldToLoop(
       events.map(({ templateIndex, ...event }) => event),
