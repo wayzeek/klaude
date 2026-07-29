@@ -7,6 +7,9 @@ const drum = (step) => ({ step, length: 1, velocity: 0.8, confidence: 0.9, midi:
 const note = (step, midi, length = 4) => ({
   step, length, velocity: 0.8, confidence: 0.9, midi, symbol: null, driftSteps: 0,
 })
+const chordEvent = (step, symbol, length = 16) => ({
+  step, length, velocity: 0.8, confidence: 0.9, midi: null, symbol, driftSteps: 0,
+})
 const emptyLoops = () => ({ kick: null, snare: null, hats: null, bass: null, chords: null, lead: null })
 
 function transcription(loops, bars = 4) {
@@ -146,5 +149,18 @@ describe('verifyEmission', () => {
     expect(result.ok).toBe(false)
     const messages = result.defects.map((d) => d.message).join(' ')
     expect(messages).toMatch(/boom from an all\(\) transform/)
+  })
+
+  it('collapses a voiced chord into one onset instead of reporting spurious extras', async () => {
+    // `.voicing()` turns a single "C" onset into five simultaneous notes
+    // (measured: E4 G4 C5 E5 G5). Uncollapsed, each of the 4 bar-onsets this
+    // loop produces would report 4 extra events on top of the 1 matched note.
+    const t = transcription({
+      ...emptyLoops(),
+      chords: { loopBars: 1, events: [chordEvent(0, 'C')], confidence: 0.8 },
+    })
+    const result = await verifyEmission(emitTrack(t), t)
+    expect(result.ok).toBe(true)
+    expect(result.sections[0].layers.chords).toMatchObject({ matched: 4, missing: 0, extra: 0, wrongPitch: 0 })
   })
 })

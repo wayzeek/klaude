@@ -45,6 +45,12 @@ const PROBLEM_LOG = /unknown chord|does not exist|arithmetic on control|not foun
  * does not guard is `pattern.query(state)` itself, so this builds that state
  * by hand from the runtime's own `State`/`TimeSpan` classes and calls it
  * directly - identical to what `queryArc` does internally, minus the net.
+ *
+ * Precondition: `loadStrudel()` must already have resolved once in this
+ * process, so `cachedStrudel()` has something to return. `verifyEmission`
+ * guarantees that by construction (it awaits `loadStrudel()` before this is
+ * ever called); a caller reaching this cold gets a thrown error naming the
+ * precondition, not a `TypeError` on `undefined.State`.
  */
 export function querySectionStrict(pattern, from, to) {
   if (!pattern) return { events: [], error: null }
@@ -294,6 +300,20 @@ export async function verifyEmission(code, transcription) {
     return built
   })
 
+  // Known limitation, not fixed here: Strudel's own logger (see `suppressConsole`
+  // in strudel-node.mjs) debounces identical message text for about a second,
+  // process-wide - the debounce state lives inside @strudel/core, unexported,
+  // so nothing on this side of that boundary can scope it per call. A second
+  // `verifyEmission` run in the same process, within that window, with the
+  // same warning text, will not see it repeated here - `logs`/`track.warnings`
+  // simply won't contain it, because @strudel/core never called `console.log`
+  // for it the second time. This never produces a false `ok: true` on its own:
+  // the structural comparison above (missing/extra/wrongPitch) still catches
+  // the underlying problem independently of whether it also got logged. It
+  // does mean a caller that batches many tracks in one process - the render
+  // CLI this check feeds - can under-count how many tracks hit the *same*
+  // named warning, which matters if that CLI ever reports "N tracks warned
+  // about X" as a headline number.
   for (const line of new Set([...(track.warnings ?? []), ...logs])) {
     if (PROBLEM_LOG.test(line)) {
       defects.push({ section: null, layer: null, message: `evaluator warned: ${line}` })
