@@ -174,6 +174,27 @@ describe('emitTrack', () => {
     expect(code).toContain('kick: s1_kick')
   })
 
+  it('does not reuse when the two sections differ only in velocity', () => {
+    // Regression: sameLoops compared step/length/midi/symbol but not
+    // velocity, so a quiet reprise reused the loud section's definition and
+    // was silently emitted at full volume - erasing ghost-note dynamics.
+    // Measured directly: kick velocities 1.0 and 0.1 both emitted the one
+    // gain(0.5) definition before this fix.
+    const sections = [
+      {
+        index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null,
+        loops: { ...emptyLoops(), kick: { loopBars: 1, events: [drum(0, 1), drum(4, 1), drum(8, 1), drum(12, 1)], confidence: 0.9 } },
+      },
+      {
+        index: 1, startBar: 4, bars: 4, label: 'mid', sameAs: 0,
+        loops: { ...emptyLoops(), kick: { loopBars: 1, events: [drum(0, 0.1), drum(4, 0.1), drum(8, 0.1), drum(12, 0.1)], confidence: 0.9 } },
+      },
+    ]
+    const code = emitTrack(transcription(sections))
+    expect(code).toContain('const s1_kick =')
+    expect(code).toContain('kick: s1_kick')
+  })
+
   it('does not reuse when a repeat runs a different number of bars', () => {
     const sections = [
       { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },

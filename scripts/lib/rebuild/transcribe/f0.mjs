@@ -86,8 +86,11 @@ export function trackF0(
       continue
     }
 
-    // YIN step 1: the squared difference function.
-    for (let lag = minLag; lag <= maxLag; lag++) {
+    // YIN step 1: the squared difference function. Computed from lag 1, not
+    // minLag - step 2's cumulative mean has to start its running sum at the
+    // true beginning of the series or its first few terms are wrong (see
+    // below), so the values it sums over have to exist.
+    for (let lag = 1; lag <= maxLag; lag++) {
       let sum = 0
       const limit = windowSize - lag
       for (let i = 0; i < limit; i++) {
@@ -101,15 +104,24 @@ export function trackF0(
     // the octave-below error - a lag at twice the true period has a difference
     // just as low, but by then the running mean has caught up with it.
     //
-    // The recurrence is d'(t) = d(t) / mean(d(minLag..t)), written as
-    // d(t) * count / running so there is no division inside the loop. `count`
-    // must be the number of terms actually accumulated, which is why it is
-    // incremented alongside `running` rather than derived from the lag - a
-    // count that is off by one makes d'(minLag+1) come out at 2 instead of 1
-    // and shifts every value the YIN_THRESHOLD is compared against.
+    // The recurrence is d'(t) = d(t) / mean(d(1..t)) - YIN's own definition,
+    // with the running sum starting at tau=1. It must not start at minLag:
+    // doing that forces normalised[minLag] to exactly 1 by construction
+    // (d(minLag) * 1 / d(minLag)), regardless of what the signal actually
+    // looks like at that lag. Step 3 cannot tell that forced 1 apart from "no
+    // dip here", so a true period sitting exactly at minLag - a fundamental at
+    // maxHz, the top of the declared range - could never be the first
+    // qualifying dip, and its octave below (a real dip, correctly normalised)
+    // won every time. Starting the sum at 1 makes normalised[minLag] a real
+    // measurement, so that boundary is reachable like any other lag.
+    // Written as d(t) * count / running so there is no division inside the
+    // loop. `count` must be the number of terms actually accumulated, which is
+    // why it is incremented alongside `running` rather than derived from the
+    // lag - a count that is off by one shifts every value the YIN_THRESHOLD is
+    // compared against.
     let running = 0
     let count = 0
-    for (let lag = minLag; lag <= maxLag; lag++) {
+    for (let lag = 1; lag <= maxLag; lag++) {
       running += difference[lag]
       count++
       normalised[lag] = running > 0 ? (difference[lag] * count) / running : 1
@@ -117,9 +129,10 @@ export function trackF0(
 
     // YIN step 3: the first dip below the absolute threshold, not the global
     // minimum. Taking the global minimum reintroduces the octave error the
-    // normalisation just removed.
+    // normalisation just removed. The search starts at minLag itself, now
+    // that step 2 gives it a real value instead of a forced 1.
     let bestLag = -1
-    for (let lag = minLag + 1; lag < maxLag; lag++) {
+    for (let lag = minLag; lag < maxLag; lag++) {
       if (normalised[lag] >= YIN_THRESHOLD) continue
       while (lag + 1 <= maxLag && normalised[lag + 1] < normalised[lag]) lag++
       bestLag = lag
@@ -129,7 +142,7 @@ export function trackF0(
       // Nothing cleared the threshold. Fall back to the global minimum, and let
       // the clarity value carry how weak the evidence is.
       let lowest = Infinity
-      for (let lag = minLag + 1; lag <= maxLag; lag++) {
+      for (let lag = minLag; lag <= maxLag; lag++) {
         if (normalised[lag] < lowest) {
           lowest = normalised[lag]
           bestLag = lag
@@ -158,13 +171,113 @@ export function trackF0(
 }
 
 function interpolate(values, lag, minLag, maxLag) {
-  if (lag <= minLag || lag >= maxLag) return lag
+  // `lag === minLag` is now a legitimate result (see step 3 above) and has a
+  // valid neighbour at `minLag - 1`, since `difference`/`normalised` are
+  // computed from lag 1 and minLag is always >= 2. Only `lag < minLag` (never
+  // produced by the search, kept as a defensive bound) and `lag >= maxLag`
+  // lack a full three-point neighbourhood to interpolate.
+  if (lag < minLag || lag >= maxLag) return lag
   const before = values[lag - 1]
   const at = values[lag]
   const after = values[lag + 1]
   const denominator = 2 * (2 * at - before - after)
   if (denominator === 0) return lag
   return lag + (after - before) / denominator
+}
+
+/**
+ * A binary heap, used only to build `RunningMedian` below. `less(a, b)` is
+ * the ordering: a min-heap passes `(a, b) => a < b`, a max-heap `(a, b) => a >
+ * b`. Insert and remove-root are both O(log n); nothing here ever needs to
+ * remove an arbitrary element, so that is the whole interface.
+ */
+class Heap {
+  constructor(less) {
+    this.less = less
+    this.items = []
+  }
+
+  get size() {
+    return this.items.length
+  }
+
+  peek() {
+    return this.items[0]
+  }
+
+  push(value) {
+    const items = this.items
+    items.push(value)
+    let i = items.length - 1
+    while (i > 0) {
+      const parent = (i - 1) >> 1
+      if (!this.less(items[i], items[parent])) break
+      ;[items[i], items[parent]] = [items[parent], items[i]]
+      i = parent
+    }
+  }
+
+  pop() {
+    const items = this.items
+    const top = items[0]
+    const last = items.pop()
+    if (items.length) {
+      items[0] = last
+      const n = items.length
+      let i = 0
+      for (;;) {
+        const left = 2 * i + 1
+        const right = 2 * i + 2
+        let best = i
+        if (left < n && this.less(items[left], items[best])) best = left
+        if (right < n && this.less(items[right], items[best])) best = right
+        if (best === i) break
+        ;[items[i], items[best]] = [items[best], items[i]]
+        i = best
+      }
+    }
+    return top
+  }
+}
+
+/**
+ * Running median over a stream of numbers, in O(log n) per push instead of
+ * the O(n log n) a full re-sort costs every time a value arrives.
+ *
+ * This exists because `segmentNotes` used to re-sort the whole current note's
+ * pitch history on every frame to keep a running median as the note's
+ * reference pitch, which makes a held note's cost quadratic in its own frame
+ * count - measured directly at 78ms/5,000 frames, 314ms/10,000, 1.36s/20,000.
+ * A long pad or a slow section makes exactly this shape.
+ *
+ * `median` matches `sorted[Math.floor(n / 2)]` for the n values pushed so far
+ * - the "upper of the two middles" convention the old code used (not an
+ * average of the two middles), which is what makes this a drop-in
+ * replacement rather than a behaviour change. Standard two-heap streaming
+ * median, with the push order chosen to land on that specific convention:
+ * `lower` (a max-heap) always ends up with `floor(n/2)` elements and `upper`
+ * (a min-heap) with `ceil(n/2)`, so `upper`'s minimum is the
+ * `(floor(n/2)+1)`-th smallest value overall - exactly `sorted[floor(n/2)]` -
+ * except when `n` is odd and `lower` holds the one extra element, in which
+ * case `lower`'s own maximum is that same value.
+ */
+class RunningMedian {
+  constructor() {
+    this.lower = new Heap((a, b) => a > b)
+    this.upper = new Heap((a, b) => a < b)
+  }
+
+  push(value) {
+    this.lower.push(value)
+    this.upper.push(this.lower.pop())
+    if (this.upper.size > this.lower.size) {
+      this.lower.push(this.upper.pop())
+    }
+  }
+
+  get value() {
+    return this.lower.size > this.upper.size ? this.lower.peek() : this.upper.peek()
+  }
 }
 
 /**
@@ -188,12 +301,11 @@ export function segmentNotes(
     if (!current) return
     const length = endIndex - current.startIndex
     if (length >= minFrames) {
-      const midis = current.midis.slice().sort((a, b) => a - b)
       notes.push({
         startSec: frames[current.startIndex].seconds,
         endSec: frames[current.startIndex].seconds + length * hopSeconds,
-        midi: midis[Math.floor(midis.length / 2)],
-        clarity: current.clarity / current.midis.length,
+        midi: current.median.value,
+        clarity: current.clarity / current.count,
       })
     }
     current = null
@@ -206,13 +318,13 @@ export function segmentNotes(
       continue
     }
     if (current && Math.abs(midi - current.reference) > semitoneTolerance) close(i)
-    if (!current) current = { startIndex: i, reference: midi, midis: [], clarity: 0 }
-    current.midis.push(midi)
+    if (!current) current = { startIndex: i, reference: midi, median: new RunningMedian(), count: 0, clarity: 0 }
+    current.median.push(midi)
+    current.count++
     current.clarity += frames[i].clarity
     // Track the running median as the reference, so a slow glide eventually
     // becomes a new note rather than one note that drifts a fifth.
-    const sorted = current.midis.slice().sort((a, b) => a - b)
-    current.reference = sorted[Math.floor(sorted.length / 2)]
+    current.reference = current.median.value
   }
   close(frames.length)
   return notes

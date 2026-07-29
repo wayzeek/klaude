@@ -78,6 +78,72 @@ describe('compareEvents', () => {
     expect(result.missing).toEqual([])
     expect(result.extra).toEqual([])
   })
+
+  it('reports a chord whose pitch classes changed as wrongChord, not a clean match', () => {
+    // Regression: the old comparison carried `midi: null` for chord
+    // expectations, so a chord's pitch was never compared at all - only its
+    // onset. "C" (pitch classes 0,4,7) replaced by "Dm" (2,5,9) shares no
+    // pitch class with the original and must be flagged.
+    const result = compareEvents(
+      [{ step: 0, midi: null, symbol: 'C' }],
+      [{ step: 0, midi: null, pitchClasses: [2, 5, 9] }],
+      { stepsPerBar: 16 },
+    )
+    expect(result.matched).toBe(1)
+    expect(result.wrongChord).toHaveLength(1)
+    expect(result.wrongChord[0]).toMatchObject({ step: 0, expected: 'C' })
+    expect(result.missing).toEqual([])
+    expect(result.extra).toEqual([])
+  })
+
+  it('does not flag a chord whose voicing shares the same pitch classes', () => {
+    // "C" voiced with a doubled third and fifth (E4 G4 C5 E5 G5, the real
+    // shape `.voicing()` produces - see Task 12's report) must still compare
+    // as correct: the pitch-CLASS set is {0,4,7} either way.
+    const result = compareEvents(
+      [{ step: 0, midi: null, symbol: 'C' }],
+      [{ step: 0, midi: null, pitchClasses: [0, 4, 7] }],
+      { stepsPerBar: 16 },
+    )
+    expect(result.wrongChord).toEqual([])
+  })
+
+  it('reports a shortened note as wrongLength, not a clean match', () => {
+    // Regression: duration was never compared, so a bar-long chord shortened
+    // to one step while keeping its onset returned ok.
+    const result = compareEvents(
+      [{ step: 0, midi: 41, length: 16 }],
+      [{ step: 0, midi: 41, length: 1 }],
+      { stepsPerBar: 16 },
+    )
+    expect(result.matched).toBe(1)
+    expect(result.wrongLength).toHaveLength(1)
+    expect(result.wrongLength[0]).toMatchObject({ step: 0, expected: 16, actual: 1 })
+  })
+
+  it('reports a wrong gain as wrongGain, not a clean match', () => {
+    // Regression: gain was discarded from both expected and actual events, so
+    // this is also what let two sections differing only in dynamics
+    // deduplicate onto one loud definition without the check noticing.
+    const result = compareEvents(
+      [{ step: 0, midi: 41, gain: 0.4 }],
+      [{ step: 0, midi: 41, gain: 0.1 }],
+      { stepsPerBar: 16 },
+    )
+    expect(result.matched).toBe(1)
+    expect(result.wrongGain).toHaveLength(1)
+    expect(result.wrongGain[0]).toMatchObject({ step: 0, expected: 0.4, actual: 0.1 })
+  })
+
+  it('tolerates the rounding emit.mjs itself introduces', () => {
+    const result = compareEvents(
+      [{ step: 0, midi: 41, length: 4, gain: 0.35 }],
+      [{ step: 0, midi: 41, length: 4.001, gain: 0.351 }],
+      { stepsPerBar: 16 },
+    )
+    expect(result.wrongLength).toEqual([])
+    expect(result.wrongGain).toEqual([])
+  })
 })
 
 describe('verifyEmission', () => {
@@ -162,5 +228,62 @@ describe('verifyEmission', () => {
     const result = await verifyEmission(emitTrack(t), t)
     expect(result.ok).toBe(true)
     expect(result.sections[0].layers.chords).toMatchObject({ matched: 4, missing: 0, extra: 0, wrongPitch: 0 })
+  })
+
+  it('reports a wrong chord as a chord defect, not a clean onset match', async () => {
+    // Codex review example: replacing a transcribed C chord with Dm used to
+    // return ok: true, because chord expectations carried midi: null and the
+    // comparison never looked at pitch class at all - only the onset count
+    // survived the voicing collapse.
+    const t = transcription({
+      ...emptyLoops(),
+      chords: { loopBars: 1, events: [chordEvent(0, 'C')], confidence: 0.8 },
+    })
+    const emitted = emitTrack(t)
+    const mutated = emitted.replace('chord(`C@16`)', 'chord(`Dm@16`)')
+    expect(mutated).not.toBe(emitted) // sanity: the replace actually matched
+    const result = await verifyEmission(mutated, t)
+    expect(result.ok).toBe(false)
+    // Loops across all 4 bars of the section, so all 4 onsets are wrong.
+    expect(result.sections[0].layers.chords.wrongChord).toBe(4)
+    const messages = result.defects.map((d) => d.message).join(' ')
+    expect(messages).toMatch(/wrong chord/)
+  })
+
+  it('reports a shortened chord as a duration defect, not a clean onset match', async () => {
+    // Codex review example: shortening a bar-long chord to a single step
+    // while keeping its onset used to return ok: true, because duration was
+    // discarded from both the expected and the queried event.
+    const t = transcription({
+      ...emptyLoops(),
+      chords: { loopBars: 1, events: [chordEvent(0, 'C')], confidence: 0.8 },
+    })
+    const emitted = emitTrack(t)
+    const mutated = emitted.replace('chord(`C@16`)', 'chord(`C@1 ~@15`)')
+    expect(mutated).not.toBe(emitted)
+    const result = await verifyEmission(mutated, t)
+    expect(result.ok).toBe(false)
+    expect(result.sections[0].layers.chords.wrongLength).toBeGreaterThan(0)
+    const messages = result.defects.map((d) => d.message).join(' ')
+    expect(messages).toMatch(/wrong duration/)
+  })
+
+  it('reports a wrong gain as a gain defect, not a clean match', async () => {
+    // Gain was discarded from both sides of the comparison, which is also
+    // what let sameLoops' missing velocity check (a separate defect, fixed
+    // alongside this one) go unnoticed downstream: a reused, wrong-volume
+    // definition still reported ok here.
+    const t = transcription({
+      ...emptyLoops(),
+      kick: { loopBars: 1, events: [drum(0), drum(4), drum(8), drum(12)], confidence: 0.9 },
+    })
+    const emitted = emitTrack(t)
+    const mutated = emitted.replace(/0\.4/g, '0.1')
+    expect(mutated).not.toBe(emitted)
+    const result = await verifyEmission(mutated, t)
+    expect(result.ok).toBe(false)
+    expect(result.sections[0].layers.kick.wrongGain).toBeGreaterThan(0)
+    const messages = result.defects.map((d) => d.message).join(' ')
+    expect(messages).toMatch(/wrong gain/)
   })
 })

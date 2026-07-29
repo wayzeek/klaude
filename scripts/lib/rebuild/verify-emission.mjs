@@ -11,6 +11,7 @@
 
 import { cachedStrudel, loadStrudel, midiOf, withCapturedLogs } from '../strudel-node.mjs'
 import { SOUNDS } from './emit.mjs'
+import { CHORD_TEMPLATES } from './transcribe/chords.mjs'
 import { LAYERS, gridFromJson, stepsPerBar } from './transcribe/quantize.mjs'
 
 /** How far an event may sit from where it was transcribed before it counts as
@@ -18,6 +19,38 @@ import { LAYERS, gridFromJson, stepsPerBar } from './transcribe/quantize.mjs'
 const MATCH_TOLERANCE_STEPS = 0.5
 /** Mean drift above this is reported as a defect in its own right. */
 const MAX_MEAN_DRIFT_STEPS = 0.25
+/** How far an emitted note's duration may sit from what was transcribed, in
+ *  steps, before it counts as a defect rather than quantisation noise. */
+const LENGTH_TOLERANCE_STEPS = 0.5
+/** How far an emitted gain may sit from the transcribed velocity's expected
+ *  value before it counts as a defect. `emit.mjs` rounds gain to two decimal
+ *  places (see its own `round2`), so this only has to clear that rounding,
+ *  not audio noise - a real defect (a dropped dynamics factor, a stale
+ *  constant) is off by tenths, not hundredths. */
+const GAIN_TOLERANCE = 0.02
+/** `emit.mjs` keeps its own `round2` private; duplicated here rather than
+ *  exported for a one-line rounding function, matching the same
+ *  duplicate-rather-than-couple precedent `verify-hearing.mjs`'s
+ *  `detectorCurve` comment explains. */
+const round2 = (value) => Math.round(value * 100) / 100
+
+/** A chord symbol's pitch-class set, straight from the same template table
+ *  `resynth.mjs`'s `chordMidis` uses - the vocabulary a chord layer can ever
+ *  actually be, so a symbol that isn't in it (should never happen; caught
+ *  upstream) has no set to compare against. */
+function chordPitchClasses(symbol) {
+  const template = CHORD_TEMPLATES.find((candidate) => candidate.symbol === symbol)
+  if (!template) return null
+  const pcs = []
+  for (let pc = 0; pc < 12; pc++) if (template.vector[pc] > 0) pcs.push(pc)
+  return pcs
+}
+
+function samePitchClasses(a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
 
 /**
  * Which logged lines are worth surfacing as defects. Strudel reports several
@@ -80,10 +113,17 @@ export function querySectionStrict(pattern, from, to) {
  * Line up two event lists and say how they differ.
  *
  * Greedy nearest-match within a tolerance, which is enough because both lists
- * are quantised to the same grid. Reports the three failure modes separately,
- * per #47: an event that vanished, an event that appeared, and an event that
- * kept its slot but changed its note. Collapsing the third into the first two
- * would be technically true and useless for diagnosis.
+ * are quantised to the same grid. Reports each failure mode separately, per
+ * #47: an event that vanished, an event that appeared, and an event that kept
+ * its slot but changed its note, its chord, its duration or its gain.
+ * Collapsing any of those into the others would be technically true and
+ * useless for diagnosis - a wrong chord is not the same finding as a
+ * shortened one, and both are real defects gain-checking alone would miss.
+ *
+ * `want.midi` and `want.symbol` are mutually exclusive (a note-kind layer
+ * sets one, a chord layer the other) and each is only compared when present,
+ * so passing plain `{step, midi}` objects - every caller before this one
+ * needed to - still works unchanged.
  */
 // `stepsPerBar` is part of the committed interface but unused below: both
 // event lists already speak in steps, so a fixed tolerance in that unit needs
@@ -94,6 +134,9 @@ export function compareEvents(expected, actual, { stepsPerBar = 16 } = {}) {
   const used = new Set()
   const missing = []
   const wrongPitch = []
+  const wrongChord = []
+  const wrongLength = []
+  const wrongGain = []
   let matched = 0
   let driftTotal = 0
   let driftCount = 0
@@ -117,8 +160,31 @@ export function compareEvents(expected, actual, { stepsPerBar = 16 } = {}) {
     matched++
     driftTotal += Math.abs(best.step - want.step)
     driftCount++
+
     if (want.midi !== null && want.midi !== undefined && best.midi !== want.midi) {
       wrongPitch.push({ step: want.step, expected: want.midi, actual: best.midi })
+    }
+    if (want.symbol !== null && want.symbol !== undefined) {
+      const expectedPcs = chordPitchClasses(want.symbol)
+      const actualPcs = best.pitchClasses ?? null
+      if (expectedPcs && actualPcs && !samePitchClasses(expectedPcs, actualPcs)) {
+        wrongChord.push({ step: want.step, expected: want.symbol, actual: actualPcs })
+      }
+    }
+    if (
+      want.length !== undefined &&
+      best.length !== undefined &&
+      Math.abs(best.length - want.length) > LENGTH_TOLERANCE_STEPS
+    ) {
+      wrongLength.push({ step: want.step, expected: want.length, actual: best.length })
+    }
+    if (
+      want.gain !== undefined &&
+      best.gain !== undefined &&
+      best.gain !== null &&
+      Math.abs(best.gain - want.gain) > GAIN_TOLERANCE
+    ) {
+      wrongGain.push({ step: want.step, expected: want.gain, actual: best.gain })
     }
   }
 
@@ -128,6 +194,9 @@ export function compareEvents(expected, actual, { stepsPerBar = 16 } = {}) {
     missing,
     extra,
     wrongPitch,
+    wrongChord,
+    wrongLength,
+    wrongGain,
     drift: driftCount ? driftTotal / driftCount : 0,
   }
 }
@@ -218,7 +287,16 @@ export async function verifyEmission(code, transcription) {
         for (const layer of LAYERS) {
           const loop = section.loops?.[layer]
           layers[layer] = loop
-            ? { matched: 0, missing: loop.events.length, extra: 0, wrongPitch: 0, drift: 0 }
+            ? {
+                matched: 0,
+                missing: loop.events.length,
+                extra: 0,
+                wrongPitch: 0,
+                wrongChord: 0,
+                wrongLength: 0,
+                wrongGain: 0,
+                drift: 0,
+              }
             : null
         }
         built.push({ index: section.index, layers })
@@ -248,24 +326,41 @@ export async function verifyEmission(code, transcription) {
         }
 
         // Expected events, expanded from the loop across the section, in
-        // steps measured from the section's start.
+        // steps measured from the section's start. `length` is clamped the
+        // same way `loopToPatterns` clamps it (to the loop's own end, not the
+        // section's), and `gain` is computed the same way it computes gain
+        // (`round2(base * velocity)`), so both sides of the comparison below
+        // describe what the emitter actually promises to write, not just what
+        // the transcription recorded.
+        const base = SOUNDS[layer].gain
+        const loopSteps = loop.loopBars * perBar
         const expected = []
         const repetitions = Math.ceil(section.bars / loop.loopBars)
         for (let rep = 0; rep < repetitions; rep++) {
           for (const event of loop.events) {
             const step = rep * loop.loopBars * perBar + event.step
             if (step >= section.bars * perBar) continue
-            expected.push({ step, midi: event.midi ?? null })
+            expected.push({
+              step,
+              midi: event.midi ?? null,
+              symbol: event.symbol ?? null,
+              length: Math.max(1, Math.min(event.length, loopSteps - event.step)),
+              gain: round2(base * (event.velocity ?? 0.8)),
+            })
           }
         }
 
         // `.voicing()` turns one chord into three or four simultaneous notes,
         // so a chord layer's query yields several events per transcribed
         // event. Collapse simultaneous notes into one onset before comparing,
-        // or every chord reads as two spurious extras.
+        // or every chord reads as two spurious extras - but collapsing must
+        // not throw away which pitch classes were actually voiced, or a
+        // wrong chord and a right one look identical once reduced to a count.
         const raw = byLayer.get(layer).map((event) => ({
           step: (event.begin - from) * perBar,
           midi: midiOf(event.value),
+          length: (event.end - event.begin) * perBar,
+          gain: event.value.gain ?? null,
         }))
         const actual = layer === 'chords' ? collapseSimultaneous(raw) : raw
 
@@ -275,6 +370,9 @@ export async function verifyEmission(code, transcription) {
           missing: comparison.missing.length,
           extra: comparison.extra.length,
           wrongPitch: comparison.wrongPitch.length,
+          wrongChord: comparison.wrongChord.length,
+          wrongLength: comparison.wrongLength.length,
+          wrongGain: comparison.wrongGain.length,
           drift: comparison.drift,
         }
 
@@ -289,6 +387,31 @@ export async function verifyEmission(code, transcription) {
             section: section.index,
             layer,
             message: `${comparison.wrongPitch.length} events at the wrong pitch`,
+          })
+        }
+        // Reported separately from wrongPitch per #47: a wrong chord, a
+        // shortened note and a wrong gain are three different defect classes
+        // with three different causes, and collapsing them into one count
+        // would tell whoever reads this nothing about which to go fix.
+        if (comparison.wrongChord.length) {
+          defects.push({
+            section: section.index,
+            layer,
+            message: `${comparison.wrongChord.length} events with the wrong chord`,
+          })
+        }
+        if (comparison.wrongLength.length) {
+          defects.push({
+            section: section.index,
+            layer,
+            message: `${comparison.wrongLength.length} events with the wrong duration`,
+          })
+        }
+        if (comparison.wrongGain.length) {
+          defects.push({
+            section: section.index,
+            layer,
+            message: `${comparison.wrongGain.length} events at the wrong gain`,
           })
         }
         if (comparison.drift > MAX_MEAN_DRIFT_STEPS) {
@@ -323,15 +446,29 @@ export async function verifyEmission(code, transcription) {
   return { ok: defects.length === 0, sections, defects }
 }
 
-/** Notes landing on the same onset are one chord, not several events. Keeps the
- *  lowest, which is the closest thing to a root after `.voicing()`. */
+/**
+ * Notes landing on the same onset are one chord, not several events.
+ *
+ * Keeps the lowest note's step/length/gain, which is the closest thing to a
+ * root after `.voicing()` and (per its own comment) shares timing and gain
+ * with the rest of the voicing anyway - but carries forward the FULL set of
+ * pitch classes actually sounding, not just the one representative note's.
+ * Reducing to a bare count here is exactly how a wrong chord came to read as
+ * a clean match before this fix: `.voicing()` turning "C" into five real
+ * notes and turning "Dm" into another five real notes both collapse to "one
+ * onset" if only the count survives.
+ */
 function collapseSimultaneous(events, tolerance = 0.01) {
   const sorted = [...events].sort((a, b) => a.step - b.step || (a.midi ?? 0) - (b.midi ?? 0))
   const out = []
   for (const event of sorted) {
+    const pc = (((event.midi ?? 0) % 12) + 12) % 12
     const last = out[out.length - 1]
-    if (last && Math.abs(event.step - last.step) <= tolerance) continue
-    out.push(event)
+    if (last && Math.abs(event.step - last.step) <= tolerance) {
+      last.pitchClasses.add(pc)
+      continue
+    }
+    out.push({ ...event, pitchClasses: new Set([pc]) })
   }
-  return out
+  return out.map((event) => ({ ...event, pitchClasses: [...event.pitchClasses].sort((a, b) => a - b) }))
 }

@@ -92,6 +92,25 @@ describe('trackF0', () => {
     expect(wrongOctave).toEqual([])
   })
 
+  it('reaches the true fundamental at the top of the declared range, not the octave below', () => {
+    // Regression: the cumulative-mean sum was computed over
+    // difference[minLag..lag] instead of YIN's required difference[1..lag],
+    // which forces normalised[minLag] to exactly 1 by construction and makes
+    // the first-dip search start at minLag+1 - so a true period sitting at
+    // minLag (a fundamental at maxHz) could never be the first qualifying
+    // dip, and its octave below won instead. Sharp boundary measured directly:
+    // 395 Hz tracks fine, 399 Hz (still inside the declared 30-400 Hz range)
+    // came out at 199.5 Hz, clarity 1.0 - a confidently wrong octave, not a
+    // low-confidence miss.
+    const audio = decodeWav(toneSequence([{ hz: 399, seconds: 0.3 }]))
+    const { frames } = trackF0(audio, { minHz: 30, maxHz: 400 })
+    const voiced = frames.filter((f) => f.voiced)
+    expect(voiced.length).toBeGreaterThan(frames.length * 0.5)
+    const midi = hzToMidi(399)
+    const wrongOctave = voiced.filter((f) => Math.abs(f.midi - midi) > 1)
+    expect(wrongOctave).toEqual([])
+  })
+
   it('tracks a change of note', () => {
     const audio = decodeWav(toneSequence([
       { midi: 41, seconds: 0.6 },
@@ -177,6 +196,39 @@ describe('segmentNotes', () => {
     const audio = decodeWav(toneSequence([{ midi: 41, seconds: 0.02 }]))
     const notes = segmentNotes(trackF0(audio, { minHz: 30, maxHz: 400 }))
     expect(notes).toEqual([])
+  })
+
+  it('segments a long held note in sub-quadratic time', () => {
+    // Regression for a real performance bug: the running median used to be
+    // recomputed by copying and sorting the whole current note's pitch
+    // history on every frame, making a held note's cost quadratic in its own
+    // frame count - measured directly on this machine at 730ms/5,000 frames,
+    // 2993ms/10,000, 13428ms/20,000 for the old approach, against ~10ms flat
+    // for the two-heap running median at every size tested. 10,000 frames at
+    // this hop (512 samples / 44.1kHz) is under two minutes of continuously
+    // held pitch - an ordinary sustained pad or bass drone, not a contrived
+    // input.
+    const n = 10000
+    const hopSeconds = 512 / 44100
+    const frames = []
+    for (let i = 0; i < n; i++) {
+      // Gentle drift, well inside the semitone tolerance, so this segments as
+      // one long note rather than many short ones - the shape that made the
+      // old per-frame full sort quadratic.
+      frames.push({
+        seconds: i * hopSeconds,
+        hz: 87,
+        midi: 41 + 0.1 * Math.sin(i / 37),
+        clarity: 0.9,
+        rms: 0.1,
+        voiced: true,
+      })
+    }
+    const start = performance.now()
+    const notes = segmentNotes({ frames, hopSeconds })
+    const elapsed = performance.now() - start
+    expect(notes).toHaveLength(1)
+    expect(elapsed).toBeLessThan(1000)
   })
 
   it('returns nothing for silence rather than throwing', () => {

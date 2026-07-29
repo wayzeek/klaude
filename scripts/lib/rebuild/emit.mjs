@@ -330,12 +330,22 @@ function sameLoops(a, b) {
     if (left === null || right === null) return false
     if (left.loopBars !== right.loopBars) return false
     if (left.events.length !== right.events.length) return false
+    const base = SOUNDS[layer].gain
     for (let i = 0; i < left.events.length; i++) {
       const x = left.events[i]
       const y = right.events[i]
       if (x.step !== y.step || x.length !== y.length) return false
       if ((x.midi ?? null) !== (y.midi ?? null)) return false
       if ((x.symbol ?? null) !== (y.symbol ?? null)) return false
+      // Reuse must be lossless output-for-output, and velocity reaches the
+      // output as gain (see loopToPatterns). Comparing the rounded, emitted
+      // gain rather than raw velocity tolerates the float noise that two
+      // independently-measured (but musically identical) audio passages will
+      // always carry, while still catching what actually erases dynamics: a
+      // genuine ghost-vs-accent difference. Measured directly - kick
+      // velocities 1.0 and 0.1 used to reuse one loud gain(0.5) definition
+      // for both sections, silencing the ghost hit's dynamics entirely.
+      if (round2(base * (x.velocity ?? 0.8)) !== round2(base * (y.velocity ?? 0.8))) return false
     }
   }
   return true
