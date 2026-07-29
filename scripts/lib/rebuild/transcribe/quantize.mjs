@@ -39,6 +39,31 @@ const KEEP_FRACTION = 0.5
  */
 const DEFAULT_MIN_AGREEMENT = 0.9
 
+/**
+ * The whole-section fallback below only fires when every usable candidate
+ * folded a section's events down to nothing - a bar count no candidate above
+ * 1 divides evenly (17 is prime, so only the 1-bar candidate applies; every
+ * bar becomes a "repetition" of it, and content that does not actually
+ * repeat every bar loses every bucket to `KEEP_FRACTION`). That can mean two
+ * different things and they need opposite answers: real content that simply
+ * has no short loop to fold into (must survive, even as a long transcript),
+ * or a couple of spurious hits that correctly failed to recur (must stay
+ * empty). `agreement` cannot tell them apart - measured on the real drum and
+ * bass stems (task-6-report.md), the spurious case (a 5-bar kick section, 2
+ * hits, ground truth has none) scores 0.400 agreement, *higher* than one of
+ * the real cases (a 5-bar bass section, 4 notes, scores 4/4 against truth)
+ * at 0.300.
+ *
+ * Density - events per bar - separates them cleanly on the same data: the
+ * spurious kick section is 0.400/bar; the real bass sections are 0.800/bar
+ * and 4.176/bar. 0.5 sits in the gap, and it is not a value picked to split
+ * those three points - it is `MIN_NOTES_PER_SECTION`'s own floor (both
+ * transcribers require at least 2 events before ever calling `foldToLoop`),
+ * generalised from the 4-bar loop it was sized for (2 events / 4 bars) to
+ * whatever length this fallback actually has to cover.
+ */
+const MIN_FALLBACK_DENSITY = 0.5
+
 export function stepSeconds(grid) {
   return grid.beatSeconds / STEPS_PER_BEAT
 }
@@ -144,16 +169,25 @@ export function foldToLoop(
       : foldAgainstCandidates(local, usable, perBar, section.bars, minAgreement)
 
   // `local.length > 0` here - a section with no events returned above - so a
-  // result with no kept events means folding destroyed real content, not that
-  // there was none. That happens whenever the section's bar count shares no
-  // factor with any candidate above 1 (17 is prime, so only the 1-bar
-  // candidate is usable at all): every bar is then a separate "repetition" of
-  // a 1-bar loop, the actual material does not repeat on that schedule, and
-  // the keep-fraction filter drops every bucket. The events already cleared
-  // the caller's own confidence gate before reaching here, so the honest
-  // fallback is the whole section verbatim - longer than #46 wants a loop to
-  // be, but a real transcript beats silently reporting nothing.
-  if (result.events.length === 0) return { loopBars: section.bars, events: local, agreement: 0 }
+  // result with no kept events means every candidate's fold emptied out, not
+  // that there was nothing to fold. That happens whenever the section's bar
+  // count shares no factor with any candidate above 1 (17 is prime, so only
+  // the 1-bar candidate is usable at all): every bar is then a separate
+  // "repetition" of a 1-bar loop, and if the material does not actually
+  // repeat every bar, the keep-fraction filter drops every bucket - real
+  // content and a couple of non-recurring spurious hits both land here the
+  // same way, and `MIN_FALLBACK_DENSITY`'s own comment is where the two get
+  // told apart. Below it, this result already is the answer: whatever
+  // `foldAgainstCandidates` returned, honestly empty. At or above it, the
+  // fallback is the whole section - longer than #46 wants a loop to be, but a
+  // real transcript beats silently reporting nothing - folded through
+  // `scoreFold` at `loopBars: section.bars` (one repetition, so nothing is
+  // pruned) rather than returned as raw `local`, so two events that landed on
+  // the exact same step and pitch still merge instead of coming out as
+  // duplicates.
+  if (result.events.length === 0 && local.length / section.bars >= MIN_FALLBACK_DENSITY) {
+    return scoreFold(local, section.bars, perBar, section.bars)
+  }
   return result
 }
 

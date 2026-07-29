@@ -173,6 +173,19 @@ describe('foldToLoop', () => {
     expect(folded.loopBars).toBe(3)
   })
 
+  it('does not turn two non-recurring hits into a fabricated whole-section loop', () => {
+    // Same forced-fold path as the test above (5 bars is prime, only the
+    // 1-bar candidate divides it), but two isolated hits that share neither
+    // position nor pitch are the other thing a zero-fold result can mean: a
+    // couple of hits that correctly failed to recur, not a real line that
+    // simply had nowhere to fold. Density here is 2/5 = 0.4, below
+    // `MIN_FALLBACK_DENSITY` (0.5) - unlike the test above's 3/3 = 1.0 - so
+    // this must stay empty rather than come back as a fabricated "loop".
+    const events = [ev(0, 41), ev(70, 43)]
+    const folded = foldToLoop(events, { startBar: 0, bars: 5 }, grid)
+    expect(folded.events).toEqual([])
+  })
+
   it('rejects a section length no candidate divides, by using the section', () => {
     // 6 bars: 1 and 2 divide it, 4 does not. A 4-bar loop would drop bars 4-5.
     const events = []
