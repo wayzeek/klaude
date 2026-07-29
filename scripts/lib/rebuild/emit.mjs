@@ -1,0 +1,304 @@
+/**
+ * A transcription becomes moltek source.
+ *
+ * The output is the remix surface, so readability is a feature. Someone opening
+ * this should see the song's structure - a handful of named loops and an
+ * arrangement - rather than a wall of generated notes. That is why loops are
+ * folded to one, two or four bars upstream, why each layer gets a named const,
+ * and why a repeated section references a definition instead of restating it.
+ *
+ * Sounds come from moltek's own palette, matching how tracks/MINUIT writes them.
+ * They are an approximation, not a reproduction: the clone plays the right notes
+ * with moltek's sounds, and will not sound like the record.
+ */
+
+import { PITCH_NAMES } from '../dsp.mjs'
+import { LAYERS, gridFromJson, stepsPerBar } from './transcribe/quantize.mjs'
+
+/**
+ * Per-layer sound and gain.
+ *
+ * Gains are staged the way the-chase stages them and the way check.mjs expects:
+ * the kick loudest, the bass well under it so the mids can be heard, everything
+ * else finding room underneath. `snare` is a rimshot rather than a clap -
+ * a bare clap on the backbeat reads as cheesy.
+ */
+/**
+ * `sound` is the value that lands in `event.value.s` when the emitted pattern
+ * is queried, and every layer's is distinct. That is load-bearing: the emission
+ * check in Task 13 cannot query per layer, because `track.layers` is a stacked
+ * representative channel rather than a timeline, so it queries the whole
+ * arranged pattern and sorts events back into layers by this field.
+ */
+export const SOUNDS = Object.freeze({
+  kick: Object.freeze({ kind: 'sample', token: 'bd', sound: 'bd', suffix: '.bank("RolandTR909")', gain: 0.5 }),
+  snare: Object.freeze({ kind: 'sample', token: 'rim', sound: 'rim', suffix: '.bank("RolandTR909")', gain: 0.35 }),
+  hats: Object.freeze({ kind: 'sample', token: 'hh', sound: 'hh', suffix: '.bank("RolandTR909").hpf(2200)', gain: 0.25 }),
+  bass: Object.freeze({ kind: 'note', sound: 'sawtooth', suffix: '.s("sawtooth").hpf(95).lpf(440).lpq(1)', gain: 0.35 }),
+  chords: Object.freeze({ kind: 'chord', sound: 'gm_epiano1', suffix: '.voicing().s("gm_epiano1").hpf(380)', gain: 0.3 }),
+  lead: Object.freeze({ kind: 'note', sound: 'gm_tenor_sax', suffix: '.s("gm_tenor_sax")', gain: 0.35 }),
+})
+
+const SHARP_TO_FLAT = { 'C#': 'Db', 'D#': 'Eb', 'F#': 'Gb', 'G#': 'Ab', 'A#': 'Bb' }
+
+/**
+ * Keys whose signature is written with flats, which depends on the mode as well
+ * as the root. D major takes two sharps; D minor takes one flat. Collapsing the
+ * two would respell F# as Gb in D major, which no musician writes.
+ */
+const FLAT_MAJOR = new Set(['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'])
+const FLAT_MINOR = new Set(['D', 'G', 'C', 'F', 'Bb', 'Eb'])
+
+export function prefersFlats(keyName) {
+  const [root = '', mode = ''] = (keyName ?? '').trim().split(/\s+/)
+  return mode.toLowerCase() === 'minor' ? FLAT_MINOR.has(root) : FLAT_MAJOR.has(root)
+}
+
+export function midiToNoteName(midi, { flats = true } = {}) {
+  const pitchClass = ((midi % 12) + 12) % 12
+  const octave = Math.floor(midi / 12) - 1
+  let name = PITCH_NAMES[pitchClass]
+  if (!flats && name.length === 2 && name[1] === 'b') {
+    name = Object.keys(SHARP_TO_FLAT).find((sharp) => SHARP_TO_FLAT[sharp] === name) ?? name
+  }
+  if (flats) name = SHARP_TO_FLAT[name] ?? name
+  return `${name.toLowerCase()}${octave}`
+}
+
+/** Respell a chord symbol's root for the key. Strudel accepts both spellings;
+ *  this is for whoever reads the track. */
+export function respell(symbol, { flats = true } = {}) {
+  if (!flats) return symbol
+  const match = /^([A-G]#)(.*)$/.exec(symbol)
+  if (!match) return symbol
+  return `${SHARP_TO_FLAT[match[1]] ?? match[1]}${match[2]}`
+}
+
+/**
+ * Sixteen slots become mini-notation.
+ *
+ * `slots[i]` is `{ token, length }` at a note's onset and `null` elsewhere. Runs
+ * of the same thing collapse with `@`, so a whole-bar chord is one token rather
+ * than sixteen, and the result stays readable at a glance.
+ */
+export function barToMini(slots) {
+  const tokens = []
+  let index = 0
+  while (index < slots.length) {
+    const slot = slots[index]
+    if (slot) {
+      const span = Math.max(1, Math.min(slot.length, slots.length - index))
+      tokens.push(span > 1 ? `${slot.token}@${span}` : slot.token)
+      index += span
+      continue
+    }
+    let rest = 0
+    while (index + rest < slots.length && !slots[index + rest]) rest++
+    tokens.push(rest > 1 ? `~@${rest}` : '~')
+    index += rest
+  }
+  const line = tokens.join(' ')
+  return line.replace(/^~@\d+$|^~$/, '~')
+}
+
+/**
+ * A loop becomes a mini-notation string and a matching gain string.
+ *
+ * Two shapes, chosen by whether anything sustains across a bar line. A drum
+ * loop never does, and reads best as an alternation - one bracketed bar per
+ * cycle. A held chord or a long bass note does, and an alternation cannot
+ * express it: each bracket is its own cycle, so the note would simply stop at
+ * the bar. Those loops are emitted as one sequence stretched over `loopBars`
+ * cycles with `.slow()`.
+ *
+ * The gain string carries velocity, which is otherwise lost. #41 requires ghost
+ * notes to survive as ghost notes, and they only do if the dynamics reach the
+ * output. Rest positions repeat the base gain rather than `~` so every slot has
+ * a defined value and the two strings stay aligned by weight.
+ */
+function loopToPatterns(loop, layer, perBar, { flats }) {
+  const total = loop.loopBars * perBar
+  const base = SOUNDS[layer].gain
+  const slots = new Array(total).fill(null)
+  for (const event of loop.events) {
+    if (event.step < 0 || event.step >= total) continue
+    slots[event.step] = {
+      token: tokenFor(event, layer, { flats }),
+      // Clamp to the loop's end, not the bar's: a note may legitimately sustain
+      // across a bar line and clipping it there silently shortens every pad.
+      length: Math.max(1, Math.min(event.length, total - event.step)),
+      gain: round2(base * (event.velocity ?? 0.8) * 2),
+    }
+  }
+
+  const crosses = slots.some(
+    (slot, i) => slot && Math.floor(i / perBar) !== Math.floor((i + slot.length - 1) / perBar),
+  )
+
+  if (loop.loopBars === 1) {
+    return { mini: barToMini(slots), gains: barToGains(slots, base), slow: 1 }
+  }
+  if (crosses) {
+    return { mini: barToMini(slots), gains: barToGains(slots, base), slow: loop.loopBars }
+  }
+  const bars = []
+  const gains = []
+  for (let bar = 0; bar < loop.loopBars; bar++) {
+    const slice = slots.slice(bar * perBar, (bar + 1) * perBar)
+    bars.push(`[${barToMini(slice)}]`)
+    gains.push(`[${barToGains(slice, base)}]`)
+  }
+  return { mini: `<${bars.join(' ')}>`, gains: `<${gains.join(' ')}>`, slow: 1 }
+}
+
+/** The gain string, walked exactly as `barToMini` walks the tokens so the two
+ *  line up weight for weight. */
+function barToGains(slots, base) {
+  const tokens = []
+  let index = 0
+  while (index < slots.length) {
+    const slot = slots[index]
+    if (slot) {
+      const span = Math.max(1, Math.min(slot.length, slots.length - index))
+      tokens.push(span > 1 ? `${slot.gain}@${span}` : String(slot.gain))
+      index += span
+      continue
+    }
+    let rest = 0
+    while (index + rest < slots.length && !slots[index + rest]) rest++
+    tokens.push(rest > 1 ? `${round2(base)}@${rest}` : String(round2(base)))
+    index += rest
+  }
+  return tokens.join(' ')
+}
+
+const round2 = (value) => Math.round(value * 100) / 100
+
+function tokenFor(event, layer, { flats }) {
+  const sound = SOUNDS[layer]
+  if (sound.kind === 'sample') return sound.token
+  if (sound.kind === 'chord') return respell(event.symbol ?? '', { flats })
+  return midiToNoteName(event.midi ?? 60, { flats })
+}
+
+/** The wrapper around a layer's mini-notation. */
+function layerExpression(loop, layer, perBar, { flats, anchor }) {
+  const sound = SOUNDS[layer]
+  const { mini, gains, slow } = loopToPatterns(loop, layer, perBar, { flats })
+  const tail = `.gain("${gains}")${slow > 1 ? `.slow(${slow})` : ''}`
+  if (sound.kind === 'sample') return `s("${mini}")${sound.suffix}${tail}`
+  if (sound.kind === 'chord') {
+    return `chord("${mini}").anchor("${anchor}").mode("above")${sound.suffix}${tail}`
+  }
+  return `note("${mini}")${sound.suffix}${tail}`
+}
+
+/**
+ * Assemble the whole track.
+ *
+ * Sections whose transcriptions came out identical share one set of
+ * definitions; see `reuseTarget` for why that, and not `sameAs`, is the
+ * condition.
+ */
+export function emitTrack(transcription, { title = null, source = null } = {}) {
+  const grid = gridFromJson(transcription.grid)
+  const perBar = stepsPerBar(grid)
+  const keyName = transcription.key?.name ?? ''
+  const keyRoot = keyName.split(/\s+/)[0] || 'C'
+  const flats = prefersFlats(keyName)
+  const anchor = `${keyRoot.toLowerCase()}4`.replace('#', 's')
+
+  const lines = []
+  lines.push('// ═══════════════════════════════════════════════════════════')
+  lines.push(`//  ${title ?? 'rebuild'}  ·  ${keyName} · ${Math.round(grid.bpm)} BPM`)
+  if (source) lines.push(`//  rebuilt from ${source}`)
+  lines.push('// ═══════════════════════════════════════════════════════════')
+  lines.push("samples('github:tidalcycles/dirt-samples')")
+  // Strudel's cpm is cycles per minute and moltek writes one cycle per bar, so
+  // the divisor is the detected meter, not a hardcoded 4. At 120 BPM in 3/4,
+  // dividing by 4 would play the track at 90.
+  lines.push(`setcpm(${Math.round(grid.bpm)}/${grid.beatsPerBar})`)
+  lines.push('')
+
+  // Which section each section takes its definitions from. A repeat only
+  // borrows when both it and its original were heard confidently.
+  const definitionOf = new Map()
+  for (const section of transcription.sections) {
+    const target = reuseTarget(section, transcription.sections) ?? section.index
+    definitionOf.set(section.index, target)
+  }
+
+  const emitted = new Set()
+  for (const section of transcription.sections) {
+    if (definitionOf.get(section.index) !== section.index) continue
+    const present = LAYERS.filter((layer) => section.loops?.[layer])
+    if (!present.length) continue
+    lines.push(`// section ${section.index} - bar ${section.startBar}, ${section.bars} bars, ${section.label}`)
+    for (const layer of present) {
+      const name = `s${section.index}_${layer}`
+      lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor })}`)
+      emitted.add(name)
+    }
+    lines.push('')
+  }
+
+  lines.push('const S = silence')
+  lines.push(`const sec = (o) => layers({ ${LAYERS.map((l) => `${l}: o.${l} || S`).join(', ')} })`)
+  lines.push('')
+  lines.push('arrange(')
+  for (const section of transcription.sections) {
+    const from = definitionOf.get(section.index)
+    const source_ = transcription.sections.find((candidate) => candidate.index === from) ?? section
+    const parts = LAYERS.filter((layer) => source_.loops?.[layer]).map(
+      (layer) => `${layer}: s${from}_${layer}`,
+    )
+    const note = from === section.index ? '' : `  // repeats section ${from}`
+    lines.push(`  [${section.bars}, sec({${parts.length ? ` ${parts.join(', ')} ` : ''}})],${note}`)
+  }
+  lines.push(')')
+  lines.push('')
+  return lines.join('\n')
+}
+
+/**
+ * The section this one may borrow definitions from, or null.
+ *
+ * Reuse is allowed only when the two sections transcribed to *the same thing*.
+ * That makes it a pure deduplication of identical output: it cannot change a
+ * single note the track plays, only how many times the source states them.
+ *
+ * The obvious alternative - trust `sameAs`, perhaps gated on both sections
+ * passing the hearing check - does not work, and the reason is worth keeping.
+ * A hearing check proves section A's transcription matches A's audio and B's
+ * matches B's. It says nothing about whether A and B resemble each other. Two
+ * musically different sections, each transcribed perfectly, would both pass and
+ * B would then be overwritten with A's material. Phase 1 measured false repeat
+ * matches at 0.9464 and 0.9352 against a 0.9 threshold, so this is not a
+ * hypothetical.
+ */
+function reuseTarget(section, sections) {
+  if (section.sameAs === null || section.sameAs === undefined) return null
+  const original = sections.find((candidate) => candidate.index === section.sameAs)
+  if (!original || original.bars !== section.bars) return null
+  return sameLoops(original.loops, section.loops) ? section.sameAs : null
+}
+
+/** Do two sections carry identical material on every layer? */
+function sameLoops(a, b) {
+  for (const layer of LAYERS) {
+    const left = a?.[layer] ?? null
+    const right = b?.[layer] ?? null
+    if (left === null && right === null) continue
+    if (left === null || right === null) return false
+    if (left.loopBars !== right.loopBars) return false
+    if (left.events.length !== right.events.length) return false
+    for (let i = 0; i < left.events.length; i++) {
+      const x = left.events[i]
+      const y = right.events[i]
+      if (x.step !== y.step || x.length !== y.length) return false
+      if ((x.midi ?? null) !== (y.midi ?? null)) return false
+      if ((x.symbol ?? null) !== (y.symbol ?? null)) return false
+    }
+  }
+  return true
+}
