@@ -26,60 +26,114 @@
  */
 
 import { decodeWav } from '../decoded-audio.mjs'
-import { CHROMA_FFT, fft, makeHann } from '../dsp.mjs'
-import { bandEnergy, bandEnergyRise, bandNovelty } from './transcribe/bands.mjs'
+import { CHROMA_FFT, ONSET_HOP, fft, makeHann } from '../dsp.mjs'
+import { bandEnergy, bandEnergyRise, bandNovelty, pickBandOnsets } from './transcribe/bands.mjs'
 import { DRUM_ROLES } from './transcribe/drums.mjs'
 import { beatChroma } from './transcribe/harmony.mjs'
 import { LAYERS, gridFromJson, sectionRange } from './transcribe/quantize.mjs'
 import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
 
 /**
- * Calibrated 2026-07-29 from Task 11's Step 5 self-consistency probe: a
- * transcription scored against a synthesis of itself, so nothing in the fixture
- * can be wrong and the resulting score is each layer's ceiling. Not measured
- * against a recording - a real stem has bleed, timbre and background content a
- * synthetic fixture does not, so this is the best case, not a typical one.
+ * Recalibrated 2026-07-29, replacing a same-day calibration that shipped from
+ * the wrong measurement. That first pass set every threshold at half of Task
+ * 11's *self-consistency* ceiling - a transcription scored against a
+ * synthesis of itself, so nothing in the fixture can be wrong. That number
+ * says how consistent the check is with itself; it says nothing about what a
+ * correct transcription scores against a *real* stem, which is the only
+ * measurement a real threshold can be based on. The gap was not small: on
+ * the-chase, a 95%-accurate real kick transcription (288/302 true onsets,
+ * ground truth) scored 0.000-0.035 against the real drums stem under the
+ * self-consistency-calibrated method, so kick and snare were dropped from
+ * effectively every section regardless of how well they were transcribed.
+ * `pnpm run rebuild` on the-chase went from 44 layers before the drop to 10
+ * after it.
  *
- * Measured ceiling: kick 1.000, snare 0.861, hats 0.998, bass 0.994, chords
- * 1.000. Each threshold is half its own layer's ceiling, rounded to two
- * decimals - half is the fraction that admits a layer more right than wrong.
+ * Two things changed:
  *
- * Per layer rather than one number per family, because snare's ceiling sits
- * well below the other drum roles': a kick's broadband splatter leaks into the
- * snare band regardless of transcription quality (see `detectorCurve` above),
- * so even a perfect snare transcription cannot correlate as tightly as kick or
- * hats can. A single `drums` threshold set from kick and hats would reject
- * correct snares; snare is calibrated against its own ceiling instead.
+ * 1. Drum scoring (kick/snare/hats) moved from correlating the role's raw
+ *    detection curve to `onsetAgreement`'s tolerance-matched onset F1 - see
+ *    that function's comment for why the curve correlation could not work.
+ *    Bass and chords are untouched: both already score in a sensible range
+ *    against real stems (chords measured 0.87-0.90 in several the-chase
+ *    sections), so the fix is scoped to the mechanism that was actually
+ *    broken.
  *
- * `lead` has no entry: that transcriber is disabled (see melody.mjs) and never
- * reaches this check, so there is no ceiling to calibrate it against.
+ * 2. Every threshold is now set from a *known-good transcription scored
+ *    against its real stem*, not a synthetic ceiling. For kick/snare/hats
+ *    "known good" means a loop built directly from the-chase's ground-truth
+ *    event list (`scripts/lib/rebuild/__fixtures__/the-chase-truth.json`),
+ *    not the transcriber's own output - transcribeDrums's own snare recall
+ *    against ground truth is only ~43%, so its output cannot serve as "known
+ *    good" the way its kick output (95%) can. Bass and chords keep their
+ *    already-existing real-stem scores (the actual transcribed output,
+ *    independently confirmed accurate for bass via ground truth - 130/130
+ *    pitch-class and exact-MIDI - and taken on inspection for chords).
  *
- * These numbers rest on one synthetic fixture, calibrated to one real track
- * (the-chase) for the round trip that exercises them - the same n=1 limitation
- * the beat grid carries.
+ * Measured real-stem ceiling (mean of per-section scores across every
+ * the-chase section with true content; median for chords, to avoid a few
+ * sections with unverified chord accuracy dragging the average down):
+ *   kick 0.805 (8 sections)   snare 0.637 (9 sections)   hats 0.774 (7 sections)
+ *   bass 0.322 (8 sections)   chords 0.758 (10 sections)
  *
- * Consequence measured on the-chase, worth flagging rather than burying: kick
- * and snare score near 0 on nearly every section of *real* audio, at any
- * threshold below their ceiling - not because the transcription is wrong (the
- * pre-hearing-check kick transcription hits 288/302 true onsets, and its stem
- * slices peak within 4 analysis hops, ~46ms, of the real recording's own
- * energy peaks) but because `detectorCurve`'s `bandEnergyRise` is far sparser
- * for a resynthesised decaying tone than for a real drum's messier, bleed-
- * carrying decay: correlating the two *rise* curves lands near 0 even where
- * correlating the underlying (non-derivative) `bandEnergy` curves lands
- * around 0.5. Task 11's self-consistency ceiling can't expose this because
- * both sides of that probe are the same synthetic curve. Raising or lowering
- * `HEARING_THRESHOLDS.kick`/`.snare` cannot fix it - the scores cluster at the
- * bottom of the range regardless of threshold - so this is left as a known
- * limitation for whoever next touches `detectorCurve` or the drum voices in
- * resynth.mjs, not patched here.
+ * For kick/snare/hats the threshold is *not* half of this ceiling - proven
+ * necessary, not assumed: corrupting the same known-good loop (shifted a
+ * step, half its hits dropped, replaced with an unrelated fixed pattern) and
+ * rescoring against the real stem shows half-of-ceiling would still pass the
+ * worst corruption for every drum role (e.g. kick's dropped-half corruption
+ * still averages 0.605, well above half of 0.805). Each drum threshold is
+ * instead the midpoint between the correct mean and the *worst discriminable*
+ * corruption's mean - the highest threshold that still passes every measured
+ * correct section:
+ *   kick:  correct 0.805, worst corruption (drop-half) 0.605 -> exact midpoint 0.705, rounded
+ *          down to 0.70 (not up to 0.71): the-chase's own section 6 kick scores
+ *          0.7089, a correct section that 0.71 would have dropped by one
+ *          thousandth - rounding toward "more likely right than wrong" costs
+ *          nothing against the corruption gap (still far above 0.605) and
+ *          keeps a real, measured, correct section
+ *   snare: correct 0.637, worst corruption (drop-half) 0.344 -> 0.49
+ *   hats:  correct 0.774, worst *discriminable* corruption (replace) 0.244 -> 0.51
+ * Bass and chords keep the original half-of-ceiling rule, since their
+ * mechanism wasn't touched: bass 0.322/2 -> 0.16, chords 0.758/2 -> 0.38.
+ *
+ * `lead` has no entry: that transcriber is disabled (see melody.mjs) and
+ * never reaches this check.
+ *
+ * Honest limits, not smoothed over:
+ * - hats cannot be made to discriminate "half the hits dropped" on real
+ *   audio - every method tried (current correlation, raw energy, smoothed
+ *   rise, onset F1) scores a hats loop missing half its true hits within
+ *   0.01-0.03 of the correct score, because hi-hats in this recording carry
+ *   enough continuous high-band energy that a depleted onset set still lands
+ *   close to real onsets. `HEARING_THRESHOLDS.hats` catches a shifted or
+ *   wrong pattern but not a thinned-out one. Lowering the threshold further
+ *   would not fix this - the scores are already this close together - so it
+ *   is left as a measured, disclosed gap.
+ * - Kick's "replace with an unrelated pattern" test needed a pattern that
+ *   does not resemble any other the-chase section's real kick, because the
+ *   first attempt (borrow another section's true pattern) undersold the
+ *   corruption: the-chase's kick is a four-on-the-floor variant almost
+ *   everywhere, so two real sections' patterns are often too similar for
+ *   swapping them to be a meaningful wrong answer. Swapping is still
+ *   measured (kick correct 0.805 vs swap 0.596, some individual sections
+ *   overlapping) and reported for transparency, but the fixed fixed-pattern
+ *   corruption (kick correct 0.805 vs replace 0.161) is what set the
+ *   threshold.
+ * - Even the chosen threshold does not perfectly separate correct from
+ *   corrupted at the individual-section level (e.g. one section's dropped-
+ *   half kick scores 0.815, above another section's correct score of 0.730);
+ *   it separates the *means* with a real margin. A single scalar threshold
+ *   over noisy real audio cannot do better than that without also rejecting
+ *   some correct sections, which is the trade this plan avoids on purpose.
+ *
+ * These numbers rest on one real track (the-chase, the only recording with
+ * exact ground truth) - the same n=1 limitation the beat grid carries.
  */
 export const HEARING_THRESHOLDS = {
-  kick: 0.5,
-  snare: 0.43,
-  hats: 0.5,
-  bass: 0.5,
-  chords: 0.5,
+  kick: 0.7,
+  snare: 0.49,
+  hats: 0.51,
+  bass: 0.16,
+  chords: 0.38,
 }
 
 /** How much of a pitched layer's score its octave can cost. At 0.7 an octave
@@ -137,20 +191,85 @@ function asAudio(samples, sampleRate = RESYNTH_SAMPLE_RATE) {
  * this function did, over-triggers the kick band specifically: its decaying
  * tone thins out, flux's self-normalised denominator shrinks with it, and
  * ordinary jitter clears the floor for the whole tail (see bands.mjs).
- *
- * Values below the role's own floor are zeroed before the curves are compared.
- * That floor is the same one `detectDrumHits` calibrates onset-picking against
- * - not `pickBandOnsets`'s flux-tuned default - and it exists to say "this
- * level is indistinguishable from noise for this band," which is exactly the
- * content a raw correlation should not be allowed to line up on by chance.
  */
 function detectorCurve(samples, role) {
   const audio = asAudio(samples)
-  const raw = role.detector === 'energyRise' ? bandEnergyRise(bandEnergy(audio, role)) : bandNovelty(audio, role)
-  if (!raw || role.floor == null) return raw
-  const gated = new Float32Array(raw.length)
-  for (let i = 0; i < raw.length; i++) gated[i] = raw[i] >= role.floor ? raw[i] : 0
-  return gated
+  return role.detector === 'energyRise' ? bandEnergyRise(bandEnergy(audio, role)) : bandNovelty(audio, role)
+}
+
+/**
+ * Where the role's own detection curve peaks - the same onset picker
+ * `detectDrumHits` uses for real transcription, applied here to a rendered
+ * buffer instead. `hopSeconds` has to be computed from `ONSET_HOP`, not
+ * assumed, because `bandEnergy`/`bandEnergyRise` sample at that hop spacing
+ * regardless of what sample rate the caller passed in.
+ */
+function detectorOnsets(samples, role, sampleRate) {
+  const curve = detectorCurve(samples, role)
+  return pickBandOnsets(curve, ONSET_HOP / sampleRate, { floor: role.floor }).map((onset) => onset.seconds)
+}
+
+/**
+ * How far apart two onsets may sit and still count as the same hit. Coarser
+ * than `MATCH_TOLERANCE_STEPS` in verify-emission.mjs (that compares two
+ * already-quantised event lists; this compares raw analysis onsets, which
+ * carry their own few-hop jitter before quantisation ever happens) and
+ * coarser than the ~46ms gap measured directly between a real kick's energy
+ * peak and its own true onset time on the-chase - wide enough to swallow that
+ * kind of production/detection lag without also swallowing a genuine
+ * quarter-step timing error.
+ */
+const ONSET_MATCH_TOLERANCE_SECONDS = 0.06
+
+/**
+ * F1 of onset agreement between two curves, matched within a time tolerance.
+ *
+ * Replaces a plain zero-lag correlation of the two curves (kept in git
+ * history, not here - see the commit that introduced this), which measured
+ * near zero for kick and snare against every real the-chase stem regardless
+ * of transcription accuracy: a resynthesised decaying tone's rise curve is a
+ * handful of tall, sparse spikes, while a real drum's rise curve - carrying
+ * room tone, harmonic beating and same-band bleed from neighbouring roles -
+ * is a much denser, more moderate scatter. Correlating those two shapes
+ * directly measures how alike their *statistical texture* is, which a
+ * synthetic voice can never match, rather than whether hits land in the same
+ * place, which is the only thing this check is supposed to answer. Matching
+ * onsets within a tolerance instead asks exactly that question and ignores
+ * everything about the curves' shape in between.
+ *
+ * Measured directly against the-chase (probe script, not committed - see
+ * verify-hearing's calibration comment on `HEARING_THRESHOLDS` for the
+ * numbers): a known-good kick transcription (95% accurate against ground
+ * truth) scores 0.805 by this method against the real drums stem, where the
+ * old correlation scored 0.004. The same known-good transcription, shifted a
+ * step, missing half its hits, or replaced with an unrelated pattern, scores
+ * materially lower every time.
+ */
+function onsetAgreement(rendered, stemSlice, role, sampleRate) {
+  const a = detectorOnsets(rendered, role, sampleRate)
+  const b = detectorOnsets(stemSlice, role, sampleRate)
+  if (!a.length || !b.length) return 0
+  const usedB = new Set()
+  let matched = 0
+  for (const time of a) {
+    let best = -1
+    let bestDistance = Infinity
+    for (let i = 0; i < b.length; i++) {
+      if (usedB.has(i)) continue
+      const distance = Math.abs(b[i] - time)
+      if (distance < bestDistance) {
+        bestDistance = distance
+        best = i
+      }
+    }
+    if (best >= 0 && bestDistance <= ONSET_MATCH_TOLERANCE_SECONDS) {
+      usedB.add(best)
+      matched++
+    }
+  }
+  const precision = matched / a.length
+  const recall = matched / b.length
+  return precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0
 }
 
 /**
@@ -165,15 +284,20 @@ function detectorCurve(samples, role) {
  * octave even though chroma does not, and getting the octave right is #42's
  * headline criterion.
  *
- * Drums compare the shape of the role's own detection curve rather than pitch,
- * because a drum layer has no pitch content and what we want to know is
- * whether hits land where we said they do and how the attack/decay envelope
- * they produce compares - a zero-lag correlation of that curve is sensitive to
- * timing (a hit that moved is a curve that no longer lines up) without being
- * an all-or-nothing count of discrete onsets, which a same-band bleed from a
- * louder neighbouring role (a kick's broadband splatter reaching into the
- * snare band, for instance - see drums.mjs's own `suppressKickBleed`) would
- * otherwise punish as if every bit of bleed were a missing or spurious hit.
+ * Drums compare onset timing rather than pitch, because a drum layer has no
+ * pitch content and what we want to know is whether hits land where we said
+ * they do. That used to mean a zero-lag correlation of the role's raw
+ * detection curve; it does not any more (see `onsetAgreement`'s comment) -
+ * correlating curve *shape* could not tell a 95%-accurate real kick
+ * transcription from a wrong one, because a synthesised decaying tone's curve
+ * and a real drum's curve never share enough texture to correlate well
+ * regardless of whether the hits are in the right place. Matching discrete
+ * onsets within a tolerance answers the actual question directly, and is
+ * still tolerant of same-band bleed from a louder neighbouring role (a kick's
+ * broadband splatter reaching into the snare band, for instance - see
+ * drums.mjs's own `suppressKickBleed`): a bleed onset is one more unmatched
+ * point in the stem's onset set, which costs recall gradually rather than
+ * collapsing correlation outright.
  */
 export function scoreLayer(rendered, stemSlice, layer, grid) {
   const hasSignal = (buffer) => buffer.some((sample) => sample !== 0)
@@ -181,9 +305,7 @@ export function scoreLayer(rendered, stemSlice, layer, grid) {
 
   const role = DRUM_ROLES.find((candidate) => candidate.name === layer)
   if (role) {
-    const a = detectorCurve(rendered, role)
-    const b = detectorCurve(stemSlice, role)
-    return correlate(a, b)
+    return onsetAgreement(rendered, stemSlice, role, RESYNTH_SAMPLE_RATE)
   }
 
   // A grid anchored at zero, because both buffers start at the section's
@@ -309,34 +431,6 @@ export function verifyHearing(transcription, stemBuffers, { thresholds = HEARING
  *  rather than a unit vector, so a plain norm check is the correct test. */
 function isSilent(vector) {
   return vector.every((value) => value === 0)
-}
-
-/** Zero-lag normalised cross-correlation, clamped to 0..1. `null` (too short
- *  to analyse) counts as no agreement rather than throwing. */
-function correlate(a, b) {
-  if (!a || !b) return 0
-  const n = Math.min(a.length, b.length)
-  if (n === 0) return 0
-  let meanA = 0
-  let meanB = 0
-  for (let i = 0; i < n; i++) {
-    meanA += a[i]
-    meanB += b[i]
-  }
-  meanA /= n
-  meanB /= n
-  let num = 0
-  let denA = 0
-  let denB = 0
-  for (let i = 0; i < n; i++) {
-    const da = a[i] - meanA
-    const db = b[i] - meanB
-    num += da * db
-    denA += da * da
-    denB += db * db
-  }
-  const den = Math.sqrt(denA * denB)
-  return den > 0 ? Math.max(0, num / den) : 0
 }
 
 function cosine(a, b) {
