@@ -48,6 +48,14 @@
  * technique than the pitch-domain residual tried here, which was ruled out
  * above) rather than a threshold change - `transcribeMelody` is the one line
  * to change to point back at it.
+ *
+ * That one-line change re-enables the call path, not the calibration.
+ * `MIN_CLARITY` and `MIN_VOICED_FRACTION` were set for input this comment
+ * itself calls "far more contaminated" than the bass stem - a properly
+ * separated source would be cleaner, and thresholds sized for contamination
+ * would then likely be too permissive on it. Whoever brings real separation
+ * to this stem needs to re-measure both constants against it before trusting
+ * `detectMelody`'s output, not just flip the call back on.
  */
 
 import { decodeWav } from '../../decoded-audio.mjs'
