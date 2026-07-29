@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { writeWavBuffer } from '../__fixtures__/make-wav.mjs'
 import { renderSection } from './resynth.mjs'
 import { gridFromJson } from './transcribe/quantize.mjs'
-import { scoreLayer, verifyHearing } from './verify-hearing.mjs'
+import { HEARING_THRESHOLDS, scoreLayer, verifyHearing } from './verify-hearing.mjs'
 
 const SAMPLE_RATE = 44100
 const BPM = 120
@@ -159,6 +159,67 @@ describe('verifyHearing', () => {
     console.log(`octave-low bass: correct=${right.toFixed(3)} octave-down=${low.toFixed(3)}`)
     expect(right).toBeGreaterThan(0.85)
     expect(low).toBeLessThan(right - 0.2)
+  }, BASS_TEST_TIMEOUT)
+
+  it('scores lower when the chord progression is tritone-transposed', () => {
+    // Before this test, nothing in the suite exercised chord discrimination
+    // at all: forcing scoreLayer's `if (layer === 'chords') return harmonic`
+    // to `return 1` (a constant, ignoring the stem entirely) broke 0 of 384
+    // tests. Tritone is the clean, well-separated case (see
+    // `HEARING_THRESHOLDS`'s comment) - a same-key wrong chord is only
+    // partly caught, but a wrong key is not caught at all under a constant,
+    // so this is the corruption that actually proves the mechanism runs.
+    const chords = {
+      loopBars: 1,
+      events: [{ step: 0, length: 16, velocity: 0.6, confidence: 0.9, midi: null, symbol: 'Fm7', driftSteps: 0 }],
+      confidence: 0.9,
+      outOfKey: 0,
+    }
+    const truth = transcriptionWith({ ...BASE_LOOPS, chords })
+    const stems = stemsFromTranscription(truth)
+    const tritone = transcriptionWith({
+      ...BASE_LOOPS,
+      chords: { ...chords, events: [{ ...chords.events[0], symbol: 'Bm7' }] },
+    })
+    const right = verifyHearing(truth, stems).sections[0].layers.chords
+    const wrong = verifyHearing(tritone, stems).sections[0].layers.chords
+    console.log(`tritone-transposed chords: correct=${right.score.toFixed(3)} tritone=${wrong.score.toFixed(3)}`)
+    expect(right.score).toBeGreaterThan(0.85)
+    expect(wrong.score).toBeLessThan(HEARING_THRESHOLDS.chords)
+    expect(right.pass).toBe(true)
+    expect(wrong.pass).toBe(false)
+  }, BASS_TEST_TIMEOUT)
+
+  it('documents that a same-key wrong chord currently passes - a known gap, not a fix', () => {
+    // This is not a regression if it stays true. `HEARING_THRESHOLDS`'s
+    // comment already discloses that chroma cannot reliably separate a
+    // same-key substitution from the real progression (measured on
+    // the-chase: 0.817 correct vs 0.685 tonic-substituted, overlapping
+    // ranges). Pinning it here puts that knowledge in the suite instead of
+    // only in a comment - if this later starts failing (the substituted
+    // score drops below threshold), that's an improvement to update this
+    // test for, not a bug to fix.
+    const chords = {
+      loopBars: 2,
+      events: [
+        { step: 0, length: 16, velocity: 0.6, confidence: 0.9, midi: null, symbol: 'Fm7', driftSteps: 0 },
+        { step: 16, length: 16, velocity: 0.6, confidence: 0.9, midi: null, symbol: 'Ab^7', driftSteps: 0 },
+      ],
+      confidence: 0.9,
+      outOfKey: 0,
+    }
+    const truth = transcriptionWith({ ...BASE_LOOPS, chords }, 8)
+    const stems = stemsFromTranscription(truth)
+    const tonicThroughout = transcriptionWith(
+      { ...BASE_LOOPS, chords: { ...chords, events: chords.events.map((e) => ({ ...e, symbol: 'Fm7' })) } },
+      8,
+    )
+    const right = verifyHearing(truth, stems).sections[0].layers.chords
+    const wrong = verifyHearing(tonicThroughout, stems).sections[0].layers.chords
+    console.log(`same-key substitution: correct=${right.score.toFixed(3)} tonic-throughout=${wrong.score.toFixed(3)}`)
+    expect(right.score).toBeGreaterThan(0.85)
+    expect(wrong.score).toBeGreaterThanOrEqual(HEARING_THRESHOLDS.chords)
+    expect(wrong.pass).toBe(true)
   }, BASS_TEST_TIMEOUT)
 
   it('reports null for an omitted layer rather than a zero score', () => {
