@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { writeWavBuffer } from '../__fixtures__/make-wav.mjs'
 import { renderSection } from './resynth.mjs'
 import { gridFromJson } from './transcribe/quantize.mjs'
-import { verifyHearing } from './verify-hearing.mjs'
+import { scoreLayer, verifyHearing } from './verify-hearing.mjs'
 
 const SAMPLE_RATE = 44100
 const BPM = 120
@@ -173,5 +173,37 @@ describe('verifyHearing', () => {
     const result = verifyHearing(empty, stemsFromTranscription(transcriptionWith(BASE_LOOPS)))
     expect(result.sections[0].layers.kick).toBeNull()
     expect(Number.isFinite(result.overall)).toBe(true)
+  })
+})
+
+describe('scoreLayer', () => {
+  it('does not report a false perfect score when one side is genuinely silent', () => {
+    // beatChroma samples three fixed 4096-sample windows per beat (start,
+    // middle, end) and reads nothing in between. A signal placed entirely in
+    // one of those gaps is real by any raw-amplitude measure - `hasSignal`
+    // sees it, and so would a human ear - but invisible to beatChroma, which
+    // reports it as silent every beat, same as true silence would. When the
+    // *other* side really is silent, both sides land on an all-zero chroma
+    // vector for every beat, and the harmonic average's "no evidence either
+    // way" fallback (`counted > 0 ? ... : 1`) reports a perfect 1.0 - correct
+    // when both sides are actually silent, wrong when one side has real
+    // content the analysis simply didn't sample. Catching that distinction is
+    // the `hasSignal` guard's only non-redundant job: `cosine`/`correlate`
+    // already return 0 for ordinary one-sided silence *inside* a sampled
+    // window on their own, which is why the other seven tests here don't
+    // exercise this path.
+    //
+    // Window bounds for this grid (beatSeconds 0.5, CHROMA_FFT 4096): window 0
+    // covers samples [0, 4096), window 1 starts at 8977 - so [4200, 4900) is
+    // untouched by any window, confirmed directly with a probe script before
+    // this test was written.
+    const frames = Math.round(1 * SAMPLE_RATE) // 1 second, enough for two beats
+    const rendered = new Float32Array(frames)
+    for (let i = 4200; i < 4900; i++) {
+      rendered[i] = 0.8 * Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE)
+    }
+    const trueSilence = new Float32Array(frames)
+
+    expect(scoreLayer(rendered, trueSilence, 'bass', grid)).toBe(0)
   })
 })
