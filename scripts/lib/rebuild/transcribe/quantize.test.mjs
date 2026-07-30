@@ -229,4 +229,128 @@ describe('foldToLoop', () => {
     const merged = folded.events.find((e) => e.step === 0)
     expect(merged.driftSteps).toBeCloseTo(0.25, 6)
   })
+
+  describe('oneEventPerStep', () => {
+    // The real bug (section 19 of Bicep's "Glue"): a monophonic bass fold
+    // produced two events at step 0 - midi 24 and midi 36, an octave apart -
+    // because a 1-bar section is its own single repetition (reps=1), and
+    // KEEP_FRACTION's filter is a no-op whenever `reps > 1` is false. Every
+    // bucket survives unfiltered, pitch collisions included. This is the
+    // reproduction: it must fail against today's code, which has no
+    // `oneEventPerStep` option to ask for the fix.
+    it('reproduces the real bug: two pitches surviving at step 0 in a 1-bar section', () => {
+      const events = [
+        { ...ev(0, 24), length: 1, velocity: 0.8 },
+        { ...ev(0, 36), length: 5, velocity: 0.8 },
+      ]
+      const section1Bar = { startBar: 0, bars: 1 }
+
+      // Without asking for the constraint, today's (buggy) behaviour is
+      // preserved: both survive. This is not the fix under test - it pins
+      // down that the option is opt-in and does not silently change every
+      // caller.
+      const unconstrained = foldToLoop(events, section1Bar, grid, { candidates: [1] })
+      expect(unconstrained.events).toHaveLength(2)
+
+      // This is the actual reproduction: asking for at most one event per
+      // step must leave exactly one event at step 0. Against today's code
+      // (no `oneEventPerStep` support) this still comes back with 2.
+      const constrained = foldToLoop(events, section1Bar, grid, { candidates: [1], oneEventPerStep: true })
+      expect(constrained.events).toHaveLength(1)
+    })
+
+    it('picks the pitch more repetitions agreed on, even when it is the less confident one', () => {
+      // 3 one-bar repetitions. midi 24 appears in all three (count 3);
+      // midi 36 only appears in the first two (count 2). Both clear
+      // KEEP_FRACTION (3/3 and 2/3), so both survive as separate buckets
+      // without the constraint. 24 has broader support and must win even
+      // though its detector confidence is much lower.
+      const events = [
+        { ...ev(0, 24), confidence: 0.5 },
+        { ...ev(0, 36), confidence: 0.95 },
+        { ...ev(16, 24), confidence: 0.5 },
+        { ...ev(16, 36), confidence: 0.95 },
+        { ...ev(32, 24), confidence: 0.5 },
+      ]
+      const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid, { candidates: [1], oneEventPerStep: true })
+      expect(folded.events).toHaveLength(1)
+      expect(folded.events[0].midi).toBe(24)
+    })
+
+    it('falls back to confidence when support is tied', () => {
+      // 4 one-bar repetitions, both midi 24 and midi 36 present in every one
+      // (count 4 each - a tie). Confidence breaks it: 36 is heard far more
+      // clearly every time and must win.
+      const events = []
+      for (const bar of [0, 1, 2, 3]) {
+        events.push({ ...ev(bar * 16, 24), confidence: 0.4 })
+        events.push({ ...ev(bar * 16, 36), confidence: 0.9 })
+      }
+      const folded = foldToLoop(events, { startBar: 0, bars: 4 }, grid, { candidates: [1], oneEventPerStep: true })
+      expect(folded.events).toHaveLength(1)
+      expect(folded.events[0].midi).toBe(36)
+    })
+
+    it('resolves the same way for chord symbols, not just pitch', () => {
+      // The mechanism is generic - `scoreFold` buckets on symbol exactly like
+      // it buckets on midi - so `oneEventPerStep` resolves a symbol collision
+      // the same way it resolves a pitch one. (harmony.mjs does not actually
+      // pass this option: its own events are provably step-unique before
+      // folding ever runs, so it cannot hit this case - see its own comment.
+      // This test pins the shared mechanism in quantize.mjs regardless, for
+      // whatever future caller does need it.)
+      const events = [
+        { ...ev(0), symbol: 'C', confidence: 0.5 },
+        { ...ev(0), symbol: 'Dm', confidence: 0.9 },
+      ]
+      const folded = foldToLoop(events, { startBar: 0, bars: 1 }, grid, { candidates: [1], oneEventPerStep: true })
+      expect(folded.events).toHaveLength(1)
+      expect(folded.events[0].symbol).toBe('Dm')
+    })
+
+    it('never had two events per step to resolve on a pitchless layer', () => {
+      // Drums have no pitch: every event's midi and symbol are both null, so
+      // `scoreFold`'s bucket key (`position:midi:symbol`) can only ever
+      // differ by position. Two hits on the same role at the same step are
+      // structurally the same bucket, not a collision `oneEventPerStep` has
+      // anything to resolve - proving the drum layers do not need the option.
+      const events = [ev(0), ev(0), ev(16), ev(16), ev(32), ev(32)]
+      const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid, { candidates: [1] })
+      const steps = folded.events.map((e) => e.step)
+      expect(new Set(steps).size).toBe(steps.length)
+    })
+
+    it('ranks by distinct repetitions represented, not raw member count', () => {
+      // midi 24 has two detections, but both land in the *same* bar (a
+      // glitch briefly splitting one note into two) - one repetition, not
+      // two. midi 36 has one detection each in two *different* bars - two
+      // repetitions. Both raw member counts are 2, a tie by member count
+      // alone, but 36 has broader real support and must win outright, with
+      // no help from confidence (24 is given the higher confidence here
+      // specifically so a member-count-based tie-break would wrongly pick it).
+      const events = [
+        { ...ev(0, 24), confidence: 0.9 },
+        { ...ev(0, 24), confidence: 0.9 },
+        { ...ev(16, 36), confidence: 0.3 },
+        { ...ev(32, 36), confidence: 0.3 },
+      ]
+      const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid, { candidates: [1], oneEventPerStep: true })
+      expect(folded.events).toHaveLength(1)
+      expect(folded.events[0].midi).toBe(36)
+    })
+
+    it('resolves collisions even when no candidate length divides the section', () => {
+      // Pinning `candidates: [2]` against a 3-bar section makes `usable`
+      // empty (2 does not divide 3) - the one path that used to return raw,
+      // unresolved `local` events directly instead of routing through
+      // `scoreFold`. Two events at the same step must still collapse to one.
+      const events = [
+        { ...ev(0, 24), confidence: 0.9 },
+        { ...ev(0, 36), confidence: 0.5 },
+      ]
+      const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid, { candidates: [2], oneEventPerStep: true })
+      expect(folded.events).toHaveLength(1)
+      expect(folded.events[0].midi).toBe(24)
+    })
+  })
 })

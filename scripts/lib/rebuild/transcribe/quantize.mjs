@@ -139,12 +139,27 @@ export function gridFromJson(json) {
  * Agreement keys on pitch as well as position, because a two-bar bassline
  * whose second bar changes note has identical rhythm in both bars and would
  * otherwise fold to one bar and lose half the line.
+ *
+ * `oneEventPerStep` is for a layer that can only ever be doing one thing at a
+ * given instant - a monophonic pitch line, or a chord track that sounds one
+ * symbol at a time. Bucketing by position *and* pitch/symbol (above) is what
+ * makes two genuinely different repetitions visible in the first place, but
+ * nothing about that bucketing stops two of them from landing at the exact
+ * same step and both surviving `KEEP_FRACTION`'s filter - which is exactly
+ * what happened to a real bass section (two readings of the same instant, an
+ * octave apart, both confidently supported). Left default (`false`), a
+ * caller gets today's behaviour unchanged: this file does not know on its own
+ * which layers are single-voice, so it is each transcriber's job to say so.
  */
 export function foldToLoop(
   events,
   section,
   grid,
-  { candidates = LOOP_BAR_CANDIDATES, minAgreement = DEFAULT_MIN_AGREEMENT } = {},
+  {
+    candidates = LOOP_BAR_CANDIDATES,
+    minAgreement = DEFAULT_MIN_AGREEMENT,
+    oneEventPerStep = false,
+  } = {},
 ) {
   const perBar = stepsPerBar(grid)
   const fromStep = section.startBar * perBar
@@ -159,14 +174,18 @@ export function foldToLoop(
 
   // Only candidates that divide the section evenly are usable: a 4-bar loop
   // over a 6-bar section would silently drop the last two bars. 1 always
-  // divides evenly, so `usable` is never empty - the branch below that
-  // assumed it could be is dead code, kept because a caller could still pass
-  // a `candidates` list without 1 in it.
+  // divides evenly, so `usable` is never empty for any real caller - none
+  // passes a `candidates` list without 1 in it - but a caller that did would
+  // land here, so this goes through `scoreFold` (reps=1, nothing pruned)
+  // rather than returning raw `local` directly: `oneEventPerStep` has to
+  // reach every path that can produce output, not just the ones exercised
+  // today, or a future caller asking for the constraint on an unusual
+  // `candidates` list would silently not get it.
   const usable = candidates.filter((bars) => bars <= section.bars && section.bars % bars === 0)
   const result =
     usable.length === 0
-      ? { loopBars: section.bars, events: local, agreement: 1 }
-      : foldAgainstCandidates(local, usable, perBar, section.bars, minAgreement)
+      ? scoreFold(local, section.bars, perBar, section.bars, oneEventPerStep)
+      : foldAgainstCandidates(local, usable, perBar, section.bars, minAgreement, oneEventPerStep)
 
   // `local.length > 0` here - a section with no events returned above - so a
   // result with no kept events means every candidate's fold emptied out, not
@@ -186,27 +205,27 @@ export function foldToLoop(
   // the exact same step and pitch still merge instead of coming out as
   // duplicates.
   if (result.events.length === 0 && local.length / section.bars >= MIN_FALLBACK_DENSITY) {
-    return scoreFold(local, section.bars, perBar, section.bars)
+    return scoreFold(local, section.bars, perBar, section.bars, oneEventPerStep)
   }
   return result
 }
 
 /** Try each usable candidate length, shortest first, returning the first
  *  that clears `minAgreement` or the best-scoring one if none do. */
-function foldAgainstCandidates(local, usable, perBar, sectionBars, minAgreement) {
+function foldAgainstCandidates(local, usable, perBar, sectionBars, minAgreement, oneEventPerStep) {
   let best = null
   for (const bars of usable) {
-    const scored = scoreFold(local, bars, perBar, sectionBars)
+    const scored = scoreFold(local, bars, perBar, sectionBars, oneEventPerStep)
     if (!best || scored.agreement > best.agreement) best = scored
     if (scored.agreement >= minAgreement) return scored
   }
   // Nothing cleared the bar. The longest usable candidate loses the least.
   const longest = usable[usable.length - 1]
-  return scoreFold(local, longest, perBar, sectionBars)
+  return scoreFold(local, longest, perBar, sectionBars, oneEventPerStep)
 }
 
 /** Fold at one candidate length and measure how well the repetitions agree. */
-function scoreFold(local, loopBars, perBar, sectionBars) {
+function scoreFold(local, loopBars, perBar, sectionBars, oneEventPerStep = false) {
   const loopSteps = loopBars * perBar
   const reps = Math.floor(sectionBars / loopBars)
 
@@ -242,14 +261,73 @@ function scoreFold(local, loopBars, perBar, sectionBars) {
   }
   const agreement = reps > 1 && total > 0 ? weighted / (total * reps) : 0
 
-  const kept = []
+  let survivors = []
   for (const bucket of buckets.values()) {
     const count = Math.min(bucket.members.length, reps)
     if (count / reps <= KEEP_FRACTION && reps > 1) continue
-    kept.push(mergeBucket(bucket, count, reps))
+    survivors.push({ bucket, count })
   }
+  if (oneEventPerStep) survivors = resolveStepCollisions(survivors, loopSteps)
+
+  const kept = survivors.map(({ bucket, count }) => mergeBucket(bucket, count, reps))
   kept.sort((a, b) => a.step - b.step || (a.midi ?? 0) - (b.midi ?? 0))
   return { loopBars, events: kept, agreement }
+}
+
+/**
+ * At most one survivor per loop position, for a layer that can only be doing
+ * one thing at any instant. Two buckets at the same position after the
+ * `KEEP_FRACTION` filter are not two simultaneous voices - this file only
+ * ever sees one pitch or one symbol per bucket - they are two repetitions
+ * disagreeing about what was there, and exactly one of them gets to win.
+ *
+ * Ranked by how many *distinct* repetitions actually had this bucket, not by
+ * `count` (`KEEP_FRACTION`'s own measure, capped `members.length`): those are
+ * not the same number. `members.length` counts raw detections, and a single
+ * repetition can legitimately contribute more than one - a bass note briefly
+ * split into two segments by a glitch, both landing on the same step - which
+ * would let a bucket outscore a genuine rival that was actually heard in more
+ * *different* repetitions but only once each. Recovering the repetition a
+ * member came from is cheap here: `member.step` is still the absolute,
+ * pre-modulo step (bucketing above computes `position` without mutating it),
+ * so `step / loopSteps`, floored, is exactly that. Confidence only breaks a
+ * tie in that count, per the measured case this exists for: a real bass
+ * section where two pitches were each heard in every repetition (an
+ * octave-detection split that recurred every time) and only their mean onset
+ * confidence told them apart. A tie in both falls through to a fixed key
+ * order - not `Math.random()` - so the same input always resolves the same
+ * way.
+ */
+function resolveStepCollisions(survivors, loopSteps) {
+  const byPosition = new Map()
+  for (const survivor of survivors) {
+    const position = survivor.bucket.position
+    const incumbent = byPosition.get(position)
+    if (!incumbent || isStrongerSurvivor(survivor, incumbent, loopSteps)) byPosition.set(position, survivor)
+  }
+  return [...byPosition.values()]
+}
+
+function isStrongerSurvivor(a, b, loopSteps) {
+  const repsA = repetitionsRepresented(a.bucket, loopSteps)
+  const repsB = repetitionsRepresented(b.bucket, loopSteps)
+  if (repsA !== repsB) return repsA > repsB
+  const confidenceA = mean(a.bucket.members.map((m) => m.confidence))
+  const confidenceB = mean(b.bucket.members.map((m) => m.confidence))
+  if (confidenceA !== confidenceB) return confidenceA > confidenceB
+  return bucketIdentity(a.bucket) < bucketIdentity(b.bucket)
+}
+
+/** How many distinct repetitions of the loop actually contributed a member to
+ *  this bucket - not how many members it has, which double-counts a
+ *  repetition that produced more than one detection at the same position. */
+function repetitionsRepresented(bucket, loopSteps) {
+  return new Set(bucket.members.map((member) => Math.floor(member.step / loopSteps))).size
+}
+
+/** A stable, deterministic order for the last-resort tie-break above. */
+function bucketIdentity(bucket) {
+  return `${bucket.midi ?? ''}:${bucket.symbol ?? ''}`
 }
 
 /** One event from a bucket's members: median velocity and length, mean drift,

@@ -102,10 +102,16 @@ export function transcribeBass(wavBuf, grid, sections) {
     const meanClarity = inSection.reduce((sum, event) => sum + event.clarity, 0) / inSection.length
     if (meanClarity < MIN_CLARITY) return null
 
+    // Bass is single-voice: a monophonic F0 tracker cannot legitimately
+    // report two pitches sounding at once, so two events surviving at the
+    // same step is two repetitions disagreeing, not a chord. `oneEventPerStep`
+    // makes `foldToLoop` pick one deliberately instead of leaving both for
+    // the emitter to silently drop whichever loses the mini-notation slot.
     const folded = foldToLoop(
       inSection.map(({ clarity, ...event }) => event),
       section,
       grid,
+      { oneEventPerStep: true },
     )
     if (folded.events.length === 0) return null
 

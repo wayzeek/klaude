@@ -311,6 +311,30 @@ export function transcribeHarmony(wavBuf, grid, sections, { key = null } = {}) {
 
     const meanScore = events.reduce((sum, event) => sum + event.confidence, 0) / events.length
 
+    // Not passing `oneEventPerStep` here (see its doc comment in quantize.mjs,
+    // and bass.mjs/melody.mjs's own use of it): a section sounding two
+    // different chord symbols at the same folded step would be the same
+    // defect class, but it cannot happen from this function's own output.
+    // `events` above is one run per contiguous stretch of an unbroken chord
+    // path (built by the beat-by-beat loop closing above), so *before*
+    // folding, its steps are already strictly increasing - no two runs ever
+    // share a step. Folding can still fold two different original runs onto
+    // the same position (that is the whole mechanism `oneEventPerStep`
+    // exists for), but not into a two-survivor collision: unlike bass/lead,
+    // which re-detect pitch independently at every instant and can genuinely
+    // read two different things at the same point in two different
+    // repetitions, every symbol here comes from one Viterbi path computed
+    // once over the whole track, so a single repetition can only ever
+    // contribute to one bucket at a given position - which makes
+    // `KEEP_FRACTION`'s majority rule (`scoreFold`, `count/reps > 0.5`)
+    // sufficient on its own: two disjoint symbols can never each hold a
+    // strict majority of the same `reps`-sized partition. The one case that
+    // bypasses majority filtering entirely - `reps === 1`, the whole-section
+    // fallback that produced the real bass bug - needs two *original* events
+    // sharing one step to misfire the same way, which the strictly-
+    // increasing-steps guarantee above already rules out (modulo by
+    // `loopSteps` is the identity there, so folded and original steps
+    // coincide).
     const folded = foldToLoop(
       events.map(({ templateIndex, ...event }) => event),
       section,

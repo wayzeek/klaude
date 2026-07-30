@@ -130,10 +130,15 @@ export function detectMelody(wavBuf, grid, sections, { chords = [] } = {}) {
 
     if (isChordTopVoice(inSection, chords[sectionIndex], section, grid)) return null
 
+    // The lead is single-voice too - same reasoning as bass.mjs's own
+    // `oneEventPerStep`. A monophonic pitch tracker cannot honestly report
+    // two notes at once, so a step-collision here is two repetitions
+    // disagreeing, and one of them has to lose deliberately.
     const folded = foldToLoop(
       inSection.map(({ clarity, ...event }) => event),
       section,
       grid,
+      { oneEventPerStep: true },
     )
     if (folded.events.length < MIN_DISTINCT_PITCHES) return null
 
