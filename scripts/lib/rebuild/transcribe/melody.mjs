@@ -70,6 +70,7 @@
  */
 
 import { decodeWav } from '../../decoded-audio.mjs'
+import { clusterMelodyCandidates } from './affinity.mjs'
 import { bandNovelty, pickBandOnsets } from './bands.mjs'
 import { CHORD_TEMPLATES } from './chords.mjs'
 import { midiToHz, segmentNotes, trackF0 } from './f0.mjs'
@@ -631,6 +632,90 @@ export function transcribeMelodyFromNotes(
     // is passed: `selectMelodicLine` already guarantees no two chosen notes
     // overlap, but folding several loop repetitions back on top of each other
     // can still put two disagreeing readings on the same step.
+    const folded = foldToLoop(events, section, grid, { oneEventPerStep: true })
+    const foldedDistinct = new Set(folded.events.map((event) => event.midi)).size
+    if (foldedDistinct < minDistinctPitches) return null
+
+    return {
+      loopBars: folded.loopBars,
+      events: folded.events,
+      confidence: Math.max(folded.agreement, 0.25),
+    }
+  })
+}
+
+/**
+ * Lead transcription from Basic Pitch's notes by note-affinity clustering
+ * (`affinity.mjs`) instead of `selectMelodicLine` alone: `clusterMelodyCandidates`
+ * partitions a section's whole note set into "melody" and "everything else"
+ * *before* any per-note scheduling happens, then `selectMelodicLine` still
+ * runs on the result - not because clustering doesn't already separate the
+ * voices, but because it does not itself guarantee the cluster it returns is
+ * internally non-overlapping (two Basic Pitch fragments of the same true note,
+ * or two genuinely concurrent notes that both leaned toward the melody side of
+ * the graph, can both land in one cluster), and `selectMelodicLine`'s DP
+ * already *is* exactly that non-overlap reduction, on a much smaller and
+ * cleaner candidate pool than the whole section - see `melody.mjs`'s own doc
+ * comment on `selectMelodicLine` for why the DP's non-overlap constraint holds
+ * regardless of which weights or which upstream candidate set feeds it.
+ *
+ * Otherwise identical in shape to `transcribeMelodyFromNotes`: same
+ * `stepAt`/`stepDrift` quantisation, same `foldToLoop` call, same gates.
+ *
+ * Not called by `transcribeMelody`. Measured against the reference track's
+ * 462-event ground truth (`lead-improvement-report.md`): 8.3% exact-MIDI
+ * post-fold - below the `selectMelodicLine`-only baseline this builds on
+ * (12.6%) and further below the shipped `detectMelodySalience` path's 15.4%.
+ * (An earlier, buggy version of `affinity.mjs`'s Fiedler solver had measured
+ * 13.4% here, ahead of the DP baseline; independent review found the solver
+ * bug, and re-measuring after the fix produced the lower, corrected number
+ * above - see `fiedlerVector`'s own doc comment in affinity.mjs for what was
+ * wrong.) A Dannenberg-style per-bar classification (score each bar's
+ * candidate notes on density/pitch/IOI-regularity/velocity, Viterbi-smooth
+ * the choice across bars) was also tried on top of this module's clustering,
+ * before the solver fix, and measured worse (12.4%) - not re-measured after
+ * the fix, so read as a data point about the buggy solver, not a ceiling on
+ * the idea. On Bicep's "Glue" (no ground truth, so the independent
+ * fundamental-strength check instead): this path actually *beats* the
+ * shipped path both before and after the fix (80.9% then 79.1% vs. 71.2%/
+ * 71.6%) - a genuinely interesting, persistent result, and a reminder that a
+ * single ground-truth track is not enough to declare a winner, since the two
+ * tracks disagree. Kept, tested and exported for the same reason
+ * `transcribeMelodyFromNotes` is: the underlying idea and (now-correct)
+ * mechanics are sound on their own terms and a reasonable base for whoever
+ * picks this back up with a second ground-truth track, a re-tuned kernel, or
+ * a better cluster count than a fixed k=2.
+ */
+export function transcribeMelodyByAffinity(
+  notes,
+  grid,
+  sections,
+  { minNotes = NOTES_MIN_NOTES, minDistinctPitches = NOTES_MIN_DISTINCT_PITCHES, ...selectionOptions } = {},
+) {
+  const perStep = stepSeconds(grid)
+
+  return sections.map((section) => {
+    const range = sectionRange(grid, section)
+    const inSection = notes.filter((note) => note.startSec >= range.fromSec && note.startSec < range.toSec)
+    if (inSection.length < minNotes) return null
+
+    const candidates = clusterMelodyCandidates(inSection)
+    const chain = selectMelodicLine(candidates, selectionOptions)
+    if (chain.length < minDistinctPitches) return null
+
+    const events = chain.map((note) => ({
+      step: stepAt(grid, note.startSec),
+      length: Math.max(1, Math.round((note.endSec - note.startSec) / perStep)),
+      velocity: note.velocity,
+      confidence: note.velocity,
+      midi: note.midi,
+      symbol: null,
+      driftSteps: stepDrift(grid, note.startSec),
+    }))
+
+    const distinct = new Set(events.map((event) => event.midi)).size
+    if (distinct < minDistinctPitches) return null
+
     const folded = foldToLoop(events, section, grid, { oneEventPerStep: true })
     const foldedDistinct = new Set(folded.events.map((event) => event.midi)).size
     if (foldedDistinct < minDistinctPitches) return null

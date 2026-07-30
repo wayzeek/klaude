@@ -6,6 +6,7 @@ import {
   detectMelodySalience,
   selectMelodicLine,
   transcribeMelody,
+  transcribeMelodyByAffinity,
   transcribeMelodyFromNotes,
 } from './melody.mjs'
 import { gridFromJson } from './quantize.mjs'
@@ -427,5 +428,82 @@ describe('transcribeMelodyFromNotes', () => {
       { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
     ]
     expect(transcribeMelodyFromNotes(notes, grid, sections)).toHaveLength(2)
+  })
+})
+
+describe('transcribeMelodyByAffinity', () => {
+  it('recovers a simple non-overlapping melody', () => {
+    // With nothing else sounding, clustering has only one voice to find -
+    // `clusterMelodyCandidates` returns everything, same as `selectMelodicLine`
+    // alone would.
+    const stepSeconds = grid.beatSeconds / 4
+    const notes = [
+      bpNote(65, 0, 2 * stepSeconds, 0.7),
+      bpNote(68, 2 * stepSeconds, 4 * stepSeconds, 0.7),
+      bpNote(72, 4 * stepSeconds, 6 * stepSeconds, 0.7),
+      bpNote(68, 6 * stepSeconds, 8 * stepSeconds, 0.7),
+    ]
+    const loop = transcribeMelodyByAffinity(notes, grid, SECTION_4)[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.map((e) => e.midi)).toEqual([65, 68, 72, 68])
+    expect(loop.events.map((e) => e.step)).toEqual([0, 2, 4, 6])
+  })
+
+  it('recovers the smaller, monophonic hook cluster out of a denser pad bed', () => {
+    // `pickMelodyCluster` prefers the smaller cluster (lead-improvement-
+    // report.md) - so the fixture makes the pad the *larger* group (six short
+    // segments) and the hook the smaller one (four notes), the shape a real
+    // stem actually has: one lead voice against several accompaniment voices'
+    // worth of note detections.
+    const stepSeconds = grid.beatSeconds / 4
+    const pad = Array.from({ length: 6 }, (_, i) => bpNote(48, i * (16 / 6) * stepSeconds, (i + 1) * (16 / 6) * stepSeconds, 0.2))
+    const hook = [
+      bpNote(77, 0, 4 * stepSeconds, 0.8),
+      bpNote(80, 4 * stepSeconds, 8 * stepSeconds, 0.8),
+      bpNote(84, 8 * stepSeconds, 12 * stepSeconds, 0.8),
+      bpNote(80, 12 * stepSeconds, 16 * stepSeconds, 0.8),
+    ]
+    const loop = transcribeMelodyByAffinity([...pad, ...hook], grid, SECTION_4)[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.map((e) => e.midi)).toEqual([77, 80, 84, 80])
+  })
+
+  it('returns null for a section with too few notes', () => {
+    const notes = [bpNote(65, 0, 0.5), bpNote(68, 0.5, 1.0)]
+    expect(transcribeMelodyByAffinity(notes, grid, SECTION_4)[0]).toBeNull()
+  })
+
+  it('returns null (not throw) for an empty note list', () => {
+    expect(transcribeMelodyByAffinity([], grid, SECTION_4)).toEqual([null])
+  })
+
+  it('returns one entry per section', () => {
+    const stepSeconds = grid.beatSeconds / 4
+    const notes = [
+      bpNote(65, 0, 2 * stepSeconds),
+      bpNote(68, 2 * stepSeconds, 4 * stepSeconds),
+      bpNote(72, 4 * stepSeconds, 6 * stepSeconds),
+      bpNote(68, 6 * stepSeconds, 8 * stepSeconds),
+    ]
+    const sections = [
+      { index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null },
+      { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
+    ]
+    expect(transcribeMelodyByAffinity(notes, grid, sections)).toHaveLength(2)
+  })
+
+  it('is deterministic: the same input always returns the same loop', () => {
+    const stepSeconds = grid.beatSeconds / 4
+    const pad = Array.from({ length: 6 }, (_, i) => bpNote(48, i * (16 / 6) * stepSeconds, (i + 1) * (16 / 6) * stepSeconds, 0.2))
+    const hook = [
+      bpNote(77, 0, 4 * stepSeconds, 0.8),
+      bpNote(80, 4 * stepSeconds, 8 * stepSeconds, 0.8),
+      bpNote(84, 8 * stepSeconds, 12 * stepSeconds, 0.8),
+      bpNote(80, 12 * stepSeconds, 16 * stepSeconds, 0.8),
+    ]
+    const notes = [...pad, ...hook]
+    const a = transcribeMelodyByAffinity(notes, grid, SECTION_4)
+    const b = transcribeMelodyByAffinity(notes, grid, SECTION_4)
+    expect(a).toEqual(b)
   })
 })
