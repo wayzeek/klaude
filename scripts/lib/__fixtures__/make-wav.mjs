@@ -161,3 +161,36 @@ export function rhythmClip({
   for (let ch = 0; ch < channels; ch++) samples.push(mono)
   return writeWavBuffer({ sampleRate, channels, float32: false, samples })
 }
+
+/**
+ * A train of exponentially-decaying clicks, one per beat, with an exposed
+ * time constant.
+ *
+ * `rhythmClip`'s kick decay (30ms) is fixed, chosen for onset detection, not
+ * for measuring a decay's *length*. This exists for the other kind of test:
+ * `stem-profile.mjs`'s `decayFromEnvelope` needs a fixture with a known,
+ * chosen tail so its measured decay can be checked against an expected value
+ * rather than just "shorter than the loop." An envelope `exp(-t/tauSeconds)`
+ * crosses -30dB (10^(-30/20) ≈ 0.0316) at `t = tauSeconds * ln(10^1.5) ≈
+ * tauSeconds * 3.454` - the constant a caller compares its measurement
+ * against.
+ */
+export function clickTrainClip({ sampleRate = 44100, seconds, bpm, hz = 400, tauSeconds, channels = 2 }) {
+  const numFrames = Math.round(seconds * sampleRate)
+  const beatFrames = Math.round((60 / bpm) * sampleRate)
+  const mono = new Float32Array(numFrames)
+  // Six time constants is deep into -50dB territory - plenty to find the
+  // -30dB crossing without spending frames on an inaudible tail.
+  const tailFrames = Math.round(Math.max(tauSeconds * 6, 0.01) * sampleRate)
+
+  for (let beatStart = 0; beatStart < numFrames; beatStart += beatFrames) {
+    for (let i = 0; i < tailFrames && beatStart + i < numFrames; i++) {
+      const envelope = Math.exp(-i / (sampleRate * tauSeconds))
+      mono[beatStart + i] += 0.8 * envelope * Math.sin((2 * Math.PI * hz * i) / sampleRate)
+    }
+  }
+
+  const samples = []
+  for (let ch = 0; ch < channels; ch++) samples.push(mono)
+  return writeWavBuffer({ sampleRate, channels, float32: false, samples })
+}

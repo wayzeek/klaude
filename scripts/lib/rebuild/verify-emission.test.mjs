@@ -286,4 +286,61 @@ describe('verifyEmission', () => {
     const messages = result.defects.map((d) => d.message).join(' ')
     expect(messages).toMatch(/wrong gain/)
   })
+
+  describe('with a sound-match gain trim', () => {
+    const t = transcription({
+      ...emptyLoops(),
+      bass: { loopBars: 1, events: [note(0, 41, 8), note(8, 44, 8)], confidence: 0.8 },
+    })
+    const soundMatch = { bass: { chain: '.lpf(900)', gainTrim: 0.6, notes: ['test'] } }
+
+    it('passes when the check is told about the same trim the emitter used', async () => {
+      const code = emitTrack(t, { soundMatch })
+      const result = await verifyEmission(code, t, { soundMatch })
+      expect(result.ok).toBe(true)
+      expect(result.defects).toEqual([])
+    })
+
+    it('reports a wrong-gain defect when the check does not know about the trim', async () => {
+      // The emitter wrote gain values scaled by 0.6; without the same
+      // soundMatch, verifyEmission's expected gain is still the untrimmed
+      // base - proving the two sides have to agree on the trim, not just on
+      // SOUNDS[layer].gain.
+      const code = emitTrack(t, { soundMatch })
+      const result = await verifyEmission(code, t)
+      expect(result.ok).toBe(false)
+      expect(result.sections[0].layers.bass.wrongGain).toBeGreaterThan(0)
+    })
+  })
+
+  describe('sound-match pan on a sustained-note layer', () => {
+    // A single held note spanning most of a bar - the shape a real lead/chord
+    // line takes, and exactly the shape that exposed the hazard below.
+    const t = transcription({ ...emptyLoops(), lead: { loopBars: 1, events: [note(0, 65, 14)], confidence: 0.8 } })
+
+    // Regression, against the real Strudel engine rather than a probe script:
+    // `.pan("0.35 0.65")` does not pan a note whose span crosses the pan
+    // pattern's own half-cycle boundary, it *duplicates* the hap - one full-
+    // length copy per pan value. `sound-match.mjs` only ever proposes this
+    // pan for kick/snare/hats (always exactly one step long, so they can
+    // never straddle that boundary - see its own module comment); this test
+    // pins the underlying Strudel behaviour that reasoning depends on, so a
+    // future Strudel upgrade that changed it would fail loudly here rather
+    // than silently reappearing as a duplicated lead note in a real track.
+    it('duplicates a sustained note instead of panning it - confirming why sound-match never proposes this for lead', async () => {
+      const soundMatch = { lead: { chain: '.pan("0.35 0.65")', gainTrim: 1, notes: ['forced for this test'] } }
+      const code = emitTrack(t, { soundMatch })
+      const result = await verifyEmission(code, t, { soundMatch })
+      expect(result.ok).toBe(false)
+      expect(result.sections[0].layers.lead.extra).toBeGreaterThan(0)
+    })
+
+    it('stays clean on the same sustained note when sound-match leaves lead pan alone, as it always does', async () => {
+      const soundMatch = { lead: { chain: '', gainTrim: 1, notes: ['pan left alone - see module comment'] } }
+      const code = emitTrack(t, { soundMatch })
+      const result = await verifyEmission(code, t, { soundMatch })
+      expect(result.ok).toBe(true)
+      expect(result.defects).toEqual([])
+    })
+  })
 })

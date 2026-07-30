@@ -122,9 +122,9 @@ export function barToMini(slots) {
  * transcriber never varies velocity (bass.mjs hardcodes 0.8; nothing in this
  * pipeline emits higher) must still land at or under its own base gain.
  */
-function loopToPatterns(loop, layer, perBar, { flats }) {
+function loopToPatterns(loop, layer, perBar, { flats, soundMatch }) {
   const total = loop.loopBars * perBar
-  const base = SOUNDS[layer].gain
+  const base = effectiveGain(layer, soundMatch)
   const slots = new Array(total).fill(null)
   for (const event of loop.events) {
     if (event.step < 0 || event.step >= total) continue
@@ -180,6 +180,22 @@ export function barToGains(slots, base) {
 
 const round2 = (value) => Math.round(value * 100) / 100
 
+/**
+ * `SOUNDS[layer].gain`, trimmed by `sound-match.mjs`'s `gainTrim` when one is
+ * present. The trim only ever multiplies by a factor in (0, 1] - see
+ * `sound-match.mjs`'s own comment on why gain only ever moves down - so this
+ * can never raise a layer's ceiling, only lower it for this one render.
+ * Every caller that needs "the loudest this layer gets" (`loopToPatterns`,
+ * `sameLoops`) goes through this rather than `SOUNDS[layer].gain` directly,
+ * so a track emitted with a trim and the reuse check that decides whether two
+ * sections match agree on what "the same gain" means.
+ */
+export function effectiveGain(layer, soundMatch) {
+  const trim = soundMatch?.[layer]?.gainTrim
+  const base = SOUNDS[layer].gain
+  return Number.isFinite(trim) ? round2(base * trim) : base
+}
+
 function tokenFor(event, layer, { flats }) {
   const sound = SOUNDS[layer]
   if (sound.kind === 'sample') return sound.token
@@ -214,21 +230,52 @@ function wrapTokens(str, { width = 90, indent = '  ' } = {}) {
   return lines.join(`\n${indent}`)
 }
 
-/** The wrapper around a layer's mini-notation. Template literals rather than
- *  quoted strings throughout, so a wrapped (multi-line) pattern is still
- *  valid JS - and so a short, unwrapped one costs nothing by using the same
- *  quoting. */
-function layerExpression(loop, layer, perBar, { flats, anchor }) {
+/**
+ * The wrapper around a layer's mini-notation. Template literals rather than
+ * quoted strings throughout, so a wrapped (multi-line) pattern is still
+ * valid JS - and so a short, unwrapped one costs nothing by using the same
+ * quoting.
+ *
+ * `soundMatch[layer].chain`, if present, is spliced in right after the
+ * dry sound's own suffix and before `.gain()`/`.slow()` - the same slot
+ * `SOUNDS[layer].suffix` already occupies, so a `.room()`/`.lpf()`/`.pan()`
+ * `sound-match.mjs` derived reads exactly like a hand-written effect chain
+ * would.
+ */
+function layerExpression(loop, layer, perBar, { flats, anchor, soundMatch }) {
   const sound = SOUNDS[layer]
-  const { mini, gains, slow } = loopToPatterns(loop, layer, perBar, { flats })
+  const { mini, gains, slow } = loopToPatterns(loop, layer, perBar, { flats, soundMatch })
   const wrappedMini = wrapTokens(mini)
   const wrappedGains = wrapTokens(gains)
+  const extra = soundMatch?.[layer]?.chain ?? ''
   const tail = `.gain(\`${wrappedGains}\`)${slow > 1 ? `.slow(${slow})` : ''}`
-  if (sound.kind === 'sample') return `s(\`${wrappedMini}\`)${sound.suffix}${tail}`
+  if (sound.kind === 'sample') return `s(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}`
   if (sound.kind === 'chord') {
-    return `chord(\`${wrappedMini}\`).anchor("${anchor}").mode("above")${sound.suffix}${tail}`
+    return `chord(\`${wrappedMini}\`).anchor("${anchor}").mode("above")${sound.suffix}${extra}${tail}`
   }
-  return `note(\`${wrappedMini}\`)${sound.suffix}${tail}`
+  return `note(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}`
+}
+
+/**
+ * One comment block, once per track, naming the measurement behind every
+ * layer's sound-match decision - including the layers where nothing was
+ * applied, since "left alone, and why" is as much a finding as an effect.
+ * Repeating the same reasoning above every section that uses a layer (there
+ * may be many) would bury it; one block a human reads once does the job the
+ * brief actually asks for ("a human will read it").
+ */
+function soundMatchHeader(soundMatch) {
+  if (!soundMatch) return []
+  const lines = ['// --- sound match: measured against the source stems ---']
+  for (const layer of LAYERS) {
+    const notes = soundMatch[layer]?.notes?.filter(Boolean) ?? []
+    if (!notes.length) continue
+    lines.push(`// ${layer}:`)
+    for (const note of notes) lines.push(`//   - ${note}`)
+  }
+  lines.push('// ---------------------------------------------------------')
+  lines.push('')
+  return lines
 }
 
 /**
@@ -238,7 +285,7 @@ function layerExpression(loop, layer, perBar, { flats, anchor }) {
  * definitions; see `reuseTarget` for why that, and not `sameAs`, is the
  * condition.
  */
-export function emitTrack(transcription, { title = null, source = null } = {}) {
+export function emitTrack(transcription, { title = null, source = null, soundMatch = null } = {}) {
   const grid = gridFromJson(transcription.grid)
   const perBar = stepsPerBar(grid)
   const keyName = transcription.key?.name ?? ''
@@ -251,6 +298,7 @@ export function emitTrack(transcription, { title = null, source = null } = {}) {
   lines.push(`//  ${(title ?? 'rebuild').toUpperCase()}  ·  ${keyName} · ${Math.round(grid.bpm)} BPM`)
   if (source) lines.push(`//  rebuilt from ${source}`)
   lines.push('// ═══════════════════════════════════════════════════════════')
+  lines.push(...soundMatchHeader(soundMatch))
   lines.push("samples('github:tidalcycles/dirt-samples')")
   // Strudel's cpm is cycles per minute and moltek writes one cycle per bar, so
   // the divisor is the detected meter, not a hardcoded 4. At 120 BPM in 3/4,
@@ -262,7 +310,7 @@ export function emitTrack(transcription, { title = null, source = null } = {}) {
   // borrows when both it and its original were heard confidently.
   const definitionOf = new Map()
   for (const section of transcription.sections) {
-    const target = reuseTarget(section, transcription.sections) ?? section.index
+    const target = reuseTarget(section, transcription.sections, soundMatch) ?? section.index
     definitionOf.set(section.index, target)
   }
 
@@ -274,7 +322,7 @@ export function emitTrack(transcription, { title = null, source = null } = {}) {
     lines.push(`// section ${section.index} - bar ${section.startBar}, ${section.bars} bars, ${section.label}`)
     for (const layer of present) {
       const name = `s${section.index}_${layer}`
-      lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor })}`)
+      lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor, soundMatch })}`)
       emitted.add(name)
     }
     lines.push('')
@@ -314,15 +362,15 @@ export function emitTrack(transcription, { title = null, source = null } = {}) {
  * matches at 0.9464 and 0.9352 against a 0.9 threshold, so this is not a
  * hypothetical.
  */
-function reuseTarget(section, sections) {
+function reuseTarget(section, sections, soundMatch) {
   if (section.sameAs === null || section.sameAs === undefined) return null
   const original = sections.find((candidate) => candidate.index === section.sameAs)
   if (!original || original.bars !== section.bars) return null
-  return sameLoops(original.loops, section.loops) ? section.sameAs : null
+  return sameLoops(original.loops, section.loops, soundMatch) ? section.sameAs : null
 }
 
 /** Do two sections carry identical material on every layer? */
-function sameLoops(a, b) {
+function sameLoops(a, b, soundMatch) {
   for (const layer of LAYERS) {
     const left = a?.[layer] ?? null
     const right = b?.[layer] ?? null
@@ -330,7 +378,7 @@ function sameLoops(a, b) {
     if (left === null || right === null) return false
     if (left.loopBars !== right.loopBars) return false
     if (left.events.length !== right.events.length) return false
-    const base = SOUNDS[layer].gain
+    const base = effectiveGain(layer, soundMatch)
     for (let i = 0; i < left.events.length; i++) {
       const x = left.events[i]
       const y = right.events[i]

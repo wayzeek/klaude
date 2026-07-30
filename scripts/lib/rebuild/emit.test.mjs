@@ -285,4 +285,63 @@ describe('emitTrack', () => {
     expect(code).toContain('arrange(')
     expect(code).toContain('sec({})')
   })
+
+  describe('with a soundMatch', () => {
+    const sections = () => [
+      { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
+    ]
+
+    it('emits no extra chain, gain trim or header without a soundMatch', () => {
+      const code = emitTrack(transcription(sections()))
+      expect(code).not.toContain('sound match')
+      expect(code).not.toContain('.room(')
+      expect(code).not.toContain('.pan(')
+    })
+
+    it('splices the chain in after the dry suffix and before .gain()', () => {
+      const soundMatch = { kick: { chain: '.room(0.3)', gainTrim: 1, notes: ['room test'] } }
+      const code = emitTrack(transcription(sections()), { soundMatch })
+      expect(code).toMatch(/\.bank\("RolandTR909"\)\.room\(0\.3\)\.gain\(/)
+    })
+
+    it('prints one header block naming the measurement behind each layer', () => {
+      const soundMatch = {
+        kick: { chain: '', gainTrim: 1, notes: ['kick note one', 'kick note two'] },
+        snare: { chain: '', gainTrim: 1, notes: ['snare note'] },
+      }
+      const code = emitTrack(transcription(sections()), { soundMatch })
+      expect(code).toContain('sound match: measured against the source stems')
+      expect(code).toContain('kick note one')
+      expect(code).toContain('kick note two')
+      expect(code).toContain('snare note')
+      // The header appears once, not once per section definition.
+      expect((code.match(/kick note one/g) ?? []).length).toBe(1)
+    })
+
+    it('skips a layer in the header when it carries no notes', () => {
+      const soundMatch = { kick: { chain: '', gainTrim: 1, notes: [] } }
+      const code = emitTrack(transcription(sections()), { soundMatch })
+      expect(code).not.toContain('// kick:')
+    })
+
+    it('scales the emitted gain ceiling by gainTrim, never past it', () => {
+      const soundMatch = { kick: { chain: '', gainTrim: 0.6, notes: ['trim test'] } }
+      const code = emitTrack(transcription(sections()), { soundMatch })
+      const match = /\.gain\(`([^`]+)`\)/.exec(code)
+      const values = match[1].split(' ').map((token) => Number(token.split('@')[0]))
+      // A velocity-1 hit lands at the trimmed ceiling (0.5 * 0.6 = 0.3), not
+      // the untrimmed SOUNDS.kick.gain (0.5).
+      expect(Math.max(...values)).toBeCloseTo(SOUNDS.kick.gain * 0.6, 5)
+      expect(Math.max(...values)).toBeLessThan(SOUNDS.kick.gain)
+    })
+
+    it('keeps identical output under gainTrim: 1 (the default)', () => {
+      const withDefault = emitTrack(transcription(sections()), {
+        soundMatch: { kick: { chain: '', gainTrim: 1, notes: ['n'] } },
+      })
+      const withoutSoundMatch = emitTrack(transcription(sections()))
+      const gainsOf = (code) => /\.gain\(`([^`]+)`\)/.exec(code)[1]
+      expect(gainsOf(withDefault)).toBe(gainsOf(withoutSoundMatch))
+    })
+  })
 })

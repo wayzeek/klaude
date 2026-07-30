@@ -22,6 +22,8 @@ import { contentHash, ensureRunDir, stagingDir } from './lib/rebuild/paths.mjs'
 import { profileReference } from './lib/rebuild/profile.mjs'
 import { findSections } from './lib/rebuild/sections.mjs'
 import { separate, stemPaths } from './lib/rebuild/separate.mjs'
+import { deriveTrackEffects } from './lib/rebuild/sound-match.mjs'
+import { profileStems } from './lib/rebuild/stem-profile.mjs'
 import { MissingToolError } from './lib/rebuild/tools.mjs'
 import { transcribeWithBasicPitch } from './lib/rebuild/transcribe/basic-pitch.mjs'
 import { transcribeBass } from './lib/rebuild/transcribe/bass.mjs'
@@ -178,6 +180,17 @@ async function main() {
   const bassBuf = await fs.promises.readFile(paths.bass)
   const otherBuf = await fs.promises.readFile(paths.other)
 
+  // What the record's own drums/bass/harmony actually sound like - band
+  // balance, stereo width, decay - measured against each stem rather than
+  // the finished mix, so it isolates exactly what moltek's dry palette is
+  // missing. `deriveTrackEffects` turns that into per-layer `.room`/`.lpf`/
+  // `.pan`/gain-trim parameters for `emitTrack` below; see sound-match.mjs
+  // for the measurement behind each.
+  say('measuring the stems against the dry palette')
+  const stemProfile = profileStems({ drums: drumBuf, bass: bassBuf, other: otherBuf })
+  await fs.promises.writeFile(path.join(dirs.root, 'stem-profile.json'), `${JSON.stringify(stemProfile, null, 2)}\n`)
+  const soundMatch = deriveTrackEffects(stemProfile)
+
   const drums = transcribeDrums(drumBuf, grid, sections)
   const bass = transcribeBass(bassBuf, grid, sections)
   const lead = transcribeMelody(otherBuf, grid, sections)
@@ -259,12 +272,12 @@ async function main() {
   }
 
   say('emitting')
-  const code = emitTrack(transcription, { title: source.title, source: input })
+  const code = emitTrack(transcription, { title: source.title, source: input, soundMatch })
   const trackPath = outPath ?? path.join(dirs.root, 'track.js')
   await fs.promises.writeFile(trackPath, `${code}\n`)
 
   say('checking what we wrote')
-  const emission = await verifyEmission(code, transcription)
+  const emission = await verifyEmission(code, transcription, { soundMatch })
   await fs.promises.writeFile(path.join(dirs.root, 'emission.json'), `${JSON.stringify(emission, null, 2)}\n`)
   if (emission.ok) {
     say('  clean')
@@ -279,6 +292,8 @@ async function main() {
   result.hearing = hearing
   result.emission = emission
   result.track = trackPath
+  result.stemProfile = stemProfile
+  result.soundMatch = soundMatch
 
   // The emission check is deterministic repair that should converge in one
   // pass, so a defect means the emitter is broken, not that the record was

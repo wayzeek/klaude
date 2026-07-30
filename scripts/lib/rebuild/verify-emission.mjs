@@ -10,7 +10,7 @@
  */
 
 import { cachedStrudel, loadStrudel, midiOf, withCapturedLogs } from '../strudel-node.mjs'
-import { SOUNDS } from './emit.mjs'
+import { SOUNDS, effectiveGain } from './emit.mjs'
 import { CHORD_TEMPLATES } from './transcribe/chords.mjs'
 import { LAYERS, gridFromJson, stepsPerBar } from './transcribe/quantize.mjs'
 
@@ -222,8 +222,15 @@ export function compareEvents(expected, actual, { stepsPerBar = 16 } = {}) {
  * restore-before-settle race. This is the same split `checkFile` in
  * `scripts/check.mjs` uses: `evaluateTrack` unwrapped, the synchronous query
  * pass wrapped, the two warning lists merged afterwards.
+ *
+ * `soundMatch`, if the code was emitted with one (see `emit.mjs`'s
+ * `emitTrack`), has to be passed through here too: a layer's `gainTrim`
+ * changes what gain the emitter actually writes, and this function's
+ * `expected` gain has to be computed the same way `emit.mjs` computed the
+ * one it wrote, or a genuinely correct trimmed track fails this check purely
+ * because the two sides disagree on what "the layer's base gain" means.
  */
-export async function verifyEmission(code, transcription) {
+export async function verifyEmission(code, transcription, { soundMatch = null } = {}) {
   const grid = gridFromJson(transcription.grid)
   const perBar = stepsPerBar(grid)
   const defects = []
@@ -329,10 +336,12 @@ export async function verifyEmission(code, transcription) {
         // steps measured from the section's start. `length` is clamped the
         // same way `loopToPatterns` clamps it (to the loop's own end, not the
         // section's), and `gain` is computed the same way it computes gain
-        // (`round2(base * velocity)`), so both sides of the comparison below
-        // describe what the emitter actually promises to write, not just what
-        // the transcription recorded.
-        const base = SOUNDS[layer].gain
+        // (`round2(base * velocity)`, `base` from `effectiveGain` so a
+        // sound-match gain trim is accounted for identically on both sides),
+        // so both sides of the comparison below describe what the emitter
+        // actually promises to write, not just what the transcription
+        // recorded.
+        const base = effectiveGain(layer, soundMatch)
         const loopSteps = loop.loopBars * perBar
         const expected = []
         const repetitions = Math.ceil(section.bars / loop.loopBars)
