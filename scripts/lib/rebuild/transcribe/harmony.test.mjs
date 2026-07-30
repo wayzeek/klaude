@@ -3,7 +3,7 @@ import { decodeWav } from '../../decoded-audio.mjs'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
 import { midiToHz } from './f0.mjs'
 import { gridFromJson } from './quantize.mjs'
-import { beatChroma, transcribeHarmony } from './harmony.mjs'
+import { beatChroma, transcribeHarmony, transcribeHarmonyFromNotes } from './harmony.mjs'
 
 const SAMPLE_RATE = 44100
 const BPM = 120
@@ -220,5 +220,103 @@ describe('transcribeHarmony', () => {
       { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
     ]
     expect(transcribeHarmony(chordClip([FM, CSHARP, FM, CSHARP]), grid, sections, { key: 'F minor' })).toHaveLength(2)
+  })
+})
+
+/** Notes covering one chord's pitch classes for a span of bars, as Basic
+ *  Pitch would report a block chord: one note per voice, all starting and
+ *  ending together. */
+function chordNotes(midiList, fromBar, bars, velocity = 0.6) {
+  return midiList.map((midi) => ({
+    midi,
+    startSec: grid.barAt(fromBar),
+    endSec: grid.barAt(fromBar + bars),
+    velocity,
+  }))
+}
+
+describe('transcribeHarmonyFromNotes', () => {
+  it('recovers a held minor triad', () => {
+    const loop = transcribeHarmonyFromNotes(chordNotes(FM, 0, 4), grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.every((e) => e.symbol === 'Fm')).toBe(true)
+  })
+
+  it('recovers a two-chord progression as a two-bar loop', () => {
+    const notes = [...chordNotes(FM, 0, 2), ...chordNotes(CSHARP, 2, 2)]
+    const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.map((e) => e.symbol)).toEqual(['Fm', 'C#'])
+  })
+
+  it('carries confidence and a symbol on every event, and no MIDI', () => {
+    const notes = [...chordNotes(FM, 0, 2), ...chordNotes(CSHARP, 2, 2)]
+    const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
+    for (const event of loop.events) {
+      expect(event.confidence).toBeGreaterThan(0)
+      expect(event.confidence).toBeLessThanOrEqual(1)
+      expect(typeof event.symbol).toBe('string')
+      expect(event.midi).toBeNull()
+    }
+  })
+
+  it('returns null for a section with nothing sounding at all', () => {
+    expect(transcribeHarmonyFromNotes([], grid, SECTION_4, { key: 'F minor' })[0]).toBeNull()
+  })
+
+  it('treats a genuinely silent stretch as unconfident rather than carrying the last chord through it', () => {
+    // A chord for one bar, then three bars of nothing.
+    const notes = chordNotes(FM, 0, 1)
+    const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
+    // One confident bar alone is below MIN_CONFIDENT_BARS (2), so this
+    // must not emit a loop that pretends the whole section is one chord.
+    expect(loop).toBeNull()
+  })
+
+  it('does not misread a single sustained note as a full chord it is not part of', () => {
+    // Only the root of Fm sounding, nothing else - a real chord needs more
+    // than one pitch class to be worth naming with confidence, but this
+    // function does not special-case that; it simply reports whichever
+    // template best fits a single pitch class, which is not the same
+    // guarantee `MARGIN_THRESHOLD` gives the FFT path. Documented, not
+    // silently assumed: this asserts what actually happens rather than
+    // leaving it unverified.
+    const notes = chordNotes([53], 0, 4) // F alone, four bars
+    const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop).not.toBeNull()
+  })
+
+  it('reports outOfKey for a chord outside the given key', () => {
+    // D major (D F# A) shares no triad tone with F minor's own scale (F G Ab
+    // Bb C Db Eb) - unlike C# major, the bVI of F minor and diatonic to it.
+    const D_MAJOR = [62, 66, 69]
+    const notes = chordNotes(D_MAJOR, 0, 4)
+    const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop.outOfKey).toBeGreaterThan(0)
+  })
+
+  it('returns one entry per section', () => {
+    const sections = [
+      { index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null },
+      { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
+    ]
+    const notes = [...chordNotes(FM, 0, 2), ...chordNotes(CSHARP, 2, 2)]
+    expect(transcribeHarmonyFromNotes(notes, grid, sections, { key: 'F minor' })).toHaveLength(2)
+  })
+
+  it('recovers a chord in a section that does not start at bar 0', () => {
+    // Regression: an earlier version computed each event's `step` relative
+    // to the section's own start beat instead of the grid's absolute
+    // downbeat. `foldToLoop` expects the latter (it subtracts
+    // `section.startBar * stepsPerBar` itself), so the bug silently
+    // localised twice and every event fell outside the section's own step
+    // range - `foldToLoop` filtered them all out and this returned `null`
+    // for every section that did not happen to start at bar 0, where the
+    // bug was invisible because subtracting zero twice is still zero.
+    const sections = [{ index: 0, startBar: 4, bars: 4, label: 'mid', sameAs: null }]
+    const notes = chordNotes(FM, 4, 4)
+    const loop = transcribeHarmonyFromNotes(notes, grid, sections, { key: 'F minor' })[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.every((e) => e.symbol === 'Fm')).toBe(true)
   })
 })

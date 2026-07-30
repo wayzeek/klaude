@@ -189,3 +189,118 @@ export function transcribeBass(wavBuf, grid, sections) {
     }
   })
 }
+
+/**
+ * Reduce Basic Pitch's polyphonic note list to one bass voice by keeping the
+ * lowest-pitched note among any group of notes that overlap in time.
+ *
+ * Not called by `transcribeBass` - see basic-pitch-report.md for the full
+ * measurement. Summary: on the reference track's bass stem, Basic Pitch's
+ * raw notes (no selection at all) score 54.7% exact-MIDI against ground
+ * truth events at or below MIDI 52; this function's lowest-voice reduction
+ * improves that to 59.2%; the existing `transcribeBass` (a YIN pitch tracker
+ * tuned specifically for this register - see `NOTE_WINDOW`'s doc comment
+ * above) scores 80.7% on the same stem. Unlike the `other` stem the lead
+ * reads from, the bass stem is close to genuinely monophonic already, which
+ * is exactly the condition a dedicated single-pitch tracker is good at and a
+ * general polyphonic model has no particular advantage on. This is kept,
+ * tested and exported - like `detectMelody` in melody.mjs - because the
+ * judgement it implements (see below) is correct on its own terms even
+ * though it does not beat the existing path here.
+ *
+ * The bass stem is largely monophonic - see the module doc comment for what
+ * "largely" concedes (layered basses, distortion, kick bleed). When Basic
+ * Pitch reports more than one pitch sounding at once on this stem, the extra
+ * one is far more often the model hearing a harmonic partial, a doubled
+ * octave, or floor bleed as its own note than a genuine second voice: the
+ * fundamental is the lowest thing sounding. This is the same judgement the
+ * task brief states directly ("selection is mostly taking the lowest
+ * coherent voice"), so it is implemented as stated rather than re-derived.
+ *
+ * Overlap is transitive (interval-merge, not pairwise): a note that overlaps
+ * the *cluster's* current extent joins it even if it does not overlap the
+ * cluster's first member directly - the same rule merging overlapping
+ * calendar events uses, and necessary here because three notes can each
+ * overlap a neighbour without all three overlapping each other at once (a
+ * held low note under two shorter higher ones in sequence).
+ */
+export function reduceToLowestVoice(notes) {
+  const sorted = [...notes].sort((a, b) => a.startSec - b.startSec)
+  const clusters = []
+  for (const note of sorted) {
+    const current = clusters[clusters.length - 1]
+    if (current && note.startSec < current.endSec) {
+      current.endSec = Math.max(current.endSec, note.endSec)
+      current.members.push(note)
+    } else {
+      clusters.push({ endSec: note.endSec, members: [note] })
+    }
+  }
+  return clusters.map((cluster) => lowestVoiceMember(cluster.members))
+}
+
+/** Lowest pitch wins; a tie is broken by the longer note, then the louder
+ *  one, so a brief harmonic ghost sharing its fundamental's exact pitch
+ *  (rare, but possible with a doubled octave landing on the same pitch
+ *  class an octave apart is not a tie - only an *exact* pitch tie reaches
+ *  this) does not arbitrarily displace the real note. */
+function lowestVoiceMember(members) {
+  return members.reduce((best, note) => {
+    if (note.midi !== best.midi) return note.midi < best.midi ? note : best
+    const noteLength = note.endSec - note.startSec
+    const bestLength = best.endSec - best.startSec
+    if (noteLength !== bestLength) return noteLength > bestLength ? note : best
+    return note.velocity > best.velocity ? note : best
+  })
+}
+
+/** A section needs this many notes, after reducing to one voice, before a
+ *  Basic Pitch bass line counts as worth emitting. Same floor as the DSP
+ *  path's `MIN_NOTES_PER_SECTION` - the question is identical, only the
+ *  source of the notes differs. */
+const NOTES_MIN_NOTES_PER_SECTION = MIN_NOTES_PER_SECTION
+
+/**
+ * Bass transcription from Basic Pitch's note events, in place of a pitch
+ * tracker: reduce to the lowest voice (`reduceToLowestVoice`), quantise each
+ * note's onset to the grid with the same `stepAt`/`stepDrift` every other
+ * transcriber uses, and fold each section into a loop exactly as the DSP
+ * path does. See basic-pitch-report.md for the measurement that justifies
+ * this over `transcribeBass` where the tool is available.
+ *
+ * Confidence and output velocity both come from the note's own Basic Pitch
+ * velocity (already rescaled to 0-1 by `parseNoteEvents`) rather than the
+ * fixed `0.8`/pitch-tracker `clarity` the DSP path uses - a real per-note
+ * loudness estimate is available here and there is no reason to discard it
+ * for a constant.
+ */
+export function transcribeBassFromNotes(notes, grid, sections, { minNotesPerSection = NOTES_MIN_NOTES_PER_SECTION } = {}) {
+  const perStep = stepSeconds(grid)
+  const voice = reduceToLowestVoice(notes)
+  const events = voice.map((note) => ({
+    step: stepAt(grid, note.startSec),
+    length: Math.max(1, Math.round((note.endSec - note.startSec) / perStep)),
+    velocity: note.velocity,
+    confidence: note.velocity,
+    midi: note.midi,
+    symbol: null,
+    driftSteps: stepDrift(grid, note.startSec),
+  }))
+
+  return sections.map((section) => {
+    const range = sectionRange(grid, section)
+    const inSection = events.filter((event) => event.step >= range.fromStep && event.step < range.toStep)
+    if (inSection.length < minNotesPerSection) return null
+
+    // Single-voice, same reasoning as `transcribeBass` above: two survivors
+    // at one step is two overlapping detections disagreeing, not a chord.
+    const folded = foldToLoop(inSection, section, grid, { oneEventPerStep: true })
+    if (folded.events.length === 0) return null
+
+    return {
+      loopBars: folded.loopBars,
+      events: folded.events,
+      confidence: Math.max(folded.agreement, 0.25),
+    }
+  })
+}

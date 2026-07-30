@@ -356,3 +356,136 @@ export function transcribeHarmony(wavBuf, grid, sections, { key = null } = {}) {
     }
   })
 }
+
+/** A note's own velocity, floored, so a very quiet note still registers as
+ *  *some* evidence of its pitch class rather than vanishing from the beat's
+ *  vector entirely - a quiet chord tone is still a chord tone. */
+const MIN_NOTE_WEIGHT = 0.05
+
+/**
+ * One twelve-value pitch-class vector per beat, built from which of Basic
+ * Pitch's notes are actually sounding through the beat's centre - the
+ * discrete-note analogue of `beatChroma`'s FFT-derived vector above, for use
+ * where Basic Pitch's output is available. A beat with nothing sounding
+ * produces an all-zero vector, which `scoreChroma` already handles (returns
+ * an all-zero score row); unlike FFT-derived chroma, an all-zero reading here
+ * is unambiguous evidence of silence rather than a noise floor, so no
+ * separate confidence threshold is needed to tell the two apart (see
+ * `confidentBeat` below).
+ */
+function beatNotePitchClasses(notes, grid, fromBeat, toBeat) {
+  const vectors = []
+  for (let beat = fromBeat; beat < toBeat; beat++) {
+    const center = (grid.beatAt(beat) + grid.beatAt(beat + 1)) / 2
+    const vector = new Float32Array(12)
+    for (const note of notes) {
+      if (note.startSec <= center && note.endSec > center) {
+        vector[((note.midi % 12) + 12) % 12] += Math.max(note.velocity, MIN_NOTE_WEIGHT)
+      }
+    }
+    vectors.push(vector)
+  }
+  return vectors
+}
+
+/**
+ * Harmony transcription from Basic Pitch's note events, in place of
+ * beat-synchronous chroma: match the pitch-class set actually sounding at
+ * each beat (`beatNotePitchClasses`) against `CHORD_TEMPLATES`, the same
+ * Viterbi smoothing (`smoothChordPath`) `transcribeHarmony` uses, and the
+ * same run-collapsing and `foldToLoop` call. Scoped per section rather than
+ * over the whole track (unlike `transcribeHarmony`'s single whole-track
+ * Viterbi pass): Basic Pitch's notes carry no stem-wide state a per-section
+ * pass would lose, and scoping this way needs no separate "how many total
+ * beats does the stem have" bookkeeping.
+ *
+ * Confidence gating is simpler than `transcribeHarmony`'s `MARGIN_THRESHOLD`
+ * needs: that constant's whole justification (see its doc comment) is that
+ * FFT-derived chroma is never exactly zero even over silence, so a raw-score
+ * floor cannot separate real harmony from noise and a *margin* has to carry
+ * the weight instead. A beat built from discrete notes with literally
+ * nothing sounding *is* exactly zero - unambiguous silence, not noise - so a
+ * beat only counts as confident here when something was actually detected,
+ * and `MIN_CONFIDENT_BARS` (bars, not raw beats) is reused as-is: the
+ * question it answers ("is one confident bar enough to trust, or could that
+ * be a fluke") does not change with where the pitch-class vector came from.
+ */
+export function transcribeHarmonyFromNotes(notes, grid, sections, { key = null } = {}) {
+  const beatsPerBar = grid.beatsPerBar
+  const inKey = diatonicTemplates(key)
+
+  return sections.map((section) => {
+    const fromBeat = section.startBar * beatsPerBar
+    const toBeat = (section.startBar + section.bars) * beatsPerBar
+    const vectors = beatNotePitchClasses(notes, grid, fromBeat, toBeat)
+    const rows = vectors.map((vector) => scoreChroma(vector))
+    const path = smoothChordPath(rows, { selfBonus: SELF_BONUS })
+    const confidentBeat = (i) => vectors[i].some((value) => value > 0)
+
+    const events = []
+    let runStart = null
+    let confidentBeats = 0
+    const closeRun = (end) => {
+      if (runStart === null) return
+      const template = CHORD_TEMPLATES[path[runStart]]
+      let score = 0
+      for (let b = runStart; b < end; b++) score += rows[b][path[runStart]]
+      score /= end - runStart
+      events.push({
+        // `runStart`/`end` are local beat indices within this section's own
+        // `[fromBeat, toBeat)` window (index 0 is the section's first beat),
+        // but `foldToLoop` expects an absolute step counted from the grid's
+        // downbeat - the same convention `stepAt` produces and every other
+        // transcriber's events already use. `section.startBar * beatsPerBar`
+        // converts the section's own start back into that same absolute
+        // frame before scaling to steps.
+        step: (section.startBar * beatsPerBar + runStart) * STEPS_PER_BEAT,
+        length: (end - runStart) * STEPS_PER_BEAT,
+        velocity: 0.7,
+        confidence: Math.max(0, Math.min(1, score)),
+        midi: null,
+        symbol: template.symbol,
+        driftSteps: 0,
+        templateIndex: template.index,
+      })
+      runStart = null
+    }
+    for (let i = 0; i < path.length; i++) {
+      if (!confidentBeat(i)) {
+        closeRun(i)
+        continue
+      }
+      confidentBeats++
+      if (runStart !== null && path[i] !== path[runStart]) closeRun(i)
+      if (runStart === null) runStart = i
+    }
+    closeRun(path.length)
+    if (!events.length || confidentBeats < MIN_CONFIDENT_BARS * beatsPerBar) return null
+
+    const meanScore = events.reduce((sum, event) => sum + event.confidence, 0) / events.length
+
+    // See `transcribeHarmony`'s own comment on why `oneEventPerStep` is not
+    // needed here: `events` is one run per contiguous stretch of an unbroken
+    // Viterbi path, built once per section, so its steps are already
+    // strictly increasing before folding - the same guarantee holds
+    // regardless of whether the path came from FFT chroma or note-derived
+    // pitch classes.
+    const folded = foldToLoop(
+      events.map(({ templateIndex, ...event }) => event),
+      section,
+      grid,
+    )
+    if (folded.events.length === 0) return null
+
+    const outOfKey = inKey.size
+      ? events.filter((event) => !inKey.has(event.templateIndex)).length / events.length
+      : 0
+
+    return {
+      loopBars: folded.loopBars,
+      events: folded.events,
+      confidence: meanScore * Math.max(folded.agreement, 0.25),
+      outOfKey,
+    }
+  })
+}

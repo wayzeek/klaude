@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
 import { midiToHz } from './f0.mjs'
-import { detectMelody, detectMelodySalience, transcribeMelody } from './melody.mjs'
+import {
+  detectMelody,
+  detectMelodySalience,
+  selectMelodicLine,
+  transcribeMelody,
+  transcribeMelodyFromNotes,
+} from './melody.mjs'
 import { gridFromJson } from './quantize.mjs'
 
 const SAMPLE_RATE = 44100
@@ -279,5 +285,147 @@ describe('transcribeMelody', () => {
     ]
     const result = transcribeMelody(leadClip(fourBars), grid, sections)
     expect(result).toHaveLength(2)
+  })
+})
+
+/** A Basic Pitch-shaped note: seconds and 0-1 velocity, not steps. */
+const bpNote = (midi, startSec, endSec, velocity = 0.6) => ({ midi, startSec, endSec, velocity })
+
+describe('selectMelodicLine', () => {
+  it('returns an empty array for no notes', () => {
+    expect(selectMelodicLine([])).toEqual([])
+  })
+
+  it('keeps every note of a single, non-overlapping monophonic line untouched', () => {
+    const notes = [bpNote(65, 0, 0.5), bpNote(68, 0.5, 1.0), bpNote(72, 1.0, 1.5)]
+    expect(selectMelodicLine(notes).map((n) => n.midi)).toEqual([65, 68, 72])
+  })
+
+  it('never returns two notes that overlap in time', () => {
+    // A dense, heavily overlapping polyphonic mess: any valid selection must
+    // still be monophonic.
+    const notes = [
+      bpNote(60, 0, 1.0, 0.3),
+      bpNote(64, 0, 1.0, 0.3),
+      bpNote(67, 0, 1.0, 0.3),
+      bpNote(72, 0.2, 0.8, 0.9),
+      bpNote(75, 0.4, 1.2, 0.5),
+    ]
+    const chain = selectMelodicLine(notes)
+    for (let i = 0; i < chain.length; i++) {
+      for (let j = i + 1; j < chain.length; j++) {
+        const overlaps = chain[i].startSec < chain[j].endSec && chain[i].endSec > chain[j].startSec
+        expect(overlaps).toBe(false)
+      }
+    }
+  })
+
+  it('prefers the louder of two candidates that would otherwise tie', () => {
+    // Two notes, same register context, competing for the same time slot -
+    // salience (velocity) is the only thing that tells them apart.
+    const quiet = bpNote(60, 0, 1.0, 0.2)
+    const loud = bpNote(64, 0, 1.0, 0.9)
+    const chain = selectMelodicLine([quiet, loud], { registerWeight: 0 })
+    expect(chain.map((n) => n.midi)).toEqual([64])
+  })
+
+  it('prefers the note sitting higher above the concurrently sounding pad', () => {
+    // A held three-note pad, one candidate inside the pad's own register and
+    // one well above it, all sounding through the same interval - equal
+    // velocity throughout, so with salience switched off only register can
+    // decide which of `low`/`high` gets the (single, since everything here
+    // overlaps everything else) slot.
+    const pad = [bpNote(48, 0, 1.0, 0.5), bpNote(52, 0, 1.0, 0.5), bpNote(55, 0, 1.0, 0.5)]
+    const low = bpNote(53, 0, 1.0, 0.5) // inside the pad's own register
+    const high = bpNote(79, 0, 1.0, 0.5) // well above the pad
+    const chain = selectMelodicLine([...pad, low, high], { salienceWeight: 0 })
+    expect(chain.map((n) => n.midi)).toEqual([79])
+  })
+
+  it('caps register credit so a quiet high overtone cannot beat a loud true note', () => {
+    const loud = bpNote(65, 0, 1.0, 0.9)
+    const quietOvertone = bpNote(89, 0, 1.0, 0.1) // two octaves higher, much quieter
+    const chain = selectMelodicLine([loud, quietOvertone])
+    expect(chain.map((n) => n.midi)).toEqual([65])
+  })
+
+  it('is deterministic: the same input always returns the same chain', () => {
+    const notes = [
+      bpNote(60, 0, 0.5, 0.4),
+      bpNote(64, 0.1, 0.6, 0.6),
+      bpNote(67, 0.5, 1.0, 0.5),
+      bpNote(72, 0.6, 1.1, 0.55),
+    ]
+    const a = selectMelodicLine(notes).map((n) => n.midi)
+    const b = selectMelodicLine(notes).map((n) => n.midi)
+    expect(a).toEqual(b)
+  })
+})
+
+describe('transcribeMelodyFromNotes', () => {
+  it('recovers a simple non-overlapping melody', () => {
+    const stepSeconds = grid.beatSeconds / 4
+    const notes = [
+      bpNote(65, 0, 2 * stepSeconds, 0.7),
+      bpNote(68, 2 * stepSeconds, 4 * stepSeconds, 0.7),
+      bpNote(72, 4 * stepSeconds, 6 * stepSeconds, 0.7),
+      bpNote(68, 6 * stepSeconds, 8 * stepSeconds, 0.7),
+    ]
+    const loop = transcribeMelodyFromNotes(notes, grid, SECTION_4)[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.map((e) => e.midi)).toEqual([65, 68, 72, 68])
+    expect(loop.events.map((e) => e.step)).toEqual([0, 2, 4, 6])
+  })
+
+  it('returns null for a section with too few notes', () => {
+    const notes = [bpNote(65, 0, 0.5), bpNote(68, 0.5, 1.0)]
+    expect(transcribeMelodyFromNotes(notes, grid, SECTION_4)[0]).toBeNull()
+  })
+
+  it('returns null for a section with enough notes but too few distinct pitches', () => {
+    const stepSeconds = grid.beatSeconds / 4
+    const notes = Array.from({ length: 6 }, (_, i) => bpNote(65, i * 2 * stepSeconds, (i * 2 + 1) * stepSeconds, 0.7))
+    expect(transcribeMelodyFromNotes(notes, grid, SECTION_4)[0]).toBeNull()
+  })
+
+  it('returns null (not throw) for an empty note list', () => {
+    expect(transcribeMelodyFromNotes([], grid, SECTION_4)).toEqual([null])
+  })
+
+  it('picks the higher, louder voice out of a pad-plus-hook mixture', () => {
+    const stepSeconds = grid.beatSeconds / 4
+    // A held low three-note pad across the whole bar, plus a four-note hook
+    // moving above it - `transcribeMelodyFromNotes` should recover the hook,
+    // not the pad's own top note.
+    const barSeconds = 16 * stepSeconds
+    const pad = [
+      bpNote(48, 0, barSeconds, 0.3),
+      bpNote(52, 0, barSeconds, 0.3),
+      bpNote(55, 0, barSeconds, 0.3),
+    ]
+    const hook = [
+      bpNote(77, 0, 4 * stepSeconds, 0.8),
+      bpNote(80, 4 * stepSeconds, 8 * stepSeconds, 0.8),
+      bpNote(84, 8 * stepSeconds, 12 * stepSeconds, 0.8),
+      bpNote(80, 12 * stepSeconds, 16 * stepSeconds, 0.8),
+    ]
+    const loop = transcribeMelodyFromNotes([...pad, ...hook], grid, SECTION_4)[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.map((e) => e.midi)).toEqual([77, 80, 84, 80])
+  })
+
+  it('returns one entry per section', () => {
+    const stepSeconds = grid.beatSeconds / 4
+    const notes = [
+      bpNote(65, 0, 2 * stepSeconds),
+      bpNote(68, 2 * stepSeconds, 4 * stepSeconds),
+      bpNote(72, 4 * stepSeconds, 6 * stepSeconds),
+      bpNote(68, 6 * stepSeconds, 8 * stepSeconds),
+    ]
+    const sections = [
+      { index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null },
+      { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
+    ]
+    expect(transcribeMelodyFromNotes(notes, grid, sections)).toHaveLength(2)
   })
 })

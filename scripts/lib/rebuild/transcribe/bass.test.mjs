@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
 import { midiToHz } from './f0.mjs'
 import { gridFromJson } from './quantize.mjs'
-import { transcribeBass } from './bass.mjs'
+import { reduceToLowestVoice, transcribeBass, transcribeBassFromNotes } from './bass.mjs'
 
 const SAMPLE_RATE = 44100
 const BPM = 120
@@ -171,5 +171,120 @@ describe('transcribeBass', () => {
       { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
     ]
     expect(transcribeBass(bassClip(repeat(bar, 4)), grid, sections)).toHaveLength(2)
+  })
+})
+
+/** A Basic Pitch-shaped note: seconds and 0-1 velocity, not steps. */
+const bpNote = (midi, startSec, endSec, velocity = 0.7) => ({ midi, startSec, endSec, velocity })
+
+describe('reduceToLowestVoice', () => {
+  it('keeps a single note untouched', () => {
+    const notes = [bpNote(41, 0, 0.5)]
+    expect(reduceToLowestVoice(notes)).toEqual(notes)
+  })
+
+  it('keeps two notes that do not overlap in time', () => {
+    const notes = [bpNote(41, 0, 0.5), bpNote(48, 0.5, 1.0)]
+    expect(reduceToLowestVoice(notes)).toEqual(notes)
+  })
+
+  it('picks the lower of two notes that overlap, discarding the higher one', () => {
+    const low = bpNote(29, 0, 1.0)
+    const high = bpNote(41, 0.1, 0.6) // a harmonic partial sounding over the same span
+    expect(reduceToLowestVoice([high, low])).toEqual([low])
+  })
+
+  it('merges transitively: three notes chained by overlap collapse to the lowest', () => {
+    // A (0-0.6), B (0.4-1.0), C (0.9-1.4): A and C never overlap directly,
+    // but both overlap B, so all three form one cluster.
+    const a = bpNote(48, 0, 0.6)
+    const b = bpNote(29, 0.4, 1.0) // the real fundamental, lowest of the three
+    const c = bpNote(53, 0.9, 1.4)
+    const reduced = reduceToLowestVoice([a, b, c])
+    expect(reduced).toHaveLength(1)
+    expect(reduced[0]).toEqual(b)
+  })
+
+  it('breaks an exact-pitch tie by the longer note, then the louder one', () => {
+    const short = bpNote(41, 0, 0.2, 0.9)
+    const long = bpNote(41, 0.05, 0.8, 0.3)
+    expect(reduceToLowestVoice([short, long])).toEqual([long])
+
+    const quiet = bpNote(41, 0, 0.5, 0.2) // length 0.5
+    const loud = bpNote(41, 0.05, 0.55, 0.9) // same length (0.5), genuinely overlapping
+    expect(reduceToLowestVoice([quiet, loud])).toEqual([loud])
+  })
+
+  it('returns clusters in time order', () => {
+    const notes = [bpNote(41, 1.0, 1.5), bpNote(36, 0, 0.5)]
+    const reduced = reduceToLowestVoice(notes)
+    expect(reduced.map((n) => n.midi)).toEqual([36, 41])
+  })
+})
+
+describe('transcribeBassFromNotes', () => {
+  it('recovers a simple bassline from Basic Pitch notes', () => {
+    const notes = [
+      bpNote(41, 0, 0.5),
+      bpNote(44, 0.5, 1.0),
+      bpNote(41, 1.0, 1.5),
+      bpNote(48, 1.5, 2.0),
+    ]
+    const loop = transcribeBassFromNotes(notes, grid, SECTION_4)[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.map((e) => e.midi)).toEqual([41, 44, 41, 48])
+  })
+
+  it('discards the higher of two overlapping notes, same as reduceToLowestVoice', () => {
+    const notes = [
+      bpNote(29, 0, 0.5), // real fundamental
+      bpNote(41, 0, 0.4), // a harmonic partial, overlapping
+      bpNote(31, 0.5, 1.0),
+      bpNote(33, 1.0, 1.5),
+    ]
+    const loop = transcribeBassFromNotes(notes, grid, SECTION_4)[0]
+    expect(loop.events.map((e) => e.midi)).toEqual([29, 31, 33])
+  })
+
+  it('returns null for a section with too few notes', () => {
+    const notes = [bpNote(41, 0, 0.5)]
+    expect(transcribeBassFromNotes(notes, grid, SECTION_4)[0]).toBeNull()
+  })
+
+  it('returns null (not throw) for an empty note list', () => {
+    expect(transcribeBassFromNotes([], grid, SECTION_4)).toEqual([null])
+  })
+
+  it('carries the note real velocity through to both velocity and confidence', () => {
+    const notes = [bpNote(41, 0, 0.5, 0.42), bpNote(44, 0.5, 1.0, 0.9), bpNote(41, 1.0, 1.5, 0.5)]
+    const loop = transcribeBassFromNotes(notes, grid, SECTION_4)[0]
+    const first = loop.events.find((e) => e.step === 0)
+    expect(first.velocity).toBeCloseTo(0.42, 5)
+  })
+
+  it('quantises onsets to the grid the same way the DSP path does', () => {
+    // A note starting slightly late (half a step) should round to the nearest step.
+    const stepSeconds = grid.beatSeconds / 4
+    const notes = [
+      bpNote(41, 0, stepSeconds),
+      bpNote(44, 4 * stepSeconds + stepSeconds * 0.1, 5 * stepSeconds),
+      bpNote(41, 8 * stepSeconds, 9 * stepSeconds),
+    ]
+    const loop = transcribeBassFromNotes(notes, grid, SECTION_4)[0]
+    expect(loop.events.map((e) => e.step)).toEqual([0, 4, 8])
+  })
+
+  it('only one event survives per step even when two loop repetitions disagree', () => {
+    // Two-bar loop where bar 2 repeats bar 0/1's rhythm but a stray extra
+    // overlapping note appears once - the lowest voice wins deterministically.
+    const stepSeconds = grid.beatSeconds / 4
+    const bar = (offsetBars) => [
+      bpNote(41, (offsetBars * 16 + 0) * stepSeconds, (offsetBars * 16 + 4) * stepSeconds),
+      bpNote(44, (offsetBars * 16 + 4) * stepSeconds, (offsetBars * 16 + 8) * stepSeconds),
+    ]
+    const notes = [...bar(0), ...bar(1), ...bar(2), ...bar(3)]
+    const loop = transcribeBassFromNotes(notes, grid, SECTION_4)[0]
+    const steps = loop.events.map((e) => e.step)
+    expect(new Set(steps).size).toBe(steps.length) // no duplicate steps
   })
 })

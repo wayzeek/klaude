@@ -32,6 +32,22 @@ export const TOOLS = Object.freeze({
     probeArgs: ['--help'],
     install: 'pipx install demucs   (needs Python 3.9+; first run downloads a ~2 GB model)',
   },
+  basicPitch: {
+    bin: 'basic-pitch',
+    probeArgs: ['--help'],
+    // Genuinely fiddly to install - expect to hit all four of these, not just
+    // one. Recorded here because getting past them once did not make them
+    // any less surprising the second time.
+    install: [
+      'pipx install --backend pip --python python3.12 basic-pitch',
+      'pipx inject basic-pitch onnxruntime "setuptools<81" "scipy<1.13"',
+      '',
+      '  Python 3.12, specifically: 3.13+ cannot build the pinned numpy<1.24.',
+      '  setuptools<81: newer setuptools dropped pkg_resources, which resampy still imports.',
+      '  scipy<1.13: scipy.signal.gaussian was removed and Basic Pitch 0.3.0 still calls it.',
+      '  onnxruntime: no inference backend ships by default, so prediction has nothing to run on.',
+    ].join('\n  '),
+  },
 })
 
 /**

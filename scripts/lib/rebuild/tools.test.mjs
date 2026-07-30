@@ -39,7 +39,7 @@ const grumpyHelpSpec = { bin: 'node', probeArgs: [grumpyHelpScript] }
 
 describe('TOOLS', () => {
   it('describes every binary the pipeline shells out to', () => {
-    expect(Object.keys(TOOLS).sort()).toEqual(['demucs', 'ffmpeg', 'ytdlp'])
+    expect(Object.keys(TOOLS).sort()).toEqual(['basicPitch', 'demucs', 'ffmpeg', 'ytdlp'])
     for (const [name, spec] of Object.entries(TOOLS)) {
       expect(spec.bin, `${name}.bin`).toBeTruthy()
       expect(spec.install, `${name}.install`).toMatch(/\S/)

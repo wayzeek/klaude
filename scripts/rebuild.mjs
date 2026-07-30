@@ -23,9 +23,10 @@ import { profileReference } from './lib/rebuild/profile.mjs'
 import { findSections } from './lib/rebuild/sections.mjs'
 import { separate, stemPaths } from './lib/rebuild/separate.mjs'
 import { MissingToolError } from './lib/rebuild/tools.mjs'
+import { transcribeWithBasicPitch } from './lib/rebuild/transcribe/basic-pitch.mjs'
 import { transcribeBass } from './lib/rebuild/transcribe/bass.mjs'
 import { transcribeDrums } from './lib/rebuild/transcribe/drums.mjs'
-import { transcribeHarmony } from './lib/rebuild/transcribe/harmony.mjs'
+import { transcribeHarmony, transcribeHarmonyFromNotes } from './lib/rebuild/transcribe/harmony.mjs'
 import { transcribeMelody } from './lib/rebuild/transcribe/melody.mjs'
 import { LAYERS } from './lib/rebuild/transcribe/quantize.mjs'
 import { verifyEmission } from './lib/rebuild/verify-emission.mjs'
@@ -179,8 +180,21 @@ async function main() {
 
   const drums = transcribeDrums(drumBuf, grid, sections)
   const bass = transcribeBass(bassBuf, grid, sections)
-  const chords = transcribeHarmony(otherBuf, grid, sections, { key: key.name })
   const lead = transcribeMelody(otherBuf, grid, sections)
+
+  // Basic Pitch is optional (see tools.mjs) and, where installed, only
+  // changes the chords layer today. Measured against the reference track's
+  // 462-event ground truth (basic-pitch-report.md): a note-derived chord
+  // read (`transcribeHarmonyFromNotes`) beats the FFT-chroma path
+  // (`transcribeHarmony`) on both accuracy and coverage, but the same
+  // exercise for bass and lead did not clear their existing DSP paths, so
+  // those two are untouched here regardless of whether the tool is present.
+  // A missing binary, or Basic Pitch producing nothing usable, both fall
+  // back to `transcribeHarmony` exactly as if the tool had never been tried.
+  const otherNotes = await transcribeWithBasicPitch(paths.other, path.join(dirs.root, 'basic-pitch', 'other'))
+  const chords = otherNotes
+    ? transcribeHarmonyFromNotes(otherNotes, grid, sections, { key: key.name })
+    : transcribeHarmony(otherBuf, grid, sections, { key: key.name })
 
   const transcription = {
     grid: result.grid,

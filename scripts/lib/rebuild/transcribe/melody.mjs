@@ -72,7 +72,7 @@
 import { decodeWav } from '../../decoded-audio.mjs'
 import { bandNovelty, pickBandOnsets } from './bands.mjs'
 import { CHORD_TEMPLATES } from './chords.mjs'
-import { segmentNotes, trackF0 } from './f0.mjs'
+import { midiToHz, segmentNotes, trackF0 } from './f0.mjs'
 import { foldToLoop, sectionRange, stepAt, stepDrift, stepSeconds } from './quantize.mjs'
 import { computeMelodyContour, SALIENCE_RANGE } from './salience.mjs'
 
@@ -322,4 +322,323 @@ function isChordTopVoice(notes, chordLoop, section, grid) {
     if (tones.has(((note.midi % 12) + 12) % 12)) inside++
   }
   return judged > 0 && inside / judged >= MAX_CHORD_TONE_FRACTION
+}
+
+/**
+ * Selecting the lead from Basic Pitch's polyphonic notes.
+ *
+ * Not called by `transcribeMelody` - see basic-pitch-report.md for the full
+ * measurement. Summary: Basic Pitch's raw notes on the reference track's
+ * `other` stem are far more accurate than anything the DSP path can produce
+ * (an oracle that could perfectly pick out only the notes exactly matching
+ * ground truth reaches 81% exact-MIDI on what's available), but every
+ * selection strategy tried here - the one shipped below, several weight
+ * combinations swept against it, a fragment-merge preprocessing pass, and a
+ * "snap the DSP path's own onsets to the nearest concurrent Basic Pitch
+ * note" hybrid - tops out around 12-14% exact-MIDI on the same 462-event
+ * ground truth, below `detectMelodySalience`'s already-shipped 15.4%. The
+ * underlying notes are good; this module's selection of *which* of several
+ * simultaneously correct notes is the melody is not yet good enough to
+ * replace the existing path, and this file says so rather than shipping a
+ * regression. It is kept, tested and exported - like `detectMelody` above -
+ * because the ideas it embodies (see the two bullets below) are correct on
+ * their own terms and it is a reasonable base for future work.
+ *
+ * `detectMelody`/`detectMelodySalience`'s two ideas carry over conceptually,
+ * not as ported code:
+ *
+ * - Salience: `salience.mjs`'s `selectMelody` scores a contour partly by
+ *   loudness relative to the *other candidates in the same call*
+ *   (`normSalience`, min-max normalised against them - "loudest among the
+ *   current candidates" is the only meaningful reading available for a
+ *   number with no fixed scale). `salienceScore` below applies the same
+ *   min-max normalisation to Basic Pitch's own per-note velocity, over the
+ *   same section's candidate notes. Measured directly on the reference
+ *   track's `other` stem: notes that land on a real, correctly-pitched sax
+ *   onset average velocity 0.570; notes that match no true onset at all
+ *   average 0.493 - a real, if modest, gap.
+ * - Register: `selectMelody` also scores a contour by how far above what
+ *   else is sounding *at that instant* it sits (a lead over a bass stab an
+ *   octave down should not need to also out-register a soprano pad), not
+ *   against a fixed frequency band. `registerScore` below is the same idea
+ *   applied to a discrete note instead of a per-frame salience peak: it
+ *   measures against the velocity-weighted mean pitch of every note whose
+ *   interval overlaps this one, credits only being above it, and caps the
+ *   credit at one octave for the same reason `salience.mjs` does - otherwise
+ *   a real instrument's own quiet high overtone can outscore the true note
+ *   it belongs to just by sitting further above the room.
+ * A third idea was tried and measured rather than assumed, and does *not*
+ * pull its weight: `continuityScore` rewards two *chosen* notes sitting close in
+ * pitch, the discrete-note analogue of `trackContours`' pitch-tolerance
+ * linking, on the theory that it would let the DP lock onto one smoothly-
+ * moving voice instead of hopping between competing instruments note to
+ * note. Swept against the real ground truth with salience/register held at
+ * the values below: `continuityWeight: 0` (off) scores 12.6% exact-MIDI;
+ * 0.5 scores 10.1%; higher values were worse still in every combination
+ * tried. Unlike per-frame salience contours - continuous, so a genuinely
+ * wandering pad can still look locally smooth - Basic Pitch's discrete notes
+ * make "close in pitch to the last pick" cheap for a chain to satisfy by
+ * drifting through whichever nearby wrong notes happen to be adjacent, which
+ * is apparently worse than just re-deciding independently at every note.
+ * `continuityWeight` defaults to `0`; the machinery (and the option) stays,
+ * because the DP's non-overlap constraint is still exactly the monophonic
+ * reduction this selection needs regardless of whether the bonus is used.
+ *
+ * What else does not carry over, measured and rejected rather than assumed:
+ *
+ * - `selectMelody`'s third signal, contour *length* (more frames of
+ *   consistent evidence is stronger evidence), does not translate to a
+ *   per-note *duration* reward the way it first looks like it should. A
+ *   contour's frame count measures how long a single coherent voice
+ *   persisted - the analogue here is how many notes the DP's chain ends up
+ *   containing, which the DP already prefers automatically (every
+ *   non-negative-weight note added to a compatible chain can only raise its
+ *   total score, so a longer coherent chain always beats stopping short of
+ *   it - no explicit reward needed). A note's own individual sustain is a
+ *   different quantity, and on this reference track it points the *wrong*
+ *   way: notes landing on a real sax onset average 0.330s; notes matching no
+ *   true onset average 0.458s - the held pad and keys chords are longer than
+ *   the moving melodic line sitting over them, not shorter. An early version
+ *   of this module rewarded individual note duration directly and it pulled
+ *   selection toward long sustained chord tones (observed directly: a test
+ *   section's chosen chain topped out at MIDI 96, an octave-plus above the
+ *   section's real 65-92 sax range). `durationWeight` defaults to `0` and
+ *   exists only for a future track where sustain does point the right way;
+ *   nothing in this pipeline currently sets it.
+ * - `detectMelody`'s `isChordTopVoice` rejection. The module doc comment
+ *   above explains why porting it to the salience pipeline was measured and
+ *   reverted twice - a real, well-selected melody in tonal music leans on
+ *   chord tones just as heavily as a fake one built from nothing but the
+ *   chord progression's own top note, so no threshold on that fraction
+ *   separates them. Nothing here re-introduces it.
+ */
+
+/** How many octaves above the local "room" a note can be credited for
+ *  sitting - same cap and same reasoning as `salience.mjs`'s
+ *  `registerCapOctaves`: one octave already separates a lead from its own
+ *  accompaniment in every case measured, and letting an outlier climb higher
+ *  rewards "furthest above the room" over "actually the melody." */
+const REGISTER_CAP_OCTAVES = 1
+
+/** Seconds a note's own duration is compared against when turning length
+ *  into a 0..1 score (`duration / (duration + DURATION_NORM_SECONDS)`), for
+ *  the optional, off-by-default `durationWeight` - see the section doc
+ *  comment above for why this is not part of the shipped weighting. */
+const DURATION_NORM_SECONDS = 0.3
+
+/** Off by default - see the section doc comment for the sweep that found
+ *  every non-zero value tried made real-track accuracy worse, not better. */
+const CONTINUITY_WEIGHT = 0
+
+/** A gap this small between one selected note ending and the next starting
+ *  is legato/quantisation slop, not evidence the two cannot be the same
+ *  voice - notes that overlap by more than this are genuinely concurrent and
+ *  the DP's non-overlap constraint (correctly) treats them as competitors,
+ *  not a sequence. */
+const OVERLAP_TOLERANCE_SECONDS = 0.03
+
+/**
+ * Min-max range of a set of notes' velocities, for `salienceScore` to
+ * normalise against - computed once per `selectMelodicLine` call over every
+ * candidate note in the section, not per-instant, matching how
+ * `salience.mjs` rescales `normSalience` against "the other contours in this
+ * call" rather than a fixed or per-frame range.
+ */
+function velocityRange(notes) {
+  let min = Infinity
+  let max = -Infinity
+  for (const note of notes) {
+    if (note.velocity < min) min = note.velocity
+    if (note.velocity > max) max = note.velocity
+  }
+  return [min, max]
+}
+
+/** A flat velocity range (every candidate equally loud, including a single
+ *  candidate) carries no discriminating information - scored as 1 rather
+ *  than dividing by zero, the same convention `salience.mjs`'s own
+ *  `normalize` uses for the identical situation. */
+function salienceScore(note, [min, max]) {
+  if (!(max > min)) return 1
+  return (note.velocity - min) / (max - min)
+}
+
+/** How far above the velocity-weighted mean pitch of everything sounding at
+ *  the same time this note sits, in octaves, clamped to `[0,
+ *  REGISTER_CAP_OCTAVES]` and credited only when positive - see the section
+ *  doc comment above for why this is measured relative to the moment rather
+ *  than a fixed band. `overlapping` must include `note` itself: excluding it
+ *  would make a single loud, isolated note score against its own absence
+ *  rather than against silence around it. */
+function registerScore(note, overlapping) {
+  let weightSum = 0
+  let logSum = 0
+  for (const other of overlapping) {
+    const weight = Math.max(other.velocity, 0.001)
+    weightSum += weight
+    logSum += weight * Math.log2(midiToHz(other.midi))
+  }
+  const referenceLogHz = weightSum > 0 ? logSum / weightSum : Math.log2(midiToHz(note.midi))
+  const aboveOctaves = Math.log2(midiToHz(note.midi)) - referenceLogHz
+  return Math.max(0, Math.min(REGISTER_CAP_OCTAVES, aboveOctaves)) / REGISTER_CAP_OCTAVES
+}
+
+/** Off by default - see the section doc comment for the measurement that
+ *  keeps `durationWeight` at `0` in every caller today. */
+function durationScore(note) {
+  const duration = note.endSec - note.startSec
+  return duration / (duration + DURATION_NORM_SECONDS)
+}
+
+/**
+ * How closely `candidate` continues `previous`'s pitch, 0..1: an exact repeat
+ * scores 1, an octave or more apart scores 0, linear in between. The caller
+ * scales this by its own continuity weight - this returns the same
+ * normalised value regardless of that weight, the same separation of
+ * concerns `registerScore`/`durationScore` keep (each already 0..1, scaled
+ * by a weight at the call site, never baking a weight into the raw score).
+ */
+function continuityScore(previous, candidate) {
+  const semitones = Math.abs(candidate.midi - previous.midi)
+  return Math.max(0, 1 - semitones / 12)
+}
+
+/**
+ * Pick the single best monophonic melodic line out of a set of (possibly
+ * heavily overlapping) polyphonic notes.
+ *
+ * This is weighted interval scheduling - the classic "select a maximum-
+ * weight subset of intervals such that no two overlap" DP - with one twist:
+ * the weight of extending the chain with note `i` after note `j` is not just
+ * `weight(i)`, it also depends on which specific `j` precedes it
+ * (`continuityScore`, off by default - see the section doc comment), so
+ * `dp[i]` cannot be computed from a single running maximum the way plain
+ * weighted interval scheduling allows even when that term is zero for every
+ * pair (the code path is the same either way). With notes scored per-section
+ * (at most a few hundred), the resulting O(n^2) is a negligible cost for the
+ * guarantee it buys: the returned notes never overlap in time (this *is* the
+ * monophonic reduction the lead needs) and the chain found is the one whose
+ * combined weight is highest, not merely "the loudest thing playing" or "the
+ * highest note at each instant" - either of which a pad or a stab can win
+ * outright on its own.
+ *
+ * Default weights (`salienceWeight: 3, registerWeight: 1`) are the best
+ * simple combination found in the sweep described above: 12.6% exact-MIDI
+ * against the reference track's 462-event ground truth, `onset` 48.6%,
+ * `pitch class` 23.3% (see basic-pitch-report.md for the full table,
+ * including why this stops short of `detectMelodySalience`'s shipped 15.4%
+ * and is therefore not called by `transcribeMelody`).
+ */
+export function selectMelodicLine(
+  notes,
+  {
+    salienceWeight = 3,
+    registerWeight = 1,
+    durationWeight = 0,
+    continuityWeight = CONTINUITY_WEIGHT,
+    overlapToleranceSec = OVERLAP_TOLERANCE_SECONDS,
+  } = {},
+) {
+  if (notes.length === 0) return []
+  const sorted = [...notes].sort((a, b) => a.endSec - b.endSec || a.startSec - b.startSec)
+  const n = sorted.length
+  const velRange = velocityRange(sorted)
+
+  const weight = sorted.map((note, i) => {
+    const overlapping = sorted.filter((other) => other.startSec < note.endSec && other.endSec > note.startSec)
+    return (
+      salienceWeight * salienceScore(note, velRange) +
+      registerWeight * registerScore(note, overlapping) +
+      durationWeight * durationScore(note)
+    )
+  })
+
+  const dp = new Float64Array(n)
+  const back = new Int32Array(n).fill(-1)
+  for (let i = 0; i < n; i++) {
+    dp[i] = weight[i]
+    for (let j = 0; j < i; j++) {
+      if (sorted[j].endSec > sorted[i].startSec + overlapToleranceSec) continue
+      const bonus = continuityWeight * continuityScore(sorted[j], sorted[i])
+      const candidate = dp[j] + weight[i] + bonus
+      if (candidate > dp[i]) {
+        dp[i] = candidate
+        back[i] = j
+      }
+    }
+  }
+
+  let bestEnd = 0
+  for (let i = 1; i < n; i++) if (dp[i] > dp[bestEnd]) bestEnd = i
+
+  const chain = []
+  for (let i = bestEnd; i !== -1; i = back[i]) chain.push(sorted[i])
+  chain.reverse()
+  return chain
+}
+
+/** Same floor as `detectMelodySalience`'s `SALIENCE_MIN_NOTES` - the question
+ *  ("is this a line or a handful of stray notes") does not change with the
+ *  source of the notes. */
+const NOTES_MIN_NOTES = SALIENCE_MIN_NOTES
+/** Same floor as `SALIENCE_MIN_DISTINCT_PITCHES` - a line with fewer distinct
+ *  pitches than this is a drone, not a melody, regardless of how the notes
+ *  were transcribed. */
+const NOTES_MIN_DISTINCT_PITCHES = SALIENCE_MIN_DISTINCT_PITCHES
+
+/**
+ * Lead transcription from Basic Pitch's note events, in place of a pitch
+ * contour: select the melodic line per section (`selectMelodicLine`),
+ * quantise each chosen note's onset with the same `stepAt`/`stepDrift` every
+ * other transcriber uses, and fold with `foldToLoop` exactly as
+ * `detectMelodySalience` does. See basic-pitch-report.md for the measurement
+ * that justifies this over `transcribeMelody` where the tool is available.
+ *
+ * A note is assigned to the section it *starts* in, matching how every other
+ * transcriber in this file partitions events by onset rather than by any
+ * part of the note that might fall outside the section's range.
+ */
+export function transcribeMelodyFromNotes(
+  notes,
+  grid,
+  sections,
+  { minNotes = NOTES_MIN_NOTES, minDistinctPitches = NOTES_MIN_DISTINCT_PITCHES, ...selectionOptions } = {},
+) {
+  const perStep = stepSeconds(grid)
+
+  return sections.map((section) => {
+    const range = sectionRange(grid, section)
+    const inSection = notes.filter((note) => note.startSec >= range.fromSec && note.startSec < range.toSec)
+    if (inSection.length < minNotes) return null
+
+    const chain = selectMelodicLine(inSection, selectionOptions)
+    if (chain.length < minDistinctPitches) return null
+
+    const events = chain.map((note) => ({
+      step: stepAt(grid, note.startSec),
+      length: Math.max(1, Math.round((note.endSec - note.startSec) / perStep)),
+      velocity: note.velocity,
+      confidence: note.velocity,
+      midi: note.midi,
+      symbol: null,
+      driftSteps: stepDrift(grid, note.startSec),
+    }))
+
+    const distinct = new Set(events.map((event) => event.midi)).size
+    if (distinct < minDistinctPitches) return null
+
+    // The lead is single-voice, same reasoning as everywhere else this option
+    // is passed: `selectMelodicLine` already guarantees no two chosen notes
+    // overlap, but folding several loop repetitions back on top of each other
+    // can still put two disagreeing readings on the same step.
+    const folded = foldToLoop(events, section, grid, { oneEventPerStep: true })
+    const foldedDistinct = new Set(folded.events.map((event) => event.midi)).size
+    if (foldedDistinct < minDistinctPitches) return null
+
+    return {
+      loopBars: folded.loopBars,
+      events: folded.events,
+      confidence: Math.max(folded.agreement, 0.25),
+    }
+  })
 }
