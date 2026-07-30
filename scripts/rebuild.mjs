@@ -17,6 +17,7 @@ import { toWav } from './lib/rebuild/decode.mjs'
 import { emitTrack } from './lib/rebuild/emit.mjs'
 import { UnsupportedSourceError, resolveSource } from './lib/rebuild/fetch.mjs'
 import { LowConfidenceGridError, detectGrid } from './lib/rebuild/grid.mjs'
+import { detectKeyFromNotes } from './lib/rebuild/key.mjs'
 import { lookupTrack, parseArtistTitle, reconcileKey } from './lib/rebuild/metadata.mjs'
 import { contentHash, ensureRunDir, stagingDir } from './lib/rebuild/paths.mjs'
 import { profileReference } from './lib/rebuild/profile.mjs'
@@ -116,7 +117,12 @@ async function main() {
 
   say('profiling')
   const profile = profileReference(wavBuf, { title: source.title, url: input, source: source.source })
-  const key = reconcileKey(profile.key, knownKey)
+  // Chroma-based key, reconciled against the known-key lookup above. This is
+  // the pipeline's only key signal until stems exist below - `analyzeOnly`
+  // runs never get past this - and stays the final answer whenever Basic
+  // Pitch is absent or finds nothing usable (see `noteKey` further down,
+  // which overrides it and reconciles again).
+  let key = reconcileKey(profile.key, knownKey)
 
   say('finding the grid')
   const grid = detectGrid(wavBuf, { knownTempo })
@@ -146,7 +152,7 @@ async function main() {
     // key - the detected tempo's own reconciliation lives on `grid` itself
     // (`tempoAgreement`), since a disagreement there throws before this
     // object is even built.
-    metadata: { query: parsedTitle, lookup: metadata, keyAgreement: key.agreement },
+    metadata: { query: parsedTitle, lookup: metadata, keyAgreement: key.agreement, keySource: 'chroma' },
     grid: {
       bpm: grid.bpm,
       beatSeconds: grid.beatSeconds,
@@ -195,16 +201,46 @@ async function main() {
   const bass = transcribeBass(bassBuf, grid, sections)
   const lead = transcribeMelody(otherBuf, grid, sections)
 
-  // Basic Pitch is optional (see tools.mjs) and, where installed, only
-  // changes the chords layer today. Measured against the reference track's
-  // 462-event ground truth (basic-pitch-report.md): a note-derived chord
-  // read (`transcribeHarmonyFromNotes`) beats the FFT-chroma path
+  // Basic Pitch is optional (see tools.mjs). Where installed, it changes two
+  // things: the chords layer (below), and, ahead of that, which key the
+  // whole track is anchored to. A missing binary, or Basic Pitch producing
+  // nothing usable, leaves both exactly as if the tool had never been tried.
+  const bassNotes = await transcribeWithBasicPitch(paths.bass, path.join(dirs.root, 'basic-pitch', 'bass'))
+  const otherNotes = await transcribeWithBasicPitch(paths.other, path.join(dirs.root, 'basic-pitch', 'other'))
+
+  // Key from the actual transcribed notes, ahead of the whole-clip chroma
+  // correlation `profile`/`key` above used: chroma smears bass, harmonics
+  // and percussion into one pitch-class estimate, and Krumhansl-Kessler's
+  // own profiles are documented to fit minor keys worse than major - see
+  // key.mjs's doc comment for both. `detectKeyFromNotes` returns `null` when
+  // there is nothing to detect from (no tool, or a bass+other pair with no
+  // usable pitched content), in which case `key` is left exactly as the
+  // chroma-reconciled value computed above. When it does find something, it
+  // goes through the same `reconcileKey` disagreement handling the chroma
+  // path already went through, so a metadata mismatch is surfaced the same
+  // way regardless of which detector produced the disagreeing answer.
+  const noteKey = detectKeyFromNotes(bassNotes ?? [], otherNotes ?? [])
+  if (noteKey) {
+    key = reconcileKey(noteKey, knownKey)
+    // The raw detection, not just the reconciled outcome - mirrors
+    // `result.profile.key` (the chroma path's own raw detection, which stays
+    // on `result` unconditionally). Without this, a 'disagreement' result
+    // (which zeroes `key.name` - see reconcileKey's own doc comment) would
+    // leave `reference.json` with no record of what the note-based detector
+    // actually found, only that it disagreed with something.
+    result.noteKey = noteKey
+    result.metadata.keyAgreement = key.agreement
+    result.metadata.keySource = 'notes'
+    await fs.promises.writeFile(path.join(dirs.root, 'reference.json'), `${JSON.stringify(result, null, 2)}\n`)
+  }
+  say(`  key: ${key.name ?? '(disagreement - see metadata)'} (confidence ${key.confidence.toFixed(3)}, ${key.agreement}, from ${noteKey ? 'notes' : 'chroma'})`)
+
+  // Measured against the reference track's 462-event ground truth
+  // (basic-pitch-report.md): a note-derived chord read
+  // (`transcribeHarmonyFromNotes`) beats the FFT-chroma path
   // (`transcribeHarmony`) on both accuracy and coverage, but the same
   // exercise for bass and lead did not clear their existing DSP paths, so
   // those two are untouched here regardless of whether the tool is present.
-  // A missing binary, or Basic Pitch producing nothing usable, both fall
-  // back to `transcribeHarmony` exactly as if the tool had never been tried.
-  const otherNotes = await transcribeWithBasicPitch(paths.other, path.join(dirs.root, 'basic-pitch', 'other'))
   const chords = otherNotes
     ? transcribeHarmonyFromNotes(otherNotes, grid, sections, { key: key.name })
     : transcribeHarmony(otherBuf, grid, sections, { key: key.name })

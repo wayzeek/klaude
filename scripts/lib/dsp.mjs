@@ -247,7 +247,16 @@ export function computeChroma(readSample, numFrames, channels, sampleRate) {
   return total > 0 ? chroma.map((value) => value / total) : null
 }
 
-function correlate(a, b) {
+/**
+ * Pearson correlation between two equal-length vectors.
+ *
+ * Exported so key.mjs's note-based detector can score a pitch-class histogram
+ * against the Albrecht-Shanahan profiles with the exact same math `detectKey`
+ * below uses against the Krumhansl-Kessler ones - the correlation, not the
+ * profile, is what makes "which of 24 rotations fits best" a well-posed
+ * question, and duplicating it would risk the two drifting apart silently.
+ */
+export function correlate(a, b) {
   const meanA = a.reduce((x, y) => x + y, 0) / a.length
   const meanB = b.reduce((x, y) => x + y, 0) / b.length
   let num = 0
