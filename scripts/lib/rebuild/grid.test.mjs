@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { rhythmClip } from '../__fixtures__/make-wav.mjs'
 import { decodeWav } from '../decoded-audio.mjs'
 import { ONSET_HOP, computeNovelty } from '../dsp.mjs'
-import { LowConfidenceGridError, beatPhase, detectGrid, detectMeter, findTempo } from './grid.mjs'
+import { LowConfidenceGridError, beatPhase, detectGrid, detectMeter, findTempo, reconcileTempo } from './grid.mjs'
 
 function decodedOf(bpm, opts = {}) {
   const audio = decodeWav(rhythmClip({ seconds: 16, bpm, ...opts }))
@@ -345,5 +345,116 @@ describe('detectGrid', () => {
       expect(error).toBeInstanceOf(LowConfidenceGridError)
       expect(['tempo', 'phase', 'meter']).toContain(error.field)
     }
+  })
+})
+
+describe('reconcileTempo', () => {
+  const GATE = 0.26
+
+  it('passes the detector through unchanged when there is no known tempo', () => {
+    const result = reconcileTempo(120, 0.5, null, GATE)
+    expect(result).toEqual({ bpm: 120, confidence: 0.5, agreement: 'none' })
+  })
+
+  it('treats a known tempo below MIN_MATCH_CONFIDENCE as no known tempo at all', () => {
+    // Confidence 0.3 means the search itself was not confident it found the
+    // right song - trusting its tempo would risk building the grid on a
+    // completely different track's number, which is worse than no prior.
+    const result = reconcileTempo(120, 0.1, { bpm: 200, matchConfidence: 0.3 }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(120)
+  })
+
+  it('case 1: agrees within tolerance and raises confidence even over a low raw score', () => {
+    // The detector's own confidence (0.05) is a guess; it happens to be
+    // right, and agreement with the known tempo is what proves that, not
+    // the raw score - so confidence is raised well above the detector's own.
+    const result = reconcileTempo(130, 0.05, { bpm: 130.2, matchConfidence: 0.9, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('agree')
+    expect(result.bpm).toBe(130.2)
+    expect(result.confidence).toBeGreaterThan(0.8)
+  })
+
+  it('case 2: known tempo trusted outright when the detector is unsure and wrong', () => {
+    // Mirrors the real failure this module exists to fix: the detector
+    // returns a different number (104) at a confidence below its own gate.
+    const result = reconcileTempo(104, 0.19, { bpm: 130, matchConfidence: 1, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('known')
+    expect(result.bpm).toBe(130)
+    expect(result.confidence).toBeGreaterThanOrEqual(GATE)
+  })
+
+  it('case 3: flags a material disagreement instead of silently choosing either side', () => {
+    const result = reconcileTempo(120, 0.6, { bpm: 90, matchConfidence: 0.9, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('disagreement')
+    expect(result.detectedBpm).toBe(120)
+    expect(result.knownBpm).toBe(90)
+  })
+
+  it('is tolerant of small measurement noise (Glue: detector 130, Deezer 130.01)', () => {
+    const result = reconcileTempo(130, 0.473, { bpm: 130.01, matchConfidence: 0.9, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('agree')
+  })
+})
+
+describe('detectGrid with a known tempo', () => {
+  it('case 1 end to end: agreement raises confidence and keeps the (matching) bpm', () => {
+    const grid = detectGrid(rhythmClip({ seconds: 16, bpm: 130, accentEvery: 4 }), {
+      knownTempo: { bpm: 130.2, matchConfidence: 0.9, source: 'test' },
+    })
+    expect(grid.tempoAgreement).toBe('agree')
+    expect(grid.bpm).toBeCloseTo(130.2, 5)
+    expect(grid.confidence.tempo).toBeGreaterThan(0.8)
+  })
+
+  /**
+   * Real, measured case (not a hand-picked confidence): on this fixture's
+   * own accented click at 82 BPM, `findTempo` alone returns the WRONG octave
+   * (164 BPM) at confidence 0.173 - comfortably under the 0.26 gate. Without
+   * a known tempo this fixture would halt the run (a correct, safe outcome).
+   * With one, `detectGrid` must recover the true 82 BPM instead of building
+   * the whole bar grid at double rate.
+   */
+  it('case 2 end to end: recovers when the detector is unsure and wrong', () => {
+    const grid = detectGrid(rhythmClip({ seconds: 16, bpm: 82, accentEvery: 4 }), {
+      knownTempo: { bpm: 82, matchConfidence: 0.9, source: 'test' },
+    })
+    expect(grid.tempoAgreement).toBe('known')
+    expect(grid.bpm).toBe(82)
+  })
+
+  it('case 3 end to end: halts on a material disagreement rather than picking a side', () => {
+    // 120 BPM is confidently and correctly detected on its own (see the
+    // sweep above); a known tempo of 90 is far outside tolerance.
+    expect(() =>
+      detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }), {
+        knownTempo: { bpm: 90, matchConfidence: 0.9, source: 'test' },
+      }),
+    ).toThrow(LowConfidenceGridError)
+  })
+
+  it('a disagreement message names both numbers, not just "not confident enough"', () => {
+    try {
+      detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }), {
+        knownTempo: { bpm: 90, matchConfidence: 0.9, source: 'test' },
+      })
+      throw new Error('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(LowConfidenceGridError)
+      expect(error.grid.tempoAgreement).toBe('disagreement')
+      expect(error.message).toContain('90')
+      expect(error.message).toMatch(/12\d/)
+    }
+  })
+
+  it('a known tempo that is too weak a match is ignored, same as no known tempo at all', () => {
+    // matchConfidence 0.3 is under MIN_MATCH_CONFIDENCE - this must behave
+    // exactly like the no-knownTempo sweep above, not like case 1 or 2.
+    const withWeakMatch = detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }), {
+      knownTempo: { bpm: 200, matchConfidence: 0.3, source: 'test' },
+    })
+    const withoutKnownTempo = detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }))
+    expect(withWeakMatch.bpm).toBe(withoutKnownTempo.bpm)
+    expect(withWeakMatch.tempoAgreement).toBe('none')
   })
 })

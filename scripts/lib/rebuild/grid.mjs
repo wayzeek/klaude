@@ -20,13 +20,23 @@
 
 import { decodeWav } from '../decoded-audio.mjs'
 import { ONSET_HOP, computeNovelty, fft, makeHann } from '../dsp.mjs'
+import { MIN_MATCH_CONFIDENCE } from './metadata.mjs'
 
 export class LowConfidenceGridError extends Error {
-  constructor(field, grid) {
+  /**
+   * `message` is optional: the default covers "the detector alone could not
+   * clear the gate". A known-tempo disagreement (see `reconcileTempo`) is a
+   * different situation - both the detector and an external source produced
+   * an answer, and they are both being treated as too confident to ignore,
+   * not too unconfident to trust - so it supplies its own wording rather
+   * than reusing a message that says "cannot establish confidently".
+   */
+  constructor(field, grid, message) {
     super(
-      `Cannot establish the ${field} confidently enough to build on.\n` +
-        `Measured: ${JSON.stringify(grid)}\n` +
-        'Everything downstream is built on this grid and none of it could detect the error, so the run stops here.',
+      message ??
+        `Cannot establish the ${field} confidently enough to build on.\n` +
+          `Measured: ${JSON.stringify(grid)}\n` +
+          'Everything downstream is built on this grid and none of it could detect the error, so the run stops here.',
     )
     this.name = 'LowConfidenceGridError'
     this.field = field
@@ -460,15 +470,105 @@ export function detectMeter(audio, beatSeconds, phaseSeconds) {
  */
 const MIN_TEMPO_CONFIDENCE = 0.26
 
-export function detectGrid(wavBuf, { minConfidence = 0.25 } = {}) {
+/**
+ * How far a known tempo (from `metadata.mjs`'s `lookupTrack`) may sit from
+ * the detector's own answer and still count as agreement, rather than a
+ * material disagreement.
+ *
+ * `Math.max` of an absolute and a relative bound: the absolute floor matters
+ * at slow tempos (2% of 70 BPM is 1.4 BPM, tighter than any tap-tempo/catalog
+ * rounding should be held to), the relative bound at fast ones. Measured
+ * against both verifiable recordings: Glue's known tempo (Deezer, 130.01) and
+ * its corrected detected tempo (130, confidence 0.473) differ by 0.01 BPM,
+ * nowhere near either bound - a clean case of case 1 below, "agree".
+ */
+const KNOWN_TEMPO_ABS_TOLERANCE_BPM = 1.5
+const KNOWN_TEMPO_REL_TOLERANCE = 0.03
+
+/** Confidence reported when the detector and a known tempo agree. */
+const KNOWN_TEMPO_AGREEMENT_CONFIDENCE = 0.9
+
+/**
+ * Combine a detected tempo with a known one (e.g. from a public database),
+ * as a prior and a cross-check, never a silent replacement. Three cases:
+ *
+ *   1. Agree (within tolerance): the two independent measurements corroborate
+ *      each other, so confidence is raised regardless of how unconfident the
+ *      detector's own raw score was - agreement IS the evidence here.
+ *   2. Known, detector unsure (its own confidence under `gate`): the
+ *      detector's number is not trusted (it did not clear its own bar), so
+ *      the known tempo is used outright. `beatSeconds` downstream is then
+ *      built on it, and only phase/meter - which genuinely need the audio,
+ *      and are measured at confidence 1.000 on both verifiable recordings -
+ *      still come from the detector.
+ *   3. Disagree materially (detector confident, but at a different tempo):
+ *      this is information, not noise - two confident-looking answers that
+ *      contradict each other, and picking either silently risks building the
+ *      whole grid on the wrong one. Reported as 'disagreement' rather than
+ *      resolved; `detectGrid` turns that into the same halt a low-confidence
+ *      grid already causes, because tempo is the one measurement everything
+ *      downstream depends on.
+ *
+ * Pure and exported so all three cases - especially the disagreement case,
+ * which `detectGrid` cannot exercise without a real conflicting audio clip -
+ * are unit-testable without decoding audio at all.
+ */
+export function reconcileTempo(detectedBpm, detectedConfidence, known, gate) {
+  if (!known || known.bpm == null || (known.matchConfidence ?? 1) < MIN_MATCH_CONFIDENCE) {
+    return { bpm: detectedBpm, confidence: detectedConfidence, agreement: 'none' }
+  }
+
+  const tolerance = Math.max(KNOWN_TEMPO_ABS_TOLERANCE_BPM, known.bpm * KNOWN_TEMPO_REL_TOLERANCE)
+  const agrees = Math.abs(detectedBpm - known.bpm) <= tolerance
+
+  if (agrees) {
+    return {
+      bpm: known.bpm,
+      confidence: Math.max(detectedConfidence, KNOWN_TEMPO_AGREEMENT_CONFIDENCE),
+      agreement: 'agree',
+    }
+  }
+
+  if (detectedConfidence < gate) {
+    return {
+      bpm: known.bpm,
+      confidence: Math.max(gate, 0.5 + 0.5 * (known.matchConfidence ?? 1)),
+      agreement: 'known',
+    }
+  }
+
+  return { bpm: detectedBpm, confidence: detectedConfidence, agreement: 'disagreement', detectedBpm, knownBpm: known.bpm }
+}
+
+export function detectGrid(wavBuf, { minConfidence = 0.25, knownTempo = null } = {}) {
   const audio = decodeWav(wavBuf)
   const hopSeconds = ONSET_HOP / audio.sampleRate
   const novelty = computeNovelty(audio.readSample, audio.numFrames, audio.channels)
   if (!novelty) throw new LowConfidenceGridError('tempo', { bpm: null, confidence: 0 })
 
-  const tempo = findTempo(novelty, hopSeconds)
-  const measured = { bpm: tempo.bpm, tempoConfidence: tempo.confidence }
-  if (tempo.confidence < Math.max(minConfidence, MIN_TEMPO_CONFIDENCE)) throw new LowConfidenceGridError('tempo', measured)
+  const rawTempo = findTempo(novelty, hopSeconds)
+  const tempoGate = Math.max(minConfidence, MIN_TEMPO_CONFIDENCE)
+  const reconciled = reconcileTempo(rawTempo.bpm, rawTempo.confidence, knownTempo, tempoGate)
+  const tempo = { bpm: reconciled.bpm, confidence: reconciled.confidence }
+  const measured = {
+    bpm: tempo.bpm,
+    tempoConfidence: tempo.confidence,
+    detectedBpm: rawTempo.bpm,
+    detectedConfidence: rawTempo.confidence,
+    knownBpm: knownTempo?.bpm ?? null,
+    tempoAgreement: reconciled.agreement,
+  }
+  if (reconciled.agreement === 'disagreement') {
+    throw new LowConfidenceGridError(
+      'tempo',
+      measured,
+      `The detected tempo (${rawTempo.bpm.toFixed(1)} BPM, confidence ${rawTempo.confidence.toFixed(3)}) and the ` +
+        `known tempo (${knownTempo.bpm} BPM${knownTempo.source ? ` from ${knownTempo.source}` : ''}) disagree by more ` +
+        'than the tolerance, and the detector is itself confident - not a case of "the detector is unsure, trust the ' +
+        'source". Refusing to silently pick one; everything downstream is built on this number.',
+    )
+  }
+  if (tempo.confidence < tempoGate) throw new LowConfidenceGridError('tempo', measured)
 
   const beatSeconds = 60 / tempo.bpm
   const beatHops = beatSeconds / hopSeconds
@@ -502,6 +602,9 @@ export function detectGrid(wavBuf, { minConfidence = 0.25 } = {}) {
       phase: phase.confidence,
       meter: meter.confidence,
     },
+    // 'none' when no known tempo was supplied at all; otherwise which of
+    // reconcileTempo's three cases decided the final bpm above.
+    tempoAgreement: reconciled.agreement,
     beatAt: (index) => downbeatSeconds + index * beatSeconds,
     barAt: (index) => downbeatSeconds + index * barSeconds,
     secondsToBars: (seconds) => seconds / barSeconds,

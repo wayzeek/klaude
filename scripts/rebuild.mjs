@@ -17,6 +17,7 @@ import { toWav } from './lib/rebuild/decode.mjs'
 import { emitTrack } from './lib/rebuild/emit.mjs'
 import { UnsupportedSourceError, resolveSource } from './lib/rebuild/fetch.mjs'
 import { LowConfidenceGridError, detectGrid } from './lib/rebuild/grid.mjs'
+import { lookupTrack, parseArtistTitle, reconcileKey } from './lib/rebuild/metadata.mjs'
 import { contentHash, ensureRunDir, stagingDir } from './lib/rebuild/paths.mjs'
 import { profileReference } from './lib/rebuild/profile.mjs'
 import { findSections } from './lib/rebuild/sections.mjs'
@@ -86,12 +87,37 @@ async function main() {
     await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {})
   }
 
+  // A released record's tempo and key are usually documented facts, not
+  // things that must be guessed from a waveform - see metadata.mjs. This is
+  // a prior and a cross-check for detectGrid/profileReference below, never a
+  // replacement: a lookup failure (no match, no network, a timeout) resolves
+  // to nulls here and everything downstream runs exactly as it did before
+  // this existed.
+  say('looking up known tempo/key')
+  const parsedTitle = parseArtistTitle({ title: source.title, artist: source.artist })
+  const metadata = await lookupTrack(
+    { artist: parsedTitle.artist, title: parsedTitle.title, duration: source.duration },
+    { cacheDir: dirs.root },
+  )
+  say(
+    metadata.source
+      ? `  ${metadata.source}: bpm=${metadata.bpm ?? '?'} key=${metadata.key ?? '?'} (match ${metadata.matchConfidence.toFixed(2)})`
+      : '  no match',
+  )
+  // Field-specific confidences, not the blended `metadata.matchConfidence` -
+  // Deezer and MusicBrainz/AcousticBrainz are independent searches that can
+  // each land on a different recording, so a strong tempo match must not
+  // lend its confidence to an unrelated, weaker key match (or vice versa).
+  const knownTempo = metadata.bpm != null ? { bpm: metadata.bpm, matchConfidence: metadata.bpmMatchConfidence, source: metadata.source } : null
+  const knownKey = metadata.key != null ? { name: metadata.key, matchConfidence: metadata.keyMatchConfidence, source: metadata.source } : null
+
   say('profiling')
   const profile = profileReference(wavBuf, { title: source.title, url: input, source: source.source })
+  const key = reconcileKey(profile.key, knownKey)
 
   say('finding the grid')
-  const grid = detectGrid(wavBuf)
-  say(`  ${grid.bpm.toFixed(1)} BPM, ${grid.beatsPerBar}/4, downbeat at ${grid.downbeatSeconds.toFixed(3)}s`)
+  const grid = detectGrid(wavBuf, { knownTempo })
+  say(`  ${grid.bpm.toFixed(1)} BPM, ${grid.beatsPerBar}/4, downbeat at ${grid.downbeatSeconds.toFixed(3)}s (tempo ${grid.tempoAgreement})`)
 
   say('finding sections')
   const sections = findSections(wavBuf, grid)
@@ -113,6 +139,11 @@ async function main() {
     dir: dirs.root,
     source: { ...source, input },
     profile,
+    // What lookupTrack returned and how it was reconciled with the detected
+    // key - the detected tempo's own reconciliation lives on `grid` itself
+    // (`tempoAgreement`), since a disagreement there throws before this
+    // object is even built.
+    metadata: { query: parsedTitle, lookup: metadata, keyAgreement: key.agreement },
     grid: {
       bpm: grid.bpm,
       beatSeconds: grid.beatSeconds,
@@ -122,6 +153,7 @@ async function main() {
       beatsPerBar: grid.beatsPerBar,
       barSeconds: grid.barSeconds,
       confidence: grid.confidence,
+      tempoAgreement: grid.tempoAgreement,
     },
     sections,
     stems,
@@ -147,12 +179,12 @@ async function main() {
 
   const drums = transcribeDrums(drumBuf, grid, sections)
   const bass = transcribeBass(bassBuf, grid, sections)
-  const chords = transcribeHarmony(otherBuf, grid, sections, { key: profile.key?.name })
+  const chords = transcribeHarmony(otherBuf, grid, sections, { key: key.name })
   const lead = transcribeMelody(otherBuf, grid, sections)
 
   const transcription = {
     grid: result.grid,
-    key: { name: profile.key?.name ?? null, confidence: profile.key?.confidence ?? 0 },
+    key: { name: key.name, confidence: key.confidence },
     stepsPerBeat: 4,
     sections: sections.map((section, i) => ({
       index: section.index,
