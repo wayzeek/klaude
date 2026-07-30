@@ -49,11 +49,17 @@ export function buildPitchGrid(minHz, maxHz, centsStep) {
 /** Linear interpolation between the two FFT bins straddling `freqHz`. Never
  *  rounds to the nearest bin: at 4096 samples/44.1kHz a bin is ~10.8 Hz wide,
  *  which is most of a semitone at 200 Hz, so rounding would make pitch
- *  resolution worse than the ear's own, and worse than it needs to be. */
+ *  resolution worse than the ear's own, and worse than it needs to be.
+ *
+ *  `pos` landing exactly on the last bin (`bins - 1`) is a valid, exact
+ *  reading of `mag[bins - 1]` needing no interpolation - it must not be
+ *  treated the same as `pos` running past the end of the spectrum entirely.
+ *  Only `pos > bins - 1` has nothing on its right to interpolate against. */
 function magnitudeAt(mag, binHz, bins, freqHz) {
   const pos = freqHz / binHz
+  if (pos < 0 || pos > bins - 1) return 0
   const i0 = Math.floor(pos)
-  if (i0 < 0 || i0 >= bins - 1) return 0
+  if (i0 >= bins - 1) return mag[bins - 1]
   const frac = pos - i0
   return mag[i0] * (1 - frac) + mag[i0 + 1] * frac
 }
@@ -127,10 +133,22 @@ function refineLocalMax(curve, i, stepCents, originHz) {
  * module accepts rather than one it silently mishandles. */
 function pickFramePeaks(curve, grid, centsStep, maxPeaks) {
   const peaks = []
-  for (let i = 1; i < curve.length - 1; i++) {
-    if (curve[i] <= curve[i - 1] || curve[i] < curve[i + 1]) continue
+  const last = curve.length - 1
+  for (let i = 0; i <= last; i++) {
     if (curve[i] <= 0) continue
-    peaks.push(refineLocalMax(curve, i, centsStep, grid[0]))
+    // A boundary index has only one neighbour to compare against, not two -
+    // treat the missing side as "no evidence against it being a peak" rather
+    // than excluding index 0 and `last` outright. Without this, the grid's
+    // own endpoints (and any grid of length 1 or 2) could never produce a
+    // peak at all, silently dropping a true fundamental that happens to sit
+    // exactly at `minHz` or `maxHz`.
+    const left = i > 0 ? curve[i - 1] : -Infinity
+    const right = i < last ? curve[i + 1] : -Infinity
+    if (curve[i] <= left || curve[i] < right) continue
+    // Parabolic refinement needs a point on both sides; a boundary peak has
+    // no far side to fit a parabola through, so it is reported at the grid's
+    // own resolution instead of a sub-grid-step estimate.
+    peaks.push(i === 0 || i === last ? { hz: grid[i], salience: curve[i] } : refineLocalMax(curve, i, centsStep, grid[0]))
   }
   peaks.sort((a, b) => b.salience - a.salience)
   return peaks.slice(0, maxPeaks)
@@ -377,14 +395,22 @@ function normalize(value, [min, max]) {
  * being evidence of melody and started being evidence of exactly that
  * failure mode.
  *
- * Salience and register are both min-max normalised across the contours
- * being compared before the weights are applied, for the same reason: raw
- * `normSalience` and raw register octaves do not share a scale, so adding
- * them with equal weight silently means something different on every track.
- * Rescaling each feature to its own observed 0..1 range on this call turns
- * `salienceWeight`/`registerWeight`/`lengthWeight` into what the sweep in
- * the report actually needed them to be: comparable knobs on how much each
- * kind of evidence matters, not an accident of units.
+ * Salience and register are rescaled to 0..1 by two *different* methods, not
+ * the same one - worth stating precisely, since the two are easy to conflate.
+ * `normSalience` has no fixed, interpretable scale (a fraction of one
+ * frame's total salience curve, which depends on the grid resolution and how
+ * much else is sounding) so it is min-max normalised *against the other
+ * contours in this call* - "loudest among the current candidates" is the
+ * only meaningful reading available. Register already has a fixed,
+ * physically meaningful scale (octaves above the room), so it is rescaled
+ * against that fixed `[0, registerCapOctaves]` range instead of the other
+ * contours' observed spread - two contours a semitone apart should read as
+ * "barely separated," not be stretched to the opposite ends of 0..1 the way
+ * a per-call min-max would if they happened to be the only two contours
+ * being compared. Both choices exist so `salienceWeight`/`registerWeight`/
+ * `lengthWeight` mean roughly the same thing call to call - salience relative
+ * to its own local competition, register relative to a fixed, portable
+ * notion of "how high above the room."
  */
 export function selectMelody(
   contours,

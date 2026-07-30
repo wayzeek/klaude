@@ -7,6 +7,7 @@ import {
   computeMelodyContour,
   filterContours,
   harmonicSalience,
+  pickSaliencePeaks,
   selectMelody,
   trackContours,
 } from './salience.mjs'
@@ -80,14 +81,21 @@ describe('harmonicSalience', () => {
   })
 
   it('never reaches past the Nyquist frequency', () => {
-    const { mag, binHz, bins } = spectrumWithPeaks([[300, 5]])
-    const withoutNyquist = harmonicSalience(mag, binHz, bins, 300, { harmonics: 10, alpha: 0.9, nyquist: Infinity })
-    const withNyquist = harmonicSalience(mag, binHz, bins, 300, { harmonics: 10, alpha: 0.9, nyquist: 500 })
-    // Both only see the h=1 peak at 300 (nothing planted at its harmonics),
-    // so a correct Nyquist cutoff changes nothing here - the real assertion
-    // is that it does not throw or read out of bounds requesting bins past
-    // a spectrum sized for a much lower sample rate.
-    expect(withNyquist).toBeCloseTo(withoutNyquist, 6)
+    // Real energy at h=1 (300 Hz) and h=3 (900 Hz), nothing at h=2 (600 Hz).
+    // With nyquist=650, the loop must stop before h=3 - if it did not, this
+    // test could not tell "cutoff applied" from "cutoff ignored," which the
+    // previous version of this test (no energy above its own cutoff) could
+    // not either.
+    const { mag, binHz, bins } = spectrumWithPeaks([
+      [300, 5],
+      [900, 4],
+    ])
+    const withoutNyquist = harmonicSalience(mag, binHz, bins, 300, { harmonics: 10, alpha: 0.5, nyquist: Infinity })
+    const withNyquist = harmonicSalience(mag, binHz, bins, 300, { harmonics: 10, alpha: 0.5, nyquist: 650 })
+    // 5*1 (h=1) + 0*0.5 (h=2, empty) + 4*0.25 (h=3) = 6
+    expect(withoutNyquist).toBeCloseTo(6, 6)
+    // h=3 excluded: 5*1 (h=1) + 0*0.5 (h=2, empty) = 5
+    expect(withNyquist).toBeCloseTo(5, 6)
   })
 
   it('the true fundamental outscores its own subharmonic candidate', () => {
@@ -103,6 +111,80 @@ describe('harmonicSalience', () => {
     const trueFundamental = harmonicSalience(mag, binHz, bins, f, { harmonics: 8, alpha: 0.8 })
     const subharmonic = harmonicSalience(mag, binHz, bins, f / 2, { harmonics: 8, alpha: 0.8 })
     expect(trueFundamental).toBeGreaterThan(subharmonic)
+  })
+
+  it('reads the exact last bin without needing interpolation', () => {
+    // A frequency landing precisely on `mag[bins - 1]` needs no neighbour to
+    // interpolate against - it must not be treated the same as a frequency
+    // that has run past the end of the spectrum entirely (which correctly
+    // has no data to read at all).
+    const bins = 100
+    const binHz = 10
+    const lastBinHz = (bins - 1) * binHz
+    const mag = new Float32Array(bins)
+    mag[bins - 1] = 7
+    const s = harmonicSalience(mag, binHz, bins, lastBinHz, { harmonics: 1, alpha: 0.9 })
+    expect(s).toBeCloseTo(7, 6)
+  })
+
+  it('returns 0 once a frequency runs past the end of the spectrum', () => {
+    const bins = 100
+    const binHz = 10
+    const mag = new Float32Array(bins).fill(5)
+    const s = harmonicSalience(mag, binHz, bins, bins * binHz + 1, { harmonics: 1, alpha: 0.9 })
+    expect(s).toBe(0)
+  })
+})
+
+/** A synthetic single-tone `audio` source, built directly rather than via a
+ *  WAV round trip - `pickSaliencePeaks` only ever needs the same interface
+ *  `decodeWav` produces. */
+function sineAudio(hz, seconds, { sampleRate = SAMPLE_RATE, gain = 0.5 } = {}) {
+  const numFrames = Math.ceil(seconds * sampleRate)
+  const samples = new Float32Array(numFrames)
+  for (let i = 0; i < numFrames; i++) samples[i] = gain * Math.sin((2 * Math.PI * hz * i) / sampleRate)
+  return {
+    channels: 1,
+    sampleRate,
+    numFrames,
+    duration: numFrames / sampleRate,
+    float32: true,
+    readSample: (frame) => samples[frame] ?? 0,
+    readMono: (frame) => samples[frame] ?? 0,
+  }
+}
+
+describe('pickSaliencePeaks', () => {
+  it('finds a peak near a pure tone', () => {
+    const { peaksPerFrame } = pickSaliencePeaks(sineAudio(440, 1), {})
+    const midFrame = peaksPerFrame[Math.floor(peaksPerFrame.length / 2)]
+    expect(midFrame.length).toBeGreaterThan(0)
+    expect(midFrame[0].hz).toBeGreaterThan(430)
+    expect(midFrame[0].hz).toBeLessThan(450)
+  })
+
+  it('finds a peak at exactly minHz - the grid endpoint, not just its interior', () => {
+    // Reproduces a real gap: a pure 100 Hz tone with minHz=100 used to return
+    // no peaks at all, because `pickFramePeaks`'s local-maximum search only
+    // ever examined interior grid indices - index 0 (minHz itself) could
+    // never win a comparison it was never entered into.
+    const { peaksPerFrame } = pickSaliencePeaks(sineAudio(100, 1), { minHz: 100, maxHz: 200, harmonics: 1 })
+    const midFrame = peaksPerFrame[Math.floor(peaksPerFrame.length / 2)]
+    expect(midFrame.length).toBeGreaterThan(0)
+    expect(midFrame[0].hz).toBeCloseTo(100, 0)
+  })
+
+  it('returns hopSeconds matching hop/sampleRate and empty peaks for audio shorter than one window', () => {
+    const result = pickSaliencePeaks(sineAudio(440, 0.001), { hop: 512 })
+    expect(result.hopSeconds).toBeCloseTo(512 / SAMPLE_RATE, 10)
+    expect(result.peaksPerFrame).toEqual([])
+    expect(result.frameRms).toHaveLength(0)
+  })
+
+  it('reports every frame as unvoiced (empty peaks) below rmsFloor', () => {
+    const { peaksPerFrame } = pickSaliencePeaks(sineAudio(440, 1, { gain: 0.0001 }), { rmsFloor: 0.5 })
+    expect(peaksPerFrame.length).toBeGreaterThan(0)
+    expect(peaksPerFrame.every((peaks) => peaks.length === 0)).toBe(true)
   })
 })
 

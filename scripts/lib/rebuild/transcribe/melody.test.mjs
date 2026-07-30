@@ -227,13 +227,32 @@ describe('detectMelodySalience', () => {
     expect(result).toHaveLength(2)
   })
 
-  it('accepts option overrides without needing salience.mjs imported directly', () => {
-    // A future caller re-tuning this pipeline for a different corpus should
-    // be able to do it through detectMelodySalience's own options, without
-    // reaching past it into salience.mjs - this pins that the pass-through
-    // actually reaches computeMelodyContour rather than being ignored.
-    const permissive = detectMelodySalience(leadClip(fourBars), grid, SECTION_4, { minNotes: 100 })[0]
-    expect(permissive).toBeNull()
+  it('rejects a section when a gate option is tightened past what the line clears', () => {
+    const strict = detectMelodySalience(leadClip(fourBars), grid, SECTION_4, { minNotes: 100 })[0]
+    expect(strict).toBeNull()
+  })
+
+  // detectMelodySalience deliberately does NOT check the chord-tone rule
+  // detectMelody uses (see the module doc comment): porting it with the same
+  // threshold was tried and measured to destroy real accuracy on the
+  // reference track, because this pipeline's genuinely correct notes also
+  // carry a high chord-tone fraction. A stem with literally nothing sounding
+  // but a chord progression (no separate lead voice at all) can still
+  // produce a "lead" that is really the chords' own top note - a known,
+  // documented limitation, not silently unhandled.
+
+  it('forwards salience-specific options through to computeMelodyContour, not just its own gates', () => {
+    // `minNotes` above is consumed by detectMelodySalience itself before
+    // `...salienceOptions` is ever built, so it would pass even if that
+    // spread were silently dropped. `rmsFloor` is not one of
+    // detectMelodySalience's own options - it only means anything to
+    // computeMelodyContour - so this only returns null if the pass-through
+    // actually reaches it. An RMS floor of 10 is unreachable by any real
+    // waveform (samples are bounded to [-1, 1]), so every frame reads as
+    // silent regardless of the fixture, which is `fourBars` - the exact clip
+    // the first test above recovers cleanly with no override.
+    const silenced = detectMelodySalience(leadClip(fourBars), grid, SECTION_4, { rmsFloor: 10 })[0]
+    expect(silenced).toBeNull()
   })
 })
 

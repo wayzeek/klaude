@@ -109,12 +109,16 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
  * pointing at why, because no test exercised a non-null `lead` loop here. The
  * proper fix is the same corruption-calibrated measurement the other five
  * layers got (correct-mean vs worst-discriminable-corruption-mean), which
- * needs its own dedicated pass; that has not been done. `lead: 0` below is a
- * placeholder chosen only to stop the `Infinity` trap, not a calibrated
- * quality bar - `scoreLayer`'s own hasSignal check already floors a
- * genuinely silent comparison at exactly 0, so this accepts anything that
- * produced a non-degenerate score rather than actually discriminating good
- * lead transcriptions from bad ones. Measured directly on the reference
+ * needs its own dedicated pass; that has not been done. `lead:
+ * MIN_LEAD_SCORE` below is a placeholder chosen only to stop the `Infinity`
+ * trap, not a calibrated quality bar. It is a small positive number, not 0:
+ * `scoreLayer`'s own `hasSignal` check floors a genuinely silent comparison
+ * at *exactly* 0, and `score >= threshold` with `threshold: 0` would let
+ * that exact value through (0 >= 0) - the one degenerate case this table
+ * exists to catch. `MIN_LEAD_SCORE` only needs to clear that single value;
+ * it is not a quality bar and should not be read as accepting anything more
+ * than "produced some real, non-zero agreement with the stem," which is
+ * still a very low bar. Measured directly on the reference
  * track's real (post-salience) lead output: scores ranged 0.109-0.503 across
  * the nine emitting sections, and that range did not track the same
  * sections' ground-truth exact-MIDI accuracy - the two most accurate
@@ -151,13 +155,19 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
  * These numbers rest on one real track (the-chase, the only recording with
  * exact ground truth) - the same n=1 limitation the beat grid carries.
  */
+/** See `HEARING_THRESHOLDS`'s own doc comment: this exists only to reject
+ *  the exact `score === 0` degenerate case (`scoreLayer`'s `hasSignal`
+ *  guard), not to set any real quality bar. `score >= threshold` with
+ *  `threshold: 0` would otherwise let a literal zero-agreement lead through. */
+const MIN_LEAD_SCORE = 0.001
+
 export const HEARING_THRESHOLDS = {
   kick: 0.7,
   snare: 0.49,
   hats: 0.67,
   bass: 0.29,
   chords: 0.58,
-  lead: 0,
+  lead: MIN_LEAD_SCORE,
 }
 
 /** How much of a pitched layer's score its octave can cost. At 0.7 an octave

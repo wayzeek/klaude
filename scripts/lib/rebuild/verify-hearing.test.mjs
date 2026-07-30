@@ -286,4 +286,19 @@ describe('scoreLayer', () => {
 
     expect(scoreLayer(rendered, trueSilence, 'bass', grid)).toBe(0)
   })
+
+  // `HEARING_THRESHOLDS.lead` is a placeholder that exists only to reject the
+  // exact `score === 0` degenerate case - `thresholds[layer] ?? Infinity`'s
+  // own comment explains why `lead: 0` would not do that (`0 >= 0` is true).
+  // This pins the one case that constant has to catch.
+  it('a genuinely silent lead comparison does not clear HEARING_THRESHOLDS.lead', () => {
+    const frames = Math.round(1 * SAMPLE_RATE)
+    const rendered = new Float32Array(frames)
+    for (let i = 0; i < frames; i++) rendered[i] = 0.8 * Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE)
+    const trueSilence = new Float32Array(frames)
+
+    const score = scoreLayer(rendered, trueSilence, 'lead', grid)
+    expect(score).toBe(0)
+    expect(score >= HEARING_THRESHOLDS.lead).toBe(false)
+  })
 })

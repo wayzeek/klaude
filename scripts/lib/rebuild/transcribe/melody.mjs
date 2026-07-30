@@ -28,14 +28,14 @@
  * scores every candidate pitch independently instead of searching for one, so
  * a pad and a lead each produce their own visible peak. Measured against the
  * same 462-event ground truth this module's predecessor was measured
- * against: 9 of 12 sections emit a lead (up from 5/12), 208 notes emitted,
- * 110 land on a real sax onset (52.9%), 65 get the pitch class right (31.3%),
- * 33 get the exact MIDI note right (15.9% - more than double the ~7%
+ * against: 8 of 12 sections emit a lead (up from 5/12), 214 notes emitted,
+ * 109 land on a real sax onset (50.9%), 64 get the pitch class right (29.9%),
+ * 33 get the exact MIDI note right (15.4% - more than double the ~7%
  * baseline, on the same ground truth). Independently, on Bicep's "Glue" (a
- * synth record with no ground truth, so a different check): for 666 emitted
+ * synth record with no ground truth, so a different check): for 690 emitted
  * notes, the original mix's own spectral energy at the emitted fundamental
  * (no harmonics, so an octave error cannot hide behind them) beat the energy
- * an octave up, an octave down, and a fifth up 70.1% of the time - against a
+ * an octave up, an octave down, and a fifth up 73.0% of the time - against a
  * 25% chance floor and the old pipeline's 27%. Both numbers are large,
  * decisive improvements over both the disabled baseline and chance, on two
  * tracks in different genres, one scored against real ground truth and one
@@ -44,12 +44,29 @@
  * `detectMelodySalience` from `transcribeMelody` below.
  *
  * It is not a solved problem, and the numbers above say so plainly: most
- * individual notes are still not exactly right (31.3% pitch-class, 15.9%
+ * individual notes are still not exactly right (29.9% pitch-class, 15.4%
  * exact-MIDI), and per-section performance is uneven - some sections on
  * `the-chase` score 60%+ exact-MIDI, others land at zero even where the true
  * part plays continuously throughout. See melody-salience-report.md for the
  * full per-section breakdown and the parameter sweep this shipped
  * configuration came from.
+ *
+ * One gap found in review and deliberately left open rather than
+ * band-aided: `detectMelody`'s `isChordTopVoice` check (a stem with no real
+ * lead can still produce a clean, well-separated pitch line that is nothing
+ * but the chord progression's own top note) was ported to
+ * `detectMelodySalience` and measured directly against the reference track's
+ * real, already-detected harmony. Result: it destroyed real accuracy rather
+ * than protecting it - both of the two most accurate sections (67% and 64%
+ * exact-MIDI) were rejected, driving the whole-track score to 0%, because
+ * this pipeline's genuinely correct sax notes carry a chord-tone fraction
+ * (0.92-0.93) sitting *inside* the range of its clearly-wrong sections
+ * (0.87-0.99) - real tonal melodies lean on chord tones too, and there is no
+ * threshold in that range that separates the two. The check was reverted,
+ * not recalibrated, because the data shows no calibration exists to find:
+ * see melody-salience-report.md for the full measurement. A stem with
+ * nothing sounding but a chord progression can still produce a fake "lead"
+ * here - a known, accepted limitation, not a silently unhandled one.
  */
 
 import { decodeWav } from '../../decoded-audio.mjs'
@@ -83,7 +100,9 @@ const MAX_CHORD_TONE_FRACTION = 0.9
  * improvement over both the old YIN pipeline and chance, on two tracks in
  * different genres). `detectMelodySalience` takes its own options should a
  * future task need to override the tuned defaults; `transcribeMelody` itself
- * takes none, matching every other layer's `transcribe*` entry point.
+ * takes none, matching every other layer's `transcribe*` entry point. Unlike
+ * `detectMelody`, it does not take `chords` - see the module doc comment for
+ * why the chord-top-voice rejection does not carry over to this pipeline.
  */
 export function transcribeMelody(wavBuf, grid, sections) {
   return detectMelodySalience(wavBuf, grid, sections)
@@ -230,13 +249,26 @@ export function detectMelodySalience(
     const voicedFraction = voicedFractionIn(track, range.fromSec, range.toSec)
     if (voicedFraction < minVoicedFraction) return null
 
+    // No chord-top-voice rejection here - see the module doc comment. It was
+    // tried (porting `detectMelody`'s `isChordTopVoice`/
+    // `MAX_CHORD_TONE_FRACTION`) and measured out: unlike YIN's contaminated
+    // track, this pipeline's genuinely correct notes also carry a high
+    // chord-tone fraction (tonal melodies lean on chord tones), so the same
+    // threshold that separates real from fake for YIN has no separating
+    // power here and destroys real accuracy instead.
+
     const folded = foldToLoop(
       inSection.map(({ clarity, ...event }) => event),
       section,
       grid,
       { oneEventPerStep: true },
     )
-    if (folded.events.length < minDistinctPitches) return null
+    // Distinct pitches, not raw event count: `oneEventPerStep`'s collision
+    // resolution can leave several surviving events that all settled on the
+    // same MIDI note after competing pitches at other loop positions lost,
+    // which would otherwise let a drone through a count-only check.
+    const foldedDistinct = new Set(folded.events.map((event) => event.midi)).size
+    if (foldedDistinct < minDistinctPitches) return null
 
     return {
       loopBars: folded.loopBars,
