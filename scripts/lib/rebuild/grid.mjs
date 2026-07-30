@@ -87,18 +87,8 @@ export function beatPhase(novelty, beatHops) {
 /**
  * How well a candidate beat period explains the novelty curve.
  *
- * Onset energy on the beats alone is not enough, and the reason is worth
- * stating because it is the failure this whole function exists to catch. Take a
- * clip with a kick on every beat. A candidate at twice the true period puts a
- * beat on every second kick: every one of its beats still lands on a hit, so
- * scoring beats alone rates half-time exactly as highly as the truth.
- *
- * What separates them is the midpoints. At the true period the midpoints are
- * empty; at half-time they are full of kicks. So the score is onset energy on
- * the beats minus onset energy halfway between them, which punishes a period
- * that is too slow and a period that is too fast for opposite reasons.
- *
- * Both totals, not means. A wrong candidate period is not just wrong, it is
+ * Sum onset energy at every beat position for the phase `beatPhase` already
+ * found. Total, not mean: a wrong candidate period is not just wrong, it is
  * usually sparser or denser than the truth over the same clip - a candidate at
  * two-thirds the correct tempo covers fewer beats in 16 seconds than the truth
  * does. Dividing by beat count throws that away: measured on a 128 BPM clip, a
@@ -107,19 +97,39 @@ export function beatPhase(novelty, beatHops) {
  * fewer, luckier hops, and would have won. Summed rather than averaged, the
  * true tempo's larger beat count wins decisively (2.92 vs 2.09) because it is
  * the candidate that actually explains where the record's onset energy went.
+ *
+ * This used to also subtract onset energy from the midpoints between beats,
+ * on the reasoning that a candidate period twice too slow puts its beats on
+ * real hits while its midpoints land on the hits it skipped. That is true on
+ * a four-on-the-floor clip with silent off-beats - every synthetic fixture
+ * this module was built and tuned against - and false on syncopated music,
+ * where the off-beats are busy by construction. Measured on Bicep's "Glue"
+ * (broken beat, true tempo 130 BPM): at the true tempo, off-beat energy is
+ * 88% of on-beat energy (286.8 vs 326.4), because the off-beats are where a
+ * lot of the track's kicks actually land. At 104 BPM - a musically unrelated
+ * slower tempo, and the one the subtraction picked - off-beat energy is only
+ * 48% of on-beat (87.5 vs 180.8), purely because that candidate's off-beat
+ * positions happen to fall in gaps of the syncopated pattern. Subtracting
+ * off-beat energy was therefore scoring which candidate's off-beats were
+ * emptiest, not which candidate was correct, and confidence came out at 0.19
+ * on the wrong answer - on real syncopated material those are different
+ * questions and the subtraction answers the wrong one. On the-chase, the
+ * verified recording with a plainer beat, dropping the subtraction still
+ * recovers 138 BPM, at higher confidence than before (0.56 vs 0.28) - the
+ * subtraction was not load-bearing there either, just harmless. The on-beat
+ * sum alone, still built on `beatPhase`'s continuously-tracked positions
+ * rather than a once-rounded lag, is what is left. `findTempo` below handles
+ * the tempo-doubling gap this removal reopened, separately from this score.
  */
 function periodScore(novelty, beatHops) {
   const { offsetHops } = beatPhase(novelty, beatHops)
   let onBeat = 0
-  let offBeat = 0
   for (let i = 0; ; i++) {
     const hop = Math.round(offsetHops + i * beatHops)
     if (hop >= novelty.length) break
     onBeat += novelty[hop]
-    const mid = Math.round(offsetHops + (i + 0.5) * beatHops)
-    if (mid >= 0 && mid < novelty.length) offBeat += novelty[mid]
   }
-  return onBeat - offBeat
+  return onBeat
 }
 
 /**
@@ -191,24 +201,95 @@ function tempoPrior(bpm) {
   return Math.exp(-0.5 * distance * distance)
 }
 
+/**
+ * Above this BPM, the halving check below is skipped.
+ *
+ * `periodScore` summing raw novelty at each beat position cannot tell a slow
+ * tempo from its own double on plain, unsyncopated material: a candidate at
+ * twice the true tempo places a beat on every real hit plus one on every true
+ * silence, and the silences contribute nothing, so the two candidates' sums
+ * tie exactly. Measured on a 70 BPM click-only clip, both the true 70 BPM
+ * candidate and the wrong double, 140 BPM, score 15.673 - identical. A tie
+ * leaves `tempoPrior` (centred on 120) as the sole tiebreaker, and for a
+ * genuinely slow track it decides wrongly: prior(140) = 0.894 against
+ * prior(70) = 0.254, pulling the answer toward the middle of the search range
+ * for no reason the audio supports. This is not new - the code before this
+ * whole fix tied the same way, for the same reason, and picked the double
+ * just as confidently (measured: 67 BPM read as 134 at confidence 0.68) - it
+ * was simply never caught, because every fixture this module had before this
+ * change started at 90 BPM. It matters on real material: DOOM's "Funeral for
+ * the Damned" is 67 BPM.
+ *
+ * The ceiling exists because the same halving check misfires above roughly
+ * 160 BPM, for an unrelated reason: at a beat period only a handful of onset
+ * hops wide, `computeNovelty`'s frame-to-frame flux genuinely misses some
+ * real hits (measured on a 180 BPM click clip: 10 of 48 beats read exactly
+ * zero, even at the correct tempo, purely from hop-vs-decay phase - see
+ * `computeNovelty` in dsp.mjs), which can make a correct fast candidate's own
+ * sum look artificially close to its half's. Gating the check to candidates
+ * at or below 160 BPM keeps it out of that zone. It does not fully close the
+ * octave gap at the top of the range - some fast tempos can still fold to
+ * their half there, a pre-existing failure (measured on the code before this
+ * whole fix too) this change does not target - but it leaves that region
+ * exactly as it was, while fixing the slow end.
+ */
+const OCTAVE_HALVING_CEILING_BPM = 160
+
+/**
+ * How much more a candidate's own sum must exceed its half's before the
+ * candidate is trusted over the half.
+ *
+ * Tuned against the full 60-200 BPM sweep (1 BPM steps) plus both verified
+ * recordings. Below ~1.2, real slow tempos (60-85 BPM on the plain synthetic
+ * sweep) still lose to their double because the tie isn't caught firmly
+ * enough. From 1.3 to 1.5 the result is flat - the same set of candidates
+ * gets corrected either way, including both verified recordings staying
+ * exactly where they were (the-chase 138 BPM, Glue 130 BPM) - which is why
+ * 1.4, the middle of that flat stretch, is the value here rather than either
+ * edge. Above ~1.8 the check starts overriding candidates it should leave
+ * alone (174 BPM on the sweep folds to 87), and above 2.0 it reaches into
+ * both verified recordings and gets them wrong. 1.4 sits in the middle of
+ * the range that fixes the slow end without touching anything else measured.
+ */
+const OCTAVE_HALF_TOLERANCE = 1.4
+
+const MAX_OCTAVE_HALVINGS = 4
+
 export function findTempo(novelty, hopSeconds) {
+  const scoreAt = (bpm) => periodScore(novelty, 60 / bpm / hopSeconds)
   const scored = []
   for (let bpm = MIN_BPM; bpm <= MAX_BPM; bpm += BPM_STEP) {
-    const beatHops = 60 / bpm / hopSeconds
-    scored.push({ bpm, score: periodScore(novelty, beatHops) * tempoPrior(bpm) })
+    scored.push({ bpm, score: scoreAt(bpm) * tempoPrior(bpm) })
   }
   scored.sort((a, b) => b.score - a.score)
 
   const best = scored[0]
   if (best.score <= 0) return { bpm: best.bpm, confidence: 0 }
 
-  const runnerUp = scored.find((candidate) => Math.abs(candidate.bpm - best.bpm) / best.bpm > DISTINCT_BAND)
+  // The winner and every bpm visited while checking whether it should halve -
+  // all of them are the same hypothesis at different octaves, not genuinely
+  // different candidates, so none of them can serve as the other's runner-up.
+  let winner = best.bpm
+  const octaveChain = [winner]
+  if (winner <= OCTAVE_HALVING_CEILING_BPM) {
+    for (let i = 0; i < MAX_OCTAVE_HALVINGS && winner / 2 >= MIN_BPM; i++) {
+      const halfScore = scoreAt(winner / 2)
+      if (halfScore <= 0 || scoreAt(winner) > OCTAVE_HALF_TOLERANCE * halfScore) break
+      winner /= 2
+      octaveChain.push(winner)
+    }
+  }
+  const bestScore = scoreAt(winner) * tempoPrior(winner)
+  if (bestScore <= 0) return { bpm: winner, confidence: 0 }
+
+  const inOctaveChain = (bpm) => octaveChain.some((chained) => Math.abs(bpm - chained) / chained <= DISTINCT_BAND)
+  const runnerUp = scored.find((candidate) => !inOctaveChain(candidate.bpm))
   // Confidence is the margin over the nearest genuinely different candidate. A
   // curve that explains one tempo far better than any real alternative is one
   // to trust; a field of near-ties means the tracker is guessing, and
   // downstream work should not be built on a guess.
-  const confidence = runnerUp ? clamp01((best.score - Math.max(0, runnerUp.score)) / best.score) : 1
-  return { bpm: best.bpm, confidence }
+  const confidence = runnerUp ? clamp01((bestScore - Math.max(0, runnerUp.score)) / bestScore) : 1
+  return { bpm: winner, confidence }
 }
 
 /**
@@ -348,6 +429,37 @@ export function detectMeter(audio, beatSeconds, phaseSeconds) {
   return best
 }
 
+/**
+ * The tempo gate's own floor, independent of the general `minConfidence` a
+ * caller passes for phase and meter.
+ *
+ * Found by running the same 60-200 BPM, 1 BPM full sweep used to build the
+ * octave-halving fix above through a four-way classification (right and
+ * confident, right but gated, wrong but gated, wrong and confident) at
+ * several gate values. At the general 0.25 gate, two points on that sweep -
+ * both unusual tempos, not anything a real track is likely to sit at, and
+ * both only marginally over the line - are wrong and confident: 193 BPM
+ * reads 96.5 at confidence 0.2555, and 197 BPM reads 98.5 at 0.2517. That is
+ * the one outcome the whole confidence gate exists to prevent: succeeding
+ * while wrong. Raising the tempo gate to 0.26 puts both below it (0/141
+ * wrong-and-confident on the full sweep) at zero measured cost: it is still
+ * below 174 BPM's confidence (0.2682), the sweep point the tempo prior's own
+ * width was tuned to keep just above 0.25, so none of this module's existing
+ * tests move from passing to failing, and both verified recordings (the-chase
+ * 0.562, Glue 0.473) and the two regression guards (blackout 0.580, nightswim
+ * 0.489) all still clear it by a wide margin. 0.27, tried first, also closes
+ * both dangerous points but costs exactly one sweep point - 174 BPM drops to
+ * 0.268, just under it - which would have failed this module's own tests;
+ * 0.26 gets the same safety without that cost.
+ *
+ * A separate constant rather than raising `minConfidence` itself, because
+ * that parameter also gates phase and meter, and this finding is specific to
+ * the tempo score's own susceptibility to marginal false positives at unusual
+ * BPMs - phase and meter were not part of what this measured, and folding the
+ * fix into their shared threshold would raise their bar too on no evidence.
+ */
+const MIN_TEMPO_CONFIDENCE = 0.26
+
 export function detectGrid(wavBuf, { minConfidence = 0.25 } = {}) {
   const audio = decodeWav(wavBuf)
   const hopSeconds = ONSET_HOP / audio.sampleRate
@@ -356,7 +468,7 @@ export function detectGrid(wavBuf, { minConfidence = 0.25 } = {}) {
 
   const tempo = findTempo(novelty, hopSeconds)
   const measured = { bpm: tempo.bpm, tempoConfidence: tempo.confidence }
-  if (tempo.confidence < minConfidence) throw new LowConfidenceGridError('tempo', measured)
+  if (tempo.confidence < Math.max(minConfidence, MIN_TEMPO_CONFIDENCE)) throw new LowConfidenceGridError('tempo', measured)
 
   const beatSeconds = 60 / tempo.bpm
   const beatHops = beatSeconds / hopSeconds

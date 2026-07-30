@@ -117,20 +117,43 @@ const RHYTHM_ACCENT_GAIN = 1.6
  * beat is bit-identical, which is a meter detector's null case, not a fixture
  * that can prove one works. Default is 0 (no accent, every kick identical) so
  * every existing caller's fixture bytes are unchanged.
+ *
+ * `offBeatGain` adds a second kick halfway between each beat, at that gain
+ * relative to the on-beat kick's 0.6; `offBeatSkipEvery` leaves the off-beat
+ * kick out on every Nth beat (0 means never skip, a busy off-beat on every
+ * single beat) so the pattern is syncopated rather than a uniform doubled
+ * pulse. Both default to off (0), so every existing caller's fixture bytes
+ * are unchanged. This is what reproduces a broken-beat tempo error: see
+ * `findTempo`'s "syncopated" test in grid.test.mjs.
  */
-export function rhythmClip({ sampleRate = 44100, seconds, bpm, channels = 2, accentEvery = 0 }) {
+export function rhythmClip({
+  sampleRate = 44100,
+  seconds,
+  bpm,
+  channels = 2,
+  accentEvery = 0,
+  offBeatGain = 0,
+  offBeatSkipEvery = 0,
+}) {
   const numFrames = Math.round(seconds * sampleRate)
   const beatFrames = Math.round((60 / bpm) * sampleRate)
   const decayFrames = Math.round(RHYTHM_KICK_DECAY * sampleRate)
   const mono = new Float32Array(numFrames)
 
+  const addKick = (start, gain) => {
+    for (let i = 0; i < decayFrames && start + i < numFrames; i++) {
+      const envelope = Math.exp(-6 * (i / decayFrames))
+      mono[start + i] += gain * envelope * Math.sin((2 * Math.PI * RHYTHM_KICK_HZ * i) / sampleRate)
+    }
+  }
+
   let beatIndex = 0
   for (let beatStart = 0; beatStart < numFrames; beatStart += beatFrames, beatIndex++) {
     const accented = accentEvery > 0 && beatIndex % accentEvery === 0
-    const gain = accented ? 0.6 * RHYTHM_ACCENT_GAIN : 0.6
-    for (let i = 0; i < decayFrames && beatStart + i < numFrames; i++) {
-      const envelope = Math.exp(-6 * (i / decayFrames))
-      mono[beatStart + i] += gain * envelope * Math.sin((2 * Math.PI * RHYTHM_KICK_HZ * i) / sampleRate)
+    addKick(beatStart, accented ? 0.6 * RHYTHM_ACCENT_GAIN : 0.6)
+    if (offBeatGain > 0) {
+      const skip = offBeatSkipEvery > 0 && beatIndex % offBeatSkipEvery === offBeatSkipEvery - 1
+      if (!skip) addKick(beatStart + Math.round(beatFrames / 2), offBeatGain)
     }
   }
 

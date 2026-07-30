@@ -38,6 +38,114 @@ describe('findTempo', () => {
     const tempo = findTempo(novelty, hopSeconds)
     expect(tempo.confidence).toBe(0)
   })
+
+  /**
+   * The bug this module shipped with: Bicep's "Glue" (broken beat, true tempo
+   * 130 BPM) was detected as 104 BPM at confidence 0.19, below the 0.25 gate.
+   * `periodScore` summed onset energy on the beat and subtracted onset energy
+   * on the off-beat, on the reasoning that the true tempo's off-beats are
+   * empty. That holds on a four-on-the-floor clip - every fixture this module
+   * had before this test - and fails on syncopated material, where the
+   * off-beats are busy by construction: at Glue's true 130 BPM, off-beat
+   * energy measured 88% of on-beat energy, while at the wrong 104 BPM it was
+   * only 48%, so the subtraction preferred whichever candidate's off-beats
+   * happened to be emptiest rather than the candidate that was correct.
+   *
+   * `offBeatSkipEvery: 4` makes the off-beat kick busy on 3 of every 4 beats
+   * (skipped on the 4th) rather than every single beat, so the pattern is
+   * genuinely syncopated rather than a uniform doubled pulse a tracker could
+   * dismiss as "really double time". At 32 seconds and 130 BPM this fixture
+   * reproduces the exact wrong answer (104 BPM) against the code before this
+   * fix, and is proven by mutation: reverting `periodScore` to subtract
+   * off-beat energy again makes this test fail.
+   */
+  it('recovers the true tempo on a syncopated (broken-beat) pattern, not the tempo whose off-beats look emptiest', () => {
+    const bpm = 130
+    const { novelty, hopSeconds } = decodedOf(bpm, { seconds: 32, offBeatGain: 0.6, offBeatSkipEvery: 4 })
+    const tempo = findTempo(novelty, hopSeconds)
+    expect(Math.abs(tempo.bpm - bpm)).toBeLessThanOrEqual(1)
+    expect(tempo.confidence).toBeGreaterThanOrEqual(0.25)
+  })
+
+  /**
+   * The confidence gate must still reject a genuine guess after the fix
+   * above. Removing the off-beat subtraction makes `periodScore` a plain sum
+   * of onset energy at candidate beat positions, and incoherent noise still
+   * has real energy at every hop - the risk is that the gate stops meaning
+   * anything once nothing is subtracted. This is a stronger case than pure
+   * silence (already covered above): the curve is never zero, so the low
+   * score has to come from no candidate period explaining it any better than
+   * its neighbours, not from an empty sum. The generator is the same seeded
+   * LCG used elsewhere in this codebase's fixtures (see bands.test.mjs),
+   * not Math.random, so the test is deterministic.
+   */
+  it('still refuses to guess a tempo from incoherent noise with no periodicity', () => {
+    const { hopSeconds } = decodedOf(120)
+    let seed = 424242
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed / 0x7fffffff
+    }
+    const novelty = new Float32Array(20000)
+    for (let i = 0; i < novelty.length; i++) novelty[i] = rand() * 0.1
+    const tempo = findTempo(novelty, hopSeconds)
+    expect(tempo.confidence).toBeLessThan(0.25)
+  })
+
+  /**
+   * The bug the syncopation fix above reopened: on a plain, unsyncopated
+   * clip, on-beat sum alone cannot tell a slow tempo from its own double,
+   * because a candidate at twice the true tempo places a beat on every real
+   * hit plus one on every true silence, and the silences contribute nothing -
+   * both candidates' sums tie exactly. Measured directly: at 70 BPM (this
+   * test), the true candidate and its double, 140 BPM, both score 15.673 on
+   * raw on-beat sum. A tie leaves the tempo prior (centred on 120 BPM) to
+   * decide, and for a genuinely slow track it decides wrongly - prior(140) =
+   * 0.894 against prior(70) = 0.254. Against the code with the syncopation
+   * fix but no octave correction, this test fails with `tempo.bpm` at 140,
+   * not 70.
+   *
+   * This is not hypothetical: DOOM's "Funeral for the Damned" is 67 BPM, and
+   * against that same code it read as 134 BPM at confidence 0.68 - a wrong
+   * answer confident enough to clear the gate and build a bar grid twice too
+   * fast. The bar itself, not just the number, would have been wrong: every
+   * downstream quantisation step inherits a beat grid at the wrong rate.
+   *
+   * This assertion is on `tempo.bpm` alone, not confidence: on this
+   * particular fixture - a bare click with no accent and nothing else in the
+   * signal, closer to a worst case than anything real music produces -
+   * `tempo.confidence` comes out at 0 even after the fix, correctly halting
+   * the pipeline rather than shipping a guess (see `detectGrid`'s
+   * `LowConfidenceGridError`). What this test proves is narrower and more
+   * important: whatever tempo the pipeline does or doesn't commit to, it is
+   * no longer confusable with the wrong octave.
+   */
+  it('does not confuse a slow tempo with its own double on a plain, unaccented clip', () => {
+    const bpm = 70
+    const { novelty, hopSeconds } = decodedOf(bpm)
+    const tempo = findTempo(novelty, hopSeconds)
+    expect(Math.abs(tempo.bpm - bpm)).toBeLessThanOrEqual(1)
+  })
+
+  /**
+   * Two points the octave-halving fix does not reach: at 193 and 197 BPM -
+   * both unusual tempos, not anywhere a real track is likely to sit - the
+   * winner is wrong (96.5 and 98.5, roughly half) and only marginally over
+   * the old 0.25 gate (0.2555 and 0.2517). `findTempo` on its own has no
+   * fix for this - it is `detectGrid`'s `MIN_TEMPO_CONFIDENCE` (0.26) that
+   * catches it, so this test calls `findTempo` directly to pin the exact
+   * confidence values the gate has to clear, and `detectGrid`'s own test
+   * below proves the gate itself stops the run.
+   */
+  it('is only marginally confident on the two BPMs a 0.25 gate would have let through wrong', () => {
+    for (const bpm of [193, 197]) {
+      const { novelty, hopSeconds } = decodedOf(bpm)
+      const tempo = findTempo(novelty, hopSeconds)
+      expect(Math.abs(tempo.bpm - bpm)).toBeGreaterThan(1)
+      expect(tempo.confidence).toBeLessThan(0.26)
+      expect(tempo.confidence).toBeGreaterThanOrEqual(0.25)
+    }
+  })
 })
 
 describe('beatPhase', () => {
@@ -204,6 +312,19 @@ describe('detectGrid', () => {
     // for the low-band measurement to find either, and detectGrid must still
     // refuse rather than pick an arbitrary downbeat.
     expect(() => detectGrid(rhythmClip({ seconds: 16, bpm: 120 }))).toThrow(LowConfidenceGridError)
+  })
+
+  /**
+   * The end-to-end proof for `MIN_TEMPO_CONFIDENCE`: at 193 BPM, `findTempo`
+   * alone would have returned the wrong tempo (96.5, see the findTempo test
+   * above) at confidence 0.2555 - over the general 0.25 gate, meaning
+   * `detectGrid` would have built a bar grid at roughly half the true rate
+   * and every quantised note downstream would have inherited that error.
+   * The tempo-specific 0.26 floor stops it here instead, on the same
+   * fixture, before phase or meter are even measured.
+   */
+  it('refuses a tempo that is only marginally over the general gate but still wrong', () => {
+    expect(() => detectGrid(rhythmClip({ seconds: 16, bpm: 193, accentEvery: 4 }))).toThrow(LowConfidenceGridError)
   })
 
   it('halts rather than guessing when there is no rhythm to measure', () => {
