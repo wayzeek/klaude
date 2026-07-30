@@ -65,6 +65,35 @@ function bandLimitedNoise(seconds, { minHz = 30, maxHz = 400, components = 80, s
   return writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
 }
 
+/** A note re-struck `hits` times at the same pitch, `hitSeconds` apart, with
+ *  constant frequency throughout - only the amplitude envelope marks where
+ *  one repeat ends and the next begins. `dipFraction` is how far the
+ *  envelope falls between attacks relative to its peak (never to zero), so
+ *  the tone stays voiced and its pitch stays put across the whole clip -
+ *  exactly the condition under which `segmentNotes` has no pitch- or
+ *  voicing-based signal to split on. Modelled on what real re-attacks looked
+ *  like on the bass stem this bug was diagnosed against: clarity pinned near
+ *  1.0 through every interior attack, only the envelope moving. */
+function reattackedTone(midi, hits, hitSeconds, dipFraction = 0.35) {
+  const hz = midiToHz(midi)
+  const hitFrames = Math.floor(hitSeconds * SAMPLE_RATE)
+  const attack = SAMPLE_RATE * 0.005
+  const out = new Float32Array(hitFrames * hits)
+  for (let i = 0; i < out.length; i++) {
+    const posInHit = i % hitFrames
+    const env =
+      posInHit < attack
+        ? dipFraction + (1 - dipFraction) * (posInHit / attack)
+        : dipFraction + (1 - dipFraction) * Math.exp(-(posInHit - attack) / (hitFrames * 0.15))
+    const value =
+      Math.sin((2 * Math.PI * hz * i) / SAMPLE_RATE) +
+      0.5 * Math.sin((2 * Math.PI * hz * 2 * i) / SAMPLE_RATE) +
+      0.25 * Math.sin((2 * Math.PI * hz * 3 * i) / SAMPLE_RATE)
+    out[i] = 0.3 * env * value
+  }
+  return out
+}
+
 describe('pitch conversion', () => {
   it('round-trips A440 as MIDI 69', () => {
     expect(hzToMidi(440)).toBeCloseTo(69, 10)
@@ -239,6 +268,57 @@ describe('segmentNotes', () => {
     })
     const notes = segmentNotes(trackF0(decodeWav(silent), { minHz: 30, maxHz: 400 }))
     expect(notes).toEqual([])
+  })
+
+  describe('re-articulation', () => {
+    // Reproduces the bug diagnosed against Bicep's "Glue": a bassline that
+    // repeats the same pitch changes neither pitch nor voicing, so nothing in
+    // the pitch track itself marks where one note ends and the next begins.
+    // `reattackedTone` builds exactly that - constant frequency throughout,
+    // an amplitude envelope that attacks and decays at every repeat but never
+    // reaches silence or loses periodicity, matching what was measured on the
+    // real stem (clarity stayed pinned near 1.0 straight through a merged
+    // note's interior attacks).
+    const HITS = 4
+    const HIT_SECONDS = 0.2
+
+    it('collapses a repeated same-pitch note into one with no onset information', () => {
+      const audio = decodeWav(writeWavBuffer({
+        sampleRate: SAMPLE_RATE,
+        channels: 1,
+        samples: [reattackedTone(41, HITS, HIT_SECONDS)],
+      }))
+      const notes = segmentNotes(trackF0(audio, { minHz: 30, maxHz: 400 }))
+      expect(notes).toHaveLength(1)
+      expect(notes[0].endSec - notes[0].startSec).toBeGreaterThan(HIT_SECONDS * (HITS - 0.5))
+    })
+
+    it('splits a repeated same-pitch note when re-articulation onsets are supplied', () => {
+      const audio = decodeWav(writeWavBuffer({
+        sampleRate: SAMPLE_RATE,
+        channels: 1,
+        samples: [reattackedTone(41, HITS, HIT_SECONDS)],
+      }))
+      const onsets = Array.from({ length: HITS }, (_, i) => i * HIT_SECONDS)
+      const notes = segmentNotes(trackF0(audio, { minHz: 30, maxHz: 400 }), { onsets })
+      expect(notes).toHaveLength(HITS)
+      expect(notes.every((n) => Math.round(n.midi) === 41)).toBe(true)
+      expect(Math.max(...notes.map((n) => n.endSec - n.startSec))).toBeLessThan(HIT_SECONDS * 1.2)
+    })
+
+    it('ignores onsets when segmenting the lead register, unless a caller opts in', () => {
+      // The lead transcriber (melody.mjs) calls segmentNotes with no `onsets`
+      // at all - this pins that the default stays today's pitch/voicing-only
+      // behaviour, so re-enabling detectMelody later does not inherit
+      // re-articulation splitting it never asked for.
+      const audio = decodeWav(writeWavBuffer({
+        sampleRate: SAMPLE_RATE,
+        channels: 1,
+        samples: [reattackedTone(41, HITS, HIT_SECONDS)],
+      }))
+      const notes = segmentNotes(trackF0(audio, { minHz: 30, maxHz: 400 }), { minFrames: 3, semitoneTolerance: 0.7 })
+      expect(notes).toHaveLength(1)
+    })
   })
 })
 

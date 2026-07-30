@@ -271,7 +271,45 @@ function scoreFold(local, loopBars, perBar, sectionBars, oneEventPerStep = false
 
   const kept = survivors.map(({ bucket, count }) => mergeBucket(bucket, count, reps))
   kept.sort((a, b) => a.step - b.step || (a.midi ?? 0) - (b.midi ?? 0))
+  // `resolveStepCollisions` above only guarantees at most one event *starting*
+  // at a given step - it says nothing about an earlier event's `length`
+  // running into where the next one starts. `mergeBucket` computes each
+  // event's length as the median across repetitions independently of its
+  // neighbours, so a bucket whose length happened to run long in enough
+  // repetitions can outlive the next real onset even though no single
+  // repetition actually overlapped. Only meaningful where `oneEventPerStep`
+  // already promises a layer can't be doing two things at once - a chord or
+  // drum layer isn't asking for this and keeps today's behaviour.
+  if (oneEventPerStep) clampToNextOnset(kept, loopSteps)
   return { loopBars, events: kept, agreement }
+}
+
+/**
+ * Shorten each event so it never reaches the step where the next one starts,
+ * wrapping from the last event back to the first since the loop repeats -
+ * an event that outlives the loop's own end collides with its next
+ * repetition's first onset just as surely as it would collide with a
+ * neighbour inside the same cycle.
+ *
+ * Exists because `barToMini` (emit.mjs) walks a loop's step slots by jumping
+ * `event.length` steps past each onset, on the assumption that nothing else
+ * occupies the steps in between - true once this runs, silently false
+ * before it: a length long enough to jump past the next onset's own slot
+ * skipped it outright, rather than reporting an overlap. Measured directly
+ * on a real bass stem (Bicep's "Glue", several sections): a bucket's median
+ * length outlived the next onset by 1-17 steps, and the emitted mini-
+ * notation simply had one fewer note than the transcription - caught by the
+ * emission check as "events missing", not by anything upstream, because
+ * every step upstream of `barToMini` treats `length` as informational rather
+ * than as a claim on steps another event might also start on.
+ */
+function clampToNextOnset(events, loopSteps) {
+  if (events.length === 0) return
+  for (let i = 0; i < events.length; i++) {
+    const next = events[(i + 1) % events.length]
+    const gap = i + 1 < events.length ? next.step - events[i].step : loopSteps - events[i].step + next.step
+    if (gap > 0) events[i].length = Math.min(events[i].length, gap)
+  }
 }
 
 /**

@@ -10,6 +10,7 @@
  */
 
 import { decodeWav } from '../../decoded-audio.mjs'
+import { bandNovelty, pickBandOnsets } from './bands.mjs'
 import { segmentNotes, trackF0 } from './f0.mjs'
 import { foldToLoop, sectionRange, stepAt, stepDrift, stepSeconds } from './quantize.mjs'
 
@@ -64,6 +65,64 @@ export const BASS_RANGE = Object.freeze({ minHz: 30, maxHz: 400 })
  */
 const NOTE_WINDOW = 3200
 
+/**
+ * `segmentNotes` on its own only ever splits a note on a pitch change or a
+ * voicing drop. A bassline that repeats the same pitch - most of dance music
+ * - produces neither: the note is re-struck, but the pitch track cannot see
+ * that, so the whole run collapses into one held tone. Measured directly on
+ * two real bass stems with almost identical voiced time (Bicep's "Glue"
+ * against this repo's own "the-chase" fixture track): 386 notes against 78,
+ * a third of Glue's notes over a second long, the longest spanning two full
+ * bars. the-chase escapes only by accident - its line moves pitch on nearly
+ * every step, so `semitoneTolerance` alone happens to catch every
+ * re-articulation there.
+ *
+ * The fix needs a signal the pitch track does not carry: an amplitude attack.
+ * Two were measured against the real Glue stem before picking one.
+ *
+ * `trackF0`'s own per-frame `rms` was tried first, since it is already
+ * computed and would need no new import. Rejected: its window is 3200
+ * samples (72ms, sized for a 30Hz fundamental - see `NOTE_WINDOW` above), and
+ * at that width the windowed RMS ripples on its own as the window slides
+ * across the beating pattern of the note's own harmonics, producing local
+ * peaks every 15-25ms with no relationship to any real event. On a section
+ * with a genuinely held two-bar pedal tone under a sidechain pump, this
+ * produced over 1000 "onsets" track-wide - denser than the loudest real
+ * sixteenth-note groove has any business being.
+ *
+ * `bandEnergyRise` on a dedicated bass-band FFT (23ms window, matched to
+ * `dsp.mjs`'s onset hop) resolves fast re-articulations without that
+ * artifact, but its absolute magnitude scales with the stem's own gain
+ * staging - the two stems' peak values differed by 1.6x for reasons that have
+ * nothing to do with rhythm. A floor picked as a percentile of one stem's own
+ * distribution does not transfer: high enough to leave the-chase's already-
+ * correct segmentation alone, it was too conservative to touch more than a
+ * couple of Glue's merged notes; low enough to fix Glue, it fragmented
+ * the-chase's short, correct notes into meaningless slivers (median duration
+ * dropped from 0.197s to 0.081s).
+ *
+ * `bandNovelty` - the self-normalised flux-over-magnitude ratio already used
+ * for drum onsets - solved both problems at once, because the ratio cancels
+ * out exactly the gain difference the raw magnitude carried. Its own default
+ * threshold (1.4, tuned for a percussive hit against a near-silent
+ * background) still fired on the pump ripple: `bandNovelty`'s numerator is
+ * zero on every frame where energy is falling, so even a small ripple's rise
+ * looks locally significant against neighbours that are mostly zero. Swept
+ * against both real stems together: 4.0 is where the-chase's own numbers
+ * stop moving in any way that matters (386 -> 398 notes, but the median
+ * duration, the count over a bar, and the longest note are all identical to
+ * baseline) while Glue's worst symptom keeps improving (sections with a note
+ * over a bar: 24 -> 19; notes over a second: 27 -> 23). The result was stable
+ * across floor 0.1-0.3 and threshold 3.5-4.5, not a knife-edge fit to one
+ * value.
+ */
+const REATTACK_THRESHOLD = 4.0
+/** Below `segmentNotes`' own `DEFAULT_MIN_FRAMES` (4 frames = 46.4ms at this
+ *  hop) a forced split produces two fragments too short to survive, silently
+ *  deleting real content instead of splitting it. `pickBandOnsets`' own
+ *  default (30ms) is under that; this clears it with margin. */
+const REATTACK_MIN_SEPARATION = 0.05
+
 /** A section needs this many notes to be worth emitting a bass layer for. */
 const MIN_NOTES_PER_SECTION = 2
 /** And the mean clarity of those notes has to clear this, or what we are
@@ -75,7 +134,15 @@ const MIN_LENGTH_STEPS = 0.5
 export function transcribeBass(wavBuf, grid, sections) {
   const audio = decodeWav(wavBuf)
   const track = trackF0(audio, { ...BASS_RANGE, windowSize: NOTE_WINDOW, hop: 512 })
-  const notes = segmentNotes(track)
+  // Same hop as `track` (both default to `dsp.mjs`'s ONSET_HOP/trackF0's own
+  // 512), so an onset's `seconds` lines up with a pitch frame one-to-one -
+  // see `segmentNotes`' own doc comment for how it consumes this.
+  const novelty = bandNovelty(audio, { lo: BASS_RANGE.minHz, hi: BASS_RANGE.maxHz })
+  const onsets = pickBandOnsets(novelty, track.hopSeconds, {
+    threshold: REATTACK_THRESHOLD,
+    minSeparation: REATTACK_MIN_SEPARATION,
+  }).map((onset) => onset.seconds)
+  const notes = segmentNotes(track, { onsets })
   const perStep = stepSeconds(grid)
 
   const events = []

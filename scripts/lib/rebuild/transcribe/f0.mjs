@@ -285,15 +285,35 @@ class RunningMedian {
  *
  * Median-filters the MIDI values first, so one bad frame in the middle of a
  * held note does not split it in two. Then walks the track, starting a new note
- * whenever voicing drops or pitch moves more than the tolerance.
+ * whenever voicing drops, pitch moves more than the tolerance, or a caller-
+ * supplied re-articulation onset falls inside the note (see `onsets` below).
  */
 export function segmentNotes(
   track,
-  { minFrames = DEFAULT_MIN_FRAMES, semitoneTolerance = DEFAULT_SEMITONE_TOLERANCE } = {},
+  { minFrames = DEFAULT_MIN_FRAMES, semitoneTolerance = DEFAULT_SEMITONE_TOLERANCE, onsets = [] } = {},
 ) {
   const { frames, hopSeconds } = track
   if (!frames.length) return []
   const smoothed = medianFilter(frames, MEDIAN_WIDTH)
+
+  // Neither "pitch moved" nor "voicing dropped" fires when a note is
+  // re-struck at the same pitch with no silence in between - a repeated bass
+  // note, which is most of a dance-music bassline. That case has no signal in
+  // the pitch track itself; it only shows up as an amplitude attack, which is
+  // why callers that care about it (bass.mjs) measure one separately and pass
+  // it in here as `onsets` (seconds) rather than this module computing it -
+  // segmentNotes only ever sees a pitch track, and the lead transcriber,
+  // which calls this with no onsets, gets exactly today's behaviour.
+  // Onsets are converted to frame indices once, up front, on the assumption
+  // that they share this track's hop (true for every real caller: bass.mjs
+  // measures onsets on the same audio at the same hop) - a caller on a
+  // different hop still works, just rounds to the nearest frame instead of
+  // landing exactly on one.
+  const forceSplitAt = new Set()
+  for (const seconds of onsets) {
+    const index = Math.round((seconds - frames[0].seconds) / hopSeconds)
+    if (index >= 0 && index < frames.length) forceSplitAt.add(index)
+  }
 
   const notes = []
   let current = null
@@ -318,6 +338,12 @@ export function segmentNotes(
       continue
     }
     if (current && Math.abs(midi - current.reference) > semitoneTolerance) close(i)
+    // `i > current.startIndex` keeps an onset landing on a note's own first
+    // frame from closing it before it has any content - that would just
+    // reopen an identical note one frame later, for free (a dropped
+    // zero-length fragment plus a fresh start), so skipping it is a pure
+    // efficiency win, not a behaviour difference.
+    else if (current && forceSplitAt.has(i) && i > current.startIndex) close(i)
     if (!current) current = { startIndex: i, reference: midi, median: new RunningMedian(), count: 0, clarity: 0 }
     current.median.push(midi)
     current.count++

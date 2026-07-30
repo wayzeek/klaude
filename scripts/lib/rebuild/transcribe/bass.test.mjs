@@ -39,6 +39,43 @@ function bassClip(steps, { gain = 0.5 } = {}) {
 /** Repeat a one-bar step array `bars` times. */
 const repeat = (bar, bars) => Array.from({ length: bars }, () => bar).flat()
 
+/** One bar, repeated `bars` times: a single continuously-held note for
+ *  `holdSteps` steps (one unbroken envelope, not `bassClip`'s independent
+ *  per-step attack) followed by silence for the rest of the bar. Unlike
+ *  `bassClip` with repeated identical steps, nothing here re-attacks - this
+ *  is what a genuinely sustained note looks like, as opposed to a repeated
+ *  same-pitch note (see the re-articulation tests below). */
+function heldBassClip(midi, holdSteps, stepsPerBar, bars, { gain = 0.5 } = {}) {
+  const barFrames = Math.ceil(stepsPerBar * STEP * SAMPLE_RATE)
+  const holdFrames = Math.floor(holdSteps * STEP * SAMPLE_RATE)
+  const hz = midiToHz(midi)
+  const bar = new Float32Array(barFrames)
+  for (let i = 0; i < holdFrames; i++) {
+    const fade = Math.min(1, i / (SAMPLE_RATE * 0.004), (holdFrames - i) / (SAMPLE_RATE * 0.004))
+    bar[i] =
+      gain * fade *
+      (Math.sin((2 * Math.PI * hz * i) / SAMPLE_RATE) +
+        0.5 * Math.sin((2 * Math.PI * hz * 2 * i) / SAMPLE_RATE) +
+        0.25 * Math.sin((2 * Math.PI * hz * 3 * i) / SAMPLE_RATE))
+  }
+  const out = new Float32Array(barFrames * bars)
+  for (let b = 0; b < bars; b++) out.set(bar, b * barFrames)
+  return writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
+}
+
+/** `stepsPerBar` sixteenths, `hits` of them holding the same pitch with a
+ *  real attack at every step (no legato) - a repeated same-pitch bassline,
+ *  the case #NN diagnosed against Bicep's "Glue": constant pitch and
+ *  continuous voicing, so only an amplitude attack marks each repeat. Built
+ *  from `bassClip` itself: consecutive identical steps there already fade to
+ *  near-zero and back at every step boundary, which is a real re-attack, not
+ *  legato. */
+function reattackedBassClip(midi, hits, stepsPerBar, bars, { gain = 0.5 } = {}) {
+  const bar = new Array(stepsPerBar).fill(null)
+  for (let i = 0; i < hits; i++) bar[i] = midi
+  return bassClip(repeat(bar, bars), { gain })
+}
+
 const SECTION_4 = [{ index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null }]
 
 describe('transcribeBass', () => {
@@ -68,11 +105,24 @@ describe('transcribeBass', () => {
   })
 
   it('gives every note a length in steps', () => {
-    // A note held for four steps, then silence.
-    const bar = [41, 41, 41, 41, ...new Array(12).fill(null)]
-    const loop = transcribeBass(bassClip(repeat(bar, 4)), grid, SECTION_4)[0]
+    // One continuously-held note across four steps - a single unbroken
+    // envelope, not four re-attacks (see the re-articulation tests below for
+    // that case) - then silence.
+    const loop = transcribeBass(heldBassClip(41, 4, 16, 4), grid, SECTION_4)[0]
     expect(loop.events).toHaveLength(1)
     expect(loop.events[0].length).toBeGreaterThanOrEqual(3)
+  })
+
+  describe('re-articulation', () => {
+    it('splits a bassline that repeats the same pitch, instead of collapsing it into one held note', () => {
+      // Four eighth-note hits, all F2, no rests between them - the exact
+      // shape #NN diagnosed: constant pitch and continuous voicing, so the
+      // only signal marking each repeat is an amplitude attack.
+      const loop = transcribeBass(reattackedBassClip(41, 4, 16, 4), grid, SECTION_4)[0]
+      expect(loop).not.toBeNull()
+      expect(loop.events.length).toBeGreaterThan(1)
+      expect(loop.events.every((e) => e.midi === 41)).toBe(true)
+    })
   })
 
   it('returns null for a silent section rather than an empty loop', () => {

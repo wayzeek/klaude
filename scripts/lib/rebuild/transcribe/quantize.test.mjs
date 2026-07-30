@@ -352,5 +352,41 @@ describe('foldToLoop', () => {
       expect(folded.events).toHaveLength(1)
       expect(folded.events[0].midi).toBe(24)
     })
+
+    it('clamps a note that would otherwise run into the next one', () => {
+      // Three one-bar repetitions of the same two-note bassline: a note at
+      // step 0 that ran long in two of the three repetitions (an onset
+      // landing a touch late, exactly what real re-articulation splits on
+      // Bicep's "Glue" produced) and a second, distinct re-articulation at
+      // step 4 present in two of the three. `mergeBucket` medians each
+      // bucket's length independently, so step 0 medians to a length (10)
+      // that reaches straight through step 4's own onset - `barToMini`
+      // (emit.mjs) would then jump past step 4 entirely and silently drop
+      // it, which is exactly what the emission check caught on the real
+      // stem as "events missing", not an octave or pitch-class error.
+      const events = [
+        { ...ev(0, 24), length: 10 },
+        { ...ev(4, 24), length: 1 },
+        { ...ev(16, 24), length: 10 },
+        { ...ev(20, 24), length: 1 },
+        { ...ev(32, 24), length: 1 },
+      ]
+      const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid, { candidates: [1], oneEventPerStep: true })
+      const byStep = new Map(folded.events.map((e) => [e.step, e]))
+      expect(byStep.get(4)).toBeDefined()
+      expect(byStep.get(0).length).toBeLessThanOrEqual(4)
+    })
+
+    it('wraps the clamp from the loop\'s last event back to its first', () => {
+      // One event per one-bar loop, present in every repetition with a
+      // length (20) longer than the loop itself (16 steps) - the boundary
+      // case `clampToNextOnset` calls out: a length that outlives the loop's
+      // own end collides with the next repetition's onset just as surely as
+      // it would collide with a neighbour inside the same cycle.
+      const events = [{ ...ev(0, 24), length: 20 }, { ...ev(16, 24), length: 20 }, { ...ev(32, 24), length: 20 }]
+      const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid, { candidates: [1], oneEventPerStep: true })
+      expect(folded.events).toHaveLength(1)
+      expect(folded.events[0].length).toBeLessThanOrEqual(16)
+    })
   })
 })
