@@ -134,10 +134,12 @@ function isRelativePair(nameA, nameB) {
  *
  * Sized well below the confidence margins this module and its neighbours
  * report on real, unambiguous material (the-chase's chroma-based key, for
- * comparison, sits at 0.085 - see metadata.mjs's `KEY_UNSURE_GATE` doc
- * comment) and well above numerical noise, so it only fires on the specific
- * case it exists for: a relative major/minor pair whose weighted pitch-class
- * content is genuinely, not just superficially, ambiguous.
+ * comparison, sits at 0.085 - see metadata.mjs's `reconcileKey` doc comment
+ * for why a low detector confidence like that is not, by itself, treated as
+ * license to defer to an external source) and well above numerical noise, so
+ * it only fires on the specific case it exists for: a relative major/minor
+ * pair whose weighted pitch-class content is genuinely, not just
+ * superficially, ambiguous.
  */
 const RELATIVE_TIE_MARGIN = 0.02
 

@@ -271,7 +271,24 @@ async function lookupMusicBrainzAcousticBrainz({ artist, title, duration }, opts
   const bpmValid = Number.isFinite(bpm) && bpm > 0
   if (!bpmValid && !key) return null
 
-  return { bpm: bpmValid ? bpm : null, key, source: 'acousticbrainz', matchConfidence: best.confidence }
+  // Essentia's key extractor (what AcousticBrainz ran to produce `key_key`/
+  // `key_scale`) also reports `key_strength` alongside them: its own
+  // correlation strength for the fitted key profile, in [0, 1]. This is
+  // "how confident is this ALGORITHM in this KEY" - a completely different
+  // question from `best.confidence` above, which is "did we find the right
+  // RECORDING". `reconcileKey` (below) must never see the latter mislabelled
+  // as the former - see its own doc comment for why that mislabelling was a
+  // real, shipped bug. `null`, not 0, when the field is missing OR explicitly
+  // `null` in the response: a real measured strength of 0 is informative
+  // (this algorithm found no key at all); no reported value is not evidence
+  // of anything. `typeof ... === 'number'` (not `Number.isFinite` on the raw
+  // JSON value directly) matters here: `Number(null)` is `0`, a real finite
+  // number, so a naive `Number(...)` cast would silently turn an explicit
+  // `key_strength: null` into a fake zero-confidence reading.
+  const rawKeyStrength = lowLevel.data?.tonal?.key_strength
+  const keyConfidence = key && typeof rawKeyStrength === 'number' && Number.isFinite(rawKeyStrength) ? clamp01(rawKeyStrength) : null
+
+  return { bpm: bpmValid ? bpm : null, key, keyConfidence, source: 'acousticbrainz', matchConfidence: best.confidence }
 }
 
 // --- caching -----------------------------------------------------------------
@@ -290,6 +307,11 @@ function looksLikeResult(value) {
     typeof value === 'object' &&
     (value.bpm === null || typeof value.bpm === 'number') &&
     (value.key === null || typeof value.key === 'string') &&
+    // `undefined` is accepted, not just `null`/`number`: a cache file written
+    // before this field existed must still be trusted (it is not corrupted,
+    // just older), rather than forcing a re-query that may hit an
+    // unreachable network - see `reconcileKey`'s fallback for the same field.
+    (value.keyConfidence === undefined || value.keyConfidence === null || typeof value.keyConfidence === 'number') &&
     (value.source === null || typeof value.source === 'string') &&
     typeof value.matchConfidence === 'number'
   )
@@ -318,7 +340,7 @@ async function writeCache(cacheDir, query, result) {
 }
 
 function emptyResult() {
-  return { bpm: null, key: null, source: null, matchConfidence: 0, bpmMatchConfidence: 0, keyMatchConfidence: 0 }
+  return { bpm: null, key: null, source: null, matchConfidence: 0, bpmMatchConfidence: 0, keyMatchConfidence: 0, keyConfidence: null }
 }
 
 /**
@@ -381,6 +403,7 @@ export async function lookupTrack(query = {}, options = {}) {
     if (mbab.key) {
       result.key = mbab.key
       result.keyMatchConfidence = mbab.matchConfidence
+      result.keyConfidence = mbab.keyConfidence
     }
     if (contributedBpm || mbab.key) sources.push(mbab.source)
   }
@@ -394,54 +417,68 @@ export async function lookupTrack(query = {}, options = {}) {
 
 // --- reconciliation: key -----------------------------------------------------
 
-/**
- * How much lower than a genuine agreement a detector's own confidence must
- * be before a known key is trusted outright instead of triggering the
- * "disagree materially" case.
- *
- * Not tuned against a large sample - there are exactly two real numbers
- * available (see below) - but bounded well above both of them rather than
- * picked arbitrarily. Deliberately NOT used as a floor that nulls out a
- * low-confidence key when no known key is available at all (see
- * `reconcileKey`'s 'none' branch): measured directly on this project's own
- * two verifiable tracks, moltek's own "the-chase" (true key F minor, source-
- * documented) reports F minor at confidence 0.0847 - CORRECT - while Bicep's
- * "Glue" reports D major at confidence 0.0941 - WRONG. The wrong answer is
- * *more* confident than the right one. No single threshold can separate
- * those two numbers, so this module does not pretend one does; the fix is
- * an external fact to cross-check against, not a tighter guess.
- */
-const KEY_UNSURE_GATE = 0.2
-
 /** Confidence reported when the detector and a known key agree. */
 const KEY_AGREEMENT_CONFIDENCE = 0.9
 
 /**
- * Combine a detected key with a known one from `lookupTrack`, exactly the
- * way `reconcileTempo` (grid.mjs) combines a detected tempo with a known one,
- * for the same three reasons:
+ * Confidence used when a known key fills a void - there is no local key
+ * evidence at all to compare it against - and the source itself did not
+ * report how confident IT is in that key (e.g. a cache file written before
+ * this module captured AcousticBrainz's own `key_strength`, or a future
+ * source with no key-quality signal). A flat, documented default for "trust
+ * a named source outright when there is nothing else to go on" when no real
+ * per-source number exists - not a floor applied on top of a reported value
+ * (a genuinely low `keyConfidence`, e.g. 0.1, is used as-is, not raised to
+ * this), and not a measured probability. Deliberately NOT derived from
+ * `matchConfidence` - see this function's own doc comment for why "the right
+ * recording" and "the right key" are different questions.
+ */
+export const KEY_VOID_FALLBACK_CONFIDENCE = 0.6
+
+/**
+ * Combine a detected key with a known one from `lookupTrack`, as a prior and
+ * a cross-check on a genuine disagreement, the same discipline
+ * `reconcileTempo` (grid.mjs) already applies to tempo:
  *
  *   - agree (via `keysMatch`, which already treats relative major/minor and
- *     fifth-neighbours as indistinguishable from audio alone): raise
- *     confidence, keep going.
- *   - known, detector unsure (its own confidence under `KEY_UNSURE_GATE`):
- *     trust the source outright.
- *   - disagree materially (detector reports a *different* key at or above
- *     the gate): surfaced, not silently resolved. Unlike a tempo mismatch -
- *     which halts the whole run, because everything downstream is built on
- *     the beat grid - a key mismatch only affects the harmonic layer's chord
- *     anchor register (see emit.mjs's `anchor`/`prefersFlats`, which already
- *     fall back to C major on an empty key name), so this returns `name:
- *     null` rather than throwing: the emitter's existing neutral default is
- *     safer than guessing between two answers this module cannot adjudicate.
- *
- * With no known key at all, this returns the detected key unchanged - see
- * `KEY_UNSURE_GATE`'s doc comment for why a bare confidence floor is not
- * used here even though the bug this module exists to fix is exactly a
- * low-confidence key being trusted.
+ *     fifth-neighbours as indistinguishable from audio alone): the known
+ *     key's spelling is adopted (not a "replacement" in the disagreement
+ *     sense below - two independent measurements corroborating each other is
+ *     exactly what should raise confidence and pick the more canonical name),
+ *     at confidence raised to at least `KEY_AGREEMENT_CONFIDENCE`.
+ *   - no local key at all (`detected` has no name): the known key fills the
+ *     void, at the confidence of the key EVIDENCE itself (`known.keyConfidence`,
+ *     e.g. AcousticBrainz's `key_strength`) - or `KEY_VOID_FALLBACK_CONFIDENCE`
+ *     when the source did not report one - never at the recording-match
+ *     confidence (see `KEY_VOID_FALLBACK_CONFIDENCE`'s doc comment).
+ *   - disagree materially (`detected` names a genuinely different key that
+ *     does not satisfy `keysMatch`): surfaced, not silently resolved into
+ *     either answer, regardless of how low the detector's own confidence is.
+ *     This used to have a fourth branch here - "detector unsure, trust the
+ *     known key outright" - and it was a real, shipped bug: Bicep's "Glue"
+ *     detected E minor from its own transcribed notes at confidence 0.098
+ *     (below what felt like a reasonable "unsure" bar), so that branch fired
+ *     and silently adopted AcousticBrainz's "G# major" - a genuinely
+ *     different key, not a relative or enharmonic match - at a confidence
+ *     (0.975) computed from `0.5 + 0.5 * matchConfidence`, i.e. "how sure are
+ *     we this is the right recording" relabelled as "how sure are we this is
+ *     the right key". A detector being unconfident is not evidence that a
+ *     *different*, external answer is correct; it is only evidence the
+ *     detector doesn't know. Unlike a tempo mismatch - which halts the whole
+ *     run, because everything downstream is built on the beat grid - a key
+ *     mismatch only affects the harmonic layer's chord anchor register (see
+ *     emit.mjs's `anchor`/`prefersFlats`, which already fall back to C major
+ *     on an empty key name), so this returns `name: null` rather than
+ *     throwing: the emitter's existing neutral default is safer than
+ *     guessing between two answers this module cannot adjudicate.
+ *     `detected`/`known` are carried on the returned object so a caller that
+ *     wants to log or display the disagreement can, without re-deriving it -
+ *     they are not this module's mechanism for preserving the raw values
+ *     for the record; a caller like `rebuild.mjs` already keeps its own copy
+ *     of both (the raw `lookupTrack` result, the raw local detection) on
+ *     `reference.json` independently of what this function returns.
  */
 export function reconcileKey(detected, known, opts = {}) {
-  const gate = opts.unsureGate ?? KEY_UNSURE_GATE
   const minMatch = opts.minMatchConfidence ?? MIN_MATCH_CONFIDENCE
   const detectedName = detected?.name ?? null
   const detectedConfidence = detected?.confidence ?? 0
@@ -451,12 +488,17 @@ export function reconcileKey(detected, known, opts = {}) {
     return { name: detectedName, confidence: detectedConfidence, agreement: 'none' }
   }
 
-  if (detectedName && keysMatch(detectedName, knownName)) {
-    return { name: knownName, confidence: clamp01(Math.max(detectedConfidence, KEY_AGREEMENT_CONFIDENCE)), agreement: 'agree' }
+  if (!detectedName) {
+    // `Number.isFinite`, not `typeof === 'number'`: the latter also accepts
+    // `NaN`, which `clamp01` cannot fix (`Math.max`/`Math.min` both propagate
+    // it) - a malformed cache file or a direct caller passing a bad value
+    // must fall back to the documented default, not silently confidence: NaN.
+    const voidConfidence = Number.isFinite(known.keyConfidence) ? known.keyConfidence : KEY_VOID_FALLBACK_CONFIDENCE
+    return { name: knownName, confidence: clamp01(voidConfidence), agreement: 'known' }
   }
 
-  if (detectedConfidence < gate) {
-    return { name: knownName, confidence: clamp01(0.5 + 0.5 * (known.matchConfidence ?? 1)), agreement: 'known' }
+  if (keysMatch(detectedName, knownName)) {
+    return { name: knownName, confidence: clamp01(Math.max(detectedConfidence, KEY_AGREEMENT_CONFIDENCE)), agreement: 'agree' }
   }
 
   return { name: null, confidence: 0, agreement: 'disagreement', detected: detectedName, known: knownName }

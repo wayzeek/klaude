@@ -113,7 +113,10 @@ async function main() {
   // each land on a different recording, so a strong tempo match must not
   // lend its confidence to an unrelated, weaker key match (or vice versa).
   const knownTempo = metadata.bpm != null ? { bpm: metadata.bpm, matchConfidence: metadata.bpmMatchConfidence, source: metadata.source } : null
-  const knownKey = metadata.key != null ? { name: metadata.key, matchConfidence: metadata.keyMatchConfidence, source: metadata.source } : null
+  const knownKey =
+    metadata.key != null
+      ? { name: metadata.key, matchConfidence: metadata.keyMatchConfidence, keyConfidence: metadata.keyConfidence, source: metadata.source }
+      : null
 
   say('profiling')
   const profile = profileReference(wavBuf, { title: source.title, url: input, source: source.source })

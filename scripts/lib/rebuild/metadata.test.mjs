@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { MIN_MATCH_CONFIDENCE, lookupTrack, parseArtistTitle, reconcileKey, scoreMatch } from './metadata.mjs'
+import { KEY_VOID_FALLBACK_CONFIDENCE, MIN_MATCH_CONFIDENCE, lookupTrack, parseArtistTitle, reconcileKey, scoreMatch } from './metadata.mjs'
 
 // --- fetch mocking -----------------------------------------------------------
 
@@ -35,7 +35,7 @@ function makeFetch(routes) {
 
 const reject = (error) => () => Promise.reject(error)
 
-const EMPTY_RESULT = { bpm: null, key: null, source: null, matchConfidence: 0, bpmMatchConfidence: 0, keyMatchConfidence: 0 }
+const EMPTY_RESULT = { bpm: null, key: null, source: null, matchConfidence: 0, bpmMatchConfidence: 0, keyMatchConfidence: 0, keyConfidence: null }
 
 // Real payload shapes, captured live against the target track (Bicep -
 // "Glue") on 2026-07-28. Deezer was reachable end to end; MusicBrainz was not
@@ -59,7 +59,17 @@ const MB_SEARCH_GLUE = {
     { id: 'aaaaaaaa-0000-0000-0000-000000000001', title: 'Glue', score: 100, length: 269000, 'artist-credit': [{ name: 'Bicep' }] },
   ],
 }
-const AB_LOWLEVEL_GLUE = { rhythm: { bpm: 129.98 }, tonal: { key_key: 'D', key_scale: 'major' } }
+// `key_strength` is Essentia's own correlation strength for the fitted key
+// profile - a real field in AcousticBrainz's low-level schema, independent of
+// `score` (MusicBrainz's recording-match text score, used above for
+// `matchConfidence`). 0.72 is an arbitrary but plausible value chosen only to
+// be clearly distinguishable from every `matchConfidence` figure in this file.
+const AB_LOWLEVEL_GLUE = { rhythm: { bpm: 129.98 }, tonal: { key_key: 'D', key_scale: 'major', key_strength: 0.72 } }
+
+// The pre-key_strength AcousticBrainz response shape (or an older cached
+// lookup) - still a valid key report, just with no independent confidence
+// signal of its own.
+const AB_LOWLEVEL_GLUE_NO_STRENGTH = { rhythm: { bpm: 129.98 }, tonal: { key_key: 'D', key_scale: 'major' } }
 
 describe('parseArtistTitle', () => {
   it('splits on a pipe, measured live against the target track', () => {
@@ -182,6 +192,50 @@ describe('lookupTrack', () => {
     expect(result.bpm).toBeCloseTo(129.98, 2)
     expect(result.key).toBe('D major')
     expect(result.source).toBe('acousticbrainz')
+    // The key EVIDENCE's own confidence (AcousticBrainz's key_strength),
+    // carried separately from the recording-match confidence below -
+    // reconcileKey must never see one mislabelled as the other.
+    expect(result.keyConfidence).toBeCloseTo(0.72, 2)
+    expect(result.keyMatchConfidence).toBeGreaterThan(0.72) // a much stronger MusicBrainz match than 0.72
+    expect(result.keyConfidence).not.toBe(result.keyMatchConfidence)
+  })
+
+  it('reports no key confidence when AcousticBrainz predates key_strength, rather than inventing one', async () => {
+    const fetchImpl = makeFetch([
+      ['deezer.com/search', jsonResponse({ data: [] })],
+      ['musicbrainz.org', jsonResponse(MB_SEARCH_GLUE)],
+      ['acousticbrainz.org', jsonResponse(AB_LOWLEVEL_GLUE_NO_STRENGTH)],
+    ])
+    const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 269 }, { fetchImpl })
+    expect(result.key).toBe('D major')
+    expect(result.keyConfidence).toBeNull()
+  })
+
+  it('treats an explicit key_strength: null the same as a missing field, not as a measured zero', async () => {
+    // `Number(null)` is `0` - a real, finite number - so a naive cast would
+    // silently turn "this API explicitly reported nothing" into "this
+    // algorithm measured zero confidence," which is a different claim.
+    const ab = { rhythm: { bpm: 129.98 }, tonal: { key_key: 'D', key_scale: 'major', key_strength: null } }
+    const fetchImpl = makeFetch([
+      ['deezer.com/search', jsonResponse({ data: [] })],
+      ['musicbrainz.org', jsonResponse(MB_SEARCH_GLUE)],
+      ['acousticbrainz.org', jsonResponse(ab)],
+    ])
+    const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 269 }, { fetchImpl })
+    expect(result.key).toBe('D major')
+    expect(result.keyConfidence).toBeNull()
+  })
+
+  it('treats a non-numeric key_strength as absent rather than throwing or coercing it', async () => {
+    const ab = { rhythm: { bpm: 129.98 }, tonal: { key_key: 'D', key_scale: 'major', key_strength: 'high' } }
+    const fetchImpl = makeFetch([
+      ['deezer.com/search', jsonResponse({ data: [] })],
+      ['musicbrainz.org', jsonResponse(MB_SEARCH_GLUE)],
+      ['acousticbrainz.org', jsonResponse(ab)],
+    ])
+    const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 269 }, { fetchImpl })
+    expect(result.key).toBe('D major')
+    expect(result.keyConfidence).toBeNull()
   })
 
   it('prefers Deezer for tempo but still takes the key from AcousticBrainz when both resolve', async () => {
@@ -304,6 +358,24 @@ describe('lookupTrack', () => {
       await fs.rm(cacheDir, { recursive: true, force: true })
     })
 
+    it('accepts an old cache file written before keyConfidence existed, rather than treating the missing field as corruption', async () => {
+      const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-oldcache-'))
+      const oldShapeResult = { bpm: 130.01, key: 'G# major', source: 'deezer+acousticbrainz', matchConfidence: 0.95, bpmMatchConfidence: 0.9, keyMatchConfidence: 0.95 }
+      await fs.writeFile(
+        path.join(cacheDir, 'metadata-lookup.json'),
+        JSON.stringify({ query: { artist: 'Bicep', title: 'Glue', duration: 285 }, result: oldShapeResult }),
+      )
+      const fetchImpl = vi.fn(() => {
+        throw new Error('must not query the network - a valid cache hit should short-circuit before any fetch')
+      })
+      const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 285 }, { fetchImpl, cacheDir })
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(result.key).toBe('G# major')
+      expect(result.keyConfidence).toBeUndefined() // the old cache genuinely never recorded one
+
+      await fs.rm(cacheDir, { recursive: true, force: true })
+    })
+
     it('does not cache across different run directories', async () => {
       const dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-a-'))
       const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-b-'))
@@ -362,7 +434,9 @@ describe('lookupTrack', () => {
 })
 
 describe('reconcileKey', () => {
-  it('passes the detected key through unchanged when there is no known key', () => {
+  // --- no-network: pure local, nothing to reconcile against ----------------
+
+  it('passes the detected key through unchanged when there is no known key (no-network / no match)', () => {
     // The exact real, disclosed case this exists to guard against: Bicep's
     // "Glue" reports D major at confidence 0.094, and with no known key
     // available to cross-check against, this module does not invent a floor
@@ -377,26 +451,102 @@ describe('reconcileKey', () => {
     expect(result.name).toBe('D major')
   })
 
-  it('case 1: agrees (via keysMatch) and raises confidence', () => {
+  it('branch order: a weak match is rejected BEFORE the void-fill check runs, even with no local key at all', () => {
+    // A local void (`detected` has no name) must not bypass the match-
+    // confidence gate - "nothing to compare against" is not a reason to
+    // trust a source that failed to prove it found the right recording in
+    // the first place. This pins the branch order: match-confidence gating
+    // happens first, void-fill only after a known key clears it.
+    const result = reconcileKey({ name: null, confidence: 0 }, { name: 'C major', matchConfidence: 0.2, keyConfidence: 0.9 })
+    expect(result.agreement).toBe('none')
+    expect(result.name).toBeNull()
+  })
+
+  // --- external-agrees: corroboration raises confidence ---------------------
+
+  it('external-agrees: raises confidence on an exact match, regardless of how unsure the detector was', () => {
     const result = reconcileKey({ name: 'F minor', confidence: 0.08 }, { name: 'F minor', matchConfidence: 0.9 })
     expect(result.agreement).toBe('agree')
     expect(result.name).toBe('F minor')
     expect(result.confidence).toBeGreaterThan(0.8)
   })
 
-  it('case 2: trusts the known key outright when the detector is unsure (the real Glue case)', () => {
-    const result = reconcileKey({ name: 'D major', confidence: 0.094 }, { name: 'Ab major', matchConfidence: 0.9, source: 'acousticbrainz' })
-    expect(result.agreement).toBe('known')
-    expect(result.name).toBe('Ab major')
-    expect(result.confidence).toBeGreaterThan(0.094)
+  it('external-agrees: enharmonic/relative-mode-aware via keysMatch (relative minor, not a literal string match)', () => {
+    // A minor is the relative minor of C major - keysMatch (dsp.mjs) already
+    // treats this pair as indistinguishable from audio alone, and this
+    // reconciliation must inherit that, not require an exact string match.
+    const result = reconcileKey({ name: 'A minor', confidence: 0.3 }, { name: 'C major', matchConfidence: 0.9 })
+    expect(result.agreement).toBe('agree')
+    expect(result.confidence).toBeGreaterThan(0.8)
   })
 
-  it('case 3: a confident detector disagreeing with a known key nulls the name rather than guessing', () => {
+  // --- external-fills-void: no local key evidence at all ---------------------
+
+  it('external-fills-void: uses the known key at its OWN evidence confidence when the source reports one', () => {
+    const result = reconcileKey({ name: null, confidence: 0 }, { name: 'D major', matchConfidence: 0.9, keyConfidence: 0.72 })
+    expect(result.agreement).toBe('known')
+    expect(result.name).toBe('D major')
+    // 0.72 (the source's own key-evidence confidence), not something derived
+    // from 0.9 (the recording-match confidence) - the exact distinction the
+    // bug below erased.
+    expect(result.confidence).toBeCloseTo(0.72, 5)
+  })
+
+  it('external-fills-void: falls back to the documented flat confidence when the source reports no key-evidence confidence of its own', () => {
+    const result = reconcileKey({ name: null, confidence: 0 }, { name: 'D major', matchConfidence: 0.9 })
+    expect(result.agreement).toBe('known')
+    expect(result.name).toBe('D major')
+    expect(result.confidence).toBe(KEY_VOID_FALLBACK_CONFIDENCE)
+    // In particular, NOT 0.5 + 0.5 * matchConfidence (0.95) - the old,
+    // laundered formula this module used to compute here.
+    expect(result.confidence).not.toBeCloseTo(0.95, 2)
+  })
+
+  it('external-fills-void: a non-finite keyConfidence (e.g. a malformed cache entry) falls back to the documented default instead of propagating NaN', () => {
+    // `typeof NaN === 'number'` - a `typeof` check alone would let this
+    // through, and `clamp01` cannot repair it (`Math.max`/`Math.min` both
+    // propagate NaN). `JSON.stringify` silently turns a NaN confidence into
+    // `null` wherever this result gets written, with no error anywhere.
+    const result = reconcileKey({ name: null, confidence: 0 }, { name: 'D major', matchConfidence: 0.9, keyConfidence: NaN })
+    expect(result.agreement).toBe('known')
+    expect(result.confidence).toBe(KEY_VOID_FALLBACK_CONFIDENCE)
+    expect(Number.isFinite(result.confidence)).toBe(true)
+  })
+
+  // --- external-disagrees: surfaced and nulled, never silently adopted -------
+
+  it('external-disagrees: a confident detector disagreeing with a known key nulls the name rather than guessing', () => {
     const result = reconcileKey({ name: 'D major', confidence: 0.9 }, { name: 'Ab major', matchConfidence: 0.9, source: 'acousticbrainz' })
     expect(result.agreement).toBe('disagreement')
     expect(result.name).toBeNull()
+    expect(result.confidence).toBe(0)
     expect(result.detected).toBe('D major')
     expect(result.known).toBe('Ab major')
+  })
+
+  it('external-disagrees: the exact regression this fix closes - a LOW-confidence local key must still be surfaced as a disagreement, not silently overridden', () => {
+    // The real, disclosed bug: Bicep's "Glue" detected E minor from its own
+    // transcribed notes at confidence 0.098 - not just unconfident but below
+    // what the old code treated as its "unsure" gate (0.2) - and the old
+    // reconcileKey used that low confidence as license to silently adopt
+    // AcousticBrainz's "G# major" instead, at a confidence (0.975) computed
+    // from the recording-match confidence (0.95), not from any evidence about
+    // the key itself. E minor and G# major are not relative, parallel or
+    // fifth-neighbour keys (keysMatch returns false for this pair) - a
+    // genuine disagreement, not a close call. Neither key "wins" here -
+    // the fixed behaviour is that the name is nulled (agreement:
+    // 'disagreement'), not that E minor is emitted instead of G# major.
+    const result = reconcileKey({ name: 'E minor', confidence: 0.098 }, { name: 'G# major', matchConfidence: 0.95, keyConfidence: 0.72 })
+    expect(result.agreement).toBe('disagreement')
+    expect(result.name).toBeNull()
+    // Both original values are carried on the return object so a caller can
+    // log/display the disagreement without re-deriving it - not this
+    // module's mechanism for preserving them "for the record" (that's
+    // rebuild.mjs's own independent `result.metadata.lookup`/`result.noteKey`,
+    // unaffected by what this function returns; see reconcileKey's own doc
+    // comment).
+    expect(result.detected).toBe('E minor')
+    expect(result.known).toBe('G# major')
   })
 
   it('handles a null detected key without throwing', () => {
