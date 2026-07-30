@@ -229,6 +229,23 @@ describe('verifyHearing', () => {
     expect(result.sections[0].layers.lead).toBeNull()
   }, BASS_TEST_TIMEOUT)
 
+  // `HEARING_THRESHOLDS` used to have no `lead` entry at all, and
+  // `verifyHearing`'s `thresholds[layer] ?? Infinity` fallback turned that
+  // absence into `score >= Infinity` - always false. That was invisible while
+  // `transcribeMelody` emitted nothing (no section ever had a real `lead`
+  // loop to score), and would have silently dropped every lead layer the
+  // moment melody extraction was enabled, regardless of quality. This pins
+  // the fix: a `lead` loop scored against a synthesis of itself - the same
+  // "perfect case" every other layer's threshold is calibrated against -
+  // must be able to pass.
+  it('a lead loop can actually pass, not just chords/kick/bass/hats', () => {
+    const lead = { loopBars: 1, events: [note(0, 65, 4), note(4, 68, 4), note(8, 72, 4), note(12, 68, 4)], confidence: 0.8 }
+    const transcription = transcriptionWith({ ...BASE_LOOPS, lead })
+    const result = verifyHearing(transcription, stemsFromTranscription(transcription))
+    expect(result.sections[0].layers.lead).not.toBeNull()
+    expect(result.sections[0].layers.lead.pass).toBe(true)
+  })
+
   it('handles a section with no layers at all', () => {
     const empty = transcriptionWith({
       kick: null, snare: null, hats: null, bass: null, chords: null, lead: null,

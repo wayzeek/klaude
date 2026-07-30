@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
 import { midiToHz } from './f0.mjs'
-import { detectMelody, transcribeMelody } from './melody.mjs'
+import { detectMelody, detectMelodySalience, transcribeMelody } from './melody.mjs'
 import { gridFromJson } from './quantize.mjs'
 
 const SAMPLE_RATE = 44100
@@ -163,28 +163,102 @@ describe('detectMelody', () => {
   })
 })
 
-// `transcribeMelody` is what the rebuild pipeline actually calls. Measured
-// (task-9-report.md's addendum): even where `detectMelody` clears every gate,
-// its notes barely correlate with the true lead - aggregate exact-MIDI
-// agreement of 9/129 (~7%, chance level) against the real sax part, and one
-// section emitted 18 notes against a single true one. A wrong hook is worse
-// than a missing one, so this function omits unconditionally until a future
-// task gives it a real separated source to read instead of a shared stem.
+// `detectMelodySalience` is the replacement for `detectMelody`'s YIN pitch
+// track: harmonic-summation salience (`salience.mjs`) in place of a
+// single-periodicity search, so a pad and a lead each get their own visible
+// peak instead of the tracker silently following whichever one dominates a
+// given frame. See melody.mjs's module doc comment for the measurement
+// (462-event ground truth on the reference track, an independent spectral
+// check on Bicep's "Glue") that justifies this being what `transcribeMelody`
+// actually calls now.
+describe('detectMelodySalience', () => {
+  it('recovers a repeating phrase as a one-bar loop', () => {
+    const loop = detectMelodySalience(leadClip(fourBars), grid, SECTION_4)[0]
+    expect(loop).not.toBeNull()
+    expect(loop.loopBars).toBe(1)
+    expect(loop.events.map((e) => e.midi)).toEqual([65, 68, 72, 68])
+  })
+
+  it('recovers the lead over a sustained pad underneath it', () => {
+    // The whole point of a salience-based extractor over YIN: the pad is
+    // real, simultaneous, harmonically-rich content, not a single sine wave
+    // this test is dodging - and the lead still wins on register.
+    const loop = detectMelodySalience(leadClip(fourBars, { padMidi: [53, 56, 60] }), grid, SECTION_4)[0]
+    expect(loop).not.toBeNull()
+    expect(loop.events.map((e) => e.midi)).toEqual([65, 68, 72, 68])
+  })
+
+  it('omits the layer when there is only a pad', () => {
+    const held = [{ midi: null, beats: 16 }]
+    const loop = detectMelodySalience(leadClip(held, { padMidi: [53, 56, 60] }), grid, SECTION_4)[0]
+    expect(loop).toBeNull()
+  })
+
+  it('omits the layer for silence', () => {
+    const silent = writeWavBuffer({
+      sampleRate: SAMPLE_RATE,
+      channels: 1,
+      samples: [new Float32Array(Math.ceil(8 * SAMPLE_RATE))],
+    })
+    expect(detectMelodySalience(silent, grid, SECTION_4)[0]).toBeNull()
+  })
+
+  it('omits the layer when the line is too short to be a hook', () => {
+    const sparse = [{ midi: 65, beats: 1 }, { midi: null, beats: 14 }, { midi: 68, beats: 1 }]
+    expect(detectMelodySalience(leadClip(sparse), grid, SECTION_4)[0]).toBeNull()
+  })
+
+  it('carries confidence and no chord symbol on every note', () => {
+    const loop = detectMelodySalience(leadClip(fourBars), grid, SECTION_4)[0]
+    for (const event of loop.events) {
+      expect(event.confidence).toBeGreaterThan(0)
+      expect(event.confidence).toBeLessThanOrEqual(1)
+      expect(event.symbol).toBeNull()
+      expect(typeof event.midi).toBe('number')
+    }
+  })
+
+  it('returns one entry per section', () => {
+    const sections = [
+      { index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null },
+      { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
+    ]
+    const result = detectMelodySalience(leadClip(fourBars), grid, sections)
+    expect(result).toHaveLength(2)
+  })
+
+  it('accepts option overrides without needing salience.mjs imported directly', () => {
+    // A future caller re-tuning this pipeline for a different corpus should
+    // be able to do it through detectMelodySalience's own options, without
+    // reaching past it into salience.mjs - this pins that the pass-through
+    // actually reaches computeMelodyContour rather than being ignored.
+    const permissive = detectMelodySalience(leadClip(fourBars), grid, SECTION_4, { minNotes: 100 })[0]
+    expect(permissive).toBeNull()
+  })
+})
+
+// `transcribeMelody` is what the rebuild pipeline actually calls. It now
+// calls `detectMelodySalience` - see melody.mjs's module doc comment for the
+// measurement that justifies it.
 describe('transcribeMelody', () => {
-  it('omits every section regardless of how strong the underlying line is', () => {
-    // fourBars is the exact fixture detectMelody recovers cleanly as a loop
-    // (see the first `detectMelody` test above) - proof this is a deliberate
-    // override, not a fixture that would fail to find anything anyway.
+  it('recovers a lead the same way detectMelodySalience does', () => {
     const result = transcribeMelody(leadClip(fourBars), grid, SECTION_4)
+    expect(result[0]).not.toBeNull()
+    expect(result[0].events.map((e) => e.midi)).toEqual([65, 68, 72, 68])
+  })
+
+  it('still omits a section with no real line', () => {
+    const held = [{ midi: null, beats: 16 }]
+    const result = transcribeMelody(leadClip(held, { padMidi: [53, 56, 60] }), grid, SECTION_4)
     expect(result).toEqual([null])
   })
 
-  it('returns one null per section', () => {
+  it('returns one entry per section', () => {
     const sections = [
       { index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null },
       { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
     ]
     const result = transcribeMelody(leadClip(fourBars), grid, sections)
-    expect(result).toEqual([null, null])
+    expect(result).toHaveLength(2)
   })
 })

@@ -97,8 +97,34 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
  *   bass:   correct 0.530, worst (random) 0.056 -> 0.29
  *   chords: correct 0.817, worst *discriminable* (tritone) 0.349 -> 0.58
  *
- * `lead` has no entry: that transcriber is disabled (see melody.mjs) and
- * never reaches this check.
+ * `lead` is deliberately not calibrated the same way, and that is a real gap,
+ * not an oversight - stated plainly rather than dressed up as a threshold it
+ * is not. `verifyHearing` falls back to `Infinity` for any layer missing from
+ * this table (`thresholds[layer] ?? Infinity`), which makes `score >=
+ * threshold` false unconditionally - the correct behaviour while
+ * `transcribeMelody` emitted nothing (no `lead` loop, so this check was never
+ * reached for it), and a silent trap the moment melody extraction was
+ * enabled: every section that got a real lead would have failed this check
+ * and been dropped regardless of quality, with nothing in the test suite
+ * pointing at why, because no test exercised a non-null `lead` loop here. The
+ * proper fix is the same corruption-calibrated measurement the other five
+ * layers got (correct-mean vs worst-discriminable-corruption-mean), which
+ * needs its own dedicated pass; that has not been done. `lead: 0` below is a
+ * placeholder chosen only to stop the `Infinity` trap, not a calibrated
+ * quality bar - `scoreLayer`'s own hasSignal check already floors a
+ * genuinely silent comparison at exactly 0, so this accepts anything that
+ * produced a non-degenerate score rather than actually discriminating good
+ * lead transcriptions from bad ones. Measured directly on the reference
+ * track's real (post-salience) lead output: scores ranged 0.109-0.503 across
+ * the nine emitting sections, and that range did not track the same
+ * sections' ground-truth exact-MIDI accuracy - the two most accurate
+ * sections (67% and 64% exact-MIDI) scored 0.298 and 0.270, both *lower*
+ * than several 0%-accuracy sections (0.461, 0.468, 0.477, 0.503). Chroma/
+ * register agreement against a stem that itself holds several other pitched
+ * instruments is evidently a weak proxy for whether a monophonic line
+ * extracted from it is the right one, which is exactly why this was not
+ * pushed further into a threshold that would look calibrated without being
+ * so.
  *
  * Honest limits, not smoothed over:
  * - Hats still cannot fully discriminate a half-dropped pattern even after
@@ -131,6 +157,7 @@ export const HEARING_THRESHOLDS = {
   hats: 0.67,
   bass: 0.29,
   chords: 0.58,
+  lead: 0,
 }
 
 /** How much of a pitched layer's score its octave can cost. At 0.7 an octave
