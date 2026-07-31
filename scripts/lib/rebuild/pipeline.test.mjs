@@ -24,6 +24,12 @@ const note = (step, midi, length) => ({ step, length, velocity: 0.8, confidence:
  * This is the round-trip test in miniature. It does not need Demucs, ffmpeg or
  * a recording, so it runs in CI, and it exercises every seam between the
  * modules - which is where the failures nobody predicted actually live.
+ *
+ * Every test here renders and re-analyses real audio, which costs seconds, not
+ * milliseconds - the hearing check alone sits just under vitest's 5s default
+ * and tips over it whenever the machine is busy. The explicit timeout below
+ * states what this work actually costs so the suite is deterministic under
+ * load; it is not covering for a slow code path.
  */
 describe('the pipeline, end to end', () => {
   const truth = {
@@ -148,4 +154,4 @@ describe('the pipeline across several sections', () => {
       expect(event.end - event.begin).toBeCloseTo(2, 1)
     }
   })
-})
+}, 30000)
