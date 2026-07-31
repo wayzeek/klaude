@@ -136,7 +136,15 @@ export function parseNoteEvents(csvText) {
     const midi = Math.round(Number(line.slice(comma2 + 1, comma3)))
     const velocity = Number(line.slice(comma3 + 1, comma4)) / 127
     if (![startSec, endSec, midi, velocity].every(Number.isFinite)) continue
-    if (endSec <= startSec) continue
+    if (endSec <= startSec || startSec < 0) continue
+    // A row whose numbers are all finite can still be nonsense - the exact
+    // column-shift a reordered header (already guarded above) would produce
+    // if the header check itself were ever wrong, or a future basic-pitch
+    // release changing a column's own units. MIDI 0-127 and velocity 0-1
+    // (already rescaled from the CSV's own 0-127) are the values' own valid
+    // ranges, not a tuned heuristic - a note outside them was never a real
+    // pitch or a real velocity.
+    if (midi < 0 || midi > 127 || velocity < 0 || velocity > 1) continue
 
     notes.push({ startSec, endSec, midi, velocity })
   }

@@ -75,6 +75,33 @@ describe('parseNoteEvents', () => {
     expect(parseNoteEvents(csv)).toEqual([])
   })
 
+  it('drops a row with a negative start time', () => {
+    const csv = 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n-1.0,1.0,60,64,1\n'
+    expect(parseNoteEvents(csv)).toEqual([])
+  })
+
+  it('drops a row whose pitch_midi is outside the valid MIDI range', () => {
+    // All fields finite (would otherwise pass every earlier check), but 999
+    // is not a real MIDI note - the exact shape a column shift or a future
+    // basic-pitch release changing units would produce without also failing
+    // the header check.
+    const csv = 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n0,1,999,64,1\n0,1,-1,64,1\n'
+    expect(parseNoteEvents(csv)).toEqual([])
+  })
+
+  it('drops a row whose velocity is outside the valid 0-127 range', () => {
+    const csv = 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n0,1,60,999,1\n0,1,60,-1,1\n'
+    expect(parseNoteEvents(csv)).toEqual([])
+  })
+
+  it('keeps a row at the exact edges of the valid MIDI and velocity ranges', () => {
+    const csv = 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n0,1,0,0,1\n1,2,127,127,1\n'
+    expect(parseNoteEvents(csv)).toEqual([
+      { startSec: 0, endSec: 1, midi: 0, velocity: 0 },
+      { startSec: 1, endSec: 2, midi: 127, velocity: 1 },
+    ])
+  })
+
   it('returns an empty array for a header-only file', () => {
     expect(parseNoteEvents('start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n')).toEqual([])
   })
