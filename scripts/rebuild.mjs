@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { toWav } from './lib/rebuild/decode.mjs'
 import { detectDynamics, dynamicsForEmission } from './lib/rebuild/dynamics.mjs'
-import { emitTrack } from './lib/rebuild/emit.mjs'
+import { emitTrack, resolveSounds } from './lib/rebuild/emit.mjs'
 import { UnsupportedSourceError, resolveSource } from './lib/rebuild/fetch.mjs'
 import { LowConfidenceGridError, detectGrid } from './lib/rebuild/grid.mjs'
 import { detectKeyFromNotes } from './lib/rebuild/key.mjs'
@@ -35,6 +35,7 @@ import { transcribeMelody } from './lib/rebuild/transcribe/melody.mjs'
 import { LAYERS } from './lib/rebuild/transcribe/quantize.mjs'
 import { verifyEmission } from './lib/rebuild/verify-emission.mjs'
 import { verifyHearing } from './lib/rebuild/verify-hearing.mjs'
+import { deriveLeadVoice } from './lib/rebuild/voice-select.mjs'
 
 const args = process.argv.slice(2)
 const asJson = args.includes('--json')
@@ -338,13 +339,27 @@ async function main() {
   // is what keeps `.orbit()`/`.duckorbit()` off an orbit nothing plays on.
   const dynamicsMatch = dynamicsForEmission(dynamics, transcription.sections, LAYERS)
 
+  // Which synth voice the lead actually gets, measured against the SAME
+  // post-hearing-check lead onsets that are about to be emitted - see
+  // voice-select.mjs for the measurement and why it never reaches for
+  // gm_tenor_sax. `soundMatch.lead.notes` already exists (`deriveTrackEffects`
+  // above always fills it for chords/lead), so the voice's own notes join it
+  // rather than opening a second header block - `emitTrack`'s
+  // `soundMatchHeader` prints exactly one per layer already.
+  say('picking the lead voice')
+  const leadVoice = deriveLeadVoice(transcription, otherBuf)
+  say(`  ${leadVoice.sound} - ${leadVoice.notes[0]}`)
+  soundMatch.lead.notes.push(...leadVoice.notes)
+  const sounds = resolveSounds({ lead: { sound: leadVoice.sound, suffix: leadVoice.suffix } })
+  await fs.promises.writeFile(path.join(dirs.root, 'voice-select.json'), `${JSON.stringify(leadVoice, null, 2)}\n`)
+
   say('emitting')
-  const code = emitTrack(transcription, { title: source.title, source: input, soundMatch, dynamics: dynamicsMatch })
+  const code = emitTrack(transcription, { title: source.title, source: input, soundMatch, dynamics: dynamicsMatch, sounds })
   const trackPath = outPath ?? path.join(dirs.root, 'track.js')
   await fs.promises.writeFile(trackPath, `${code}\n`)
 
   say('checking what we wrote')
-  const emission = await verifyEmission(code, transcription, { soundMatch })
+  const emission = await verifyEmission(code, transcription, { soundMatch, sounds })
   await fs.promises.writeFile(path.join(dirs.root, 'emission.json'), `${JSON.stringify(emission, null, 2)}\n`)
   if (emission.ok) {
     say('  clean')
@@ -362,6 +377,7 @@ async function main() {
   result.stemProfile = stemProfile
   result.soundMatch = soundMatch
   result.dynamics = dynamics
+  result.voiceSelection = leadVoice
 
   // The emission check is deterministic repair that should converge in one
   // pass, so a defect means the emitter is broken, not that the record was

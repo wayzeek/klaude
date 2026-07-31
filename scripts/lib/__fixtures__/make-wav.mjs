@@ -229,6 +229,70 @@ export function sweepToneClip({ sampleRate = 44100, seconds, startHz, endHz, cha
  * tauSeconds * 3.454` - the constant a caller compares its measurement
  * against.
  */
+/**
+ * A train of pitched notes, each synthesized as a fundamental plus a
+ * controllable stack of harmonics with its own attack ramp.
+ *
+ * Built for `voice-select.mjs`'s onset-aligned timbre features
+ * (`stem-profile.mjs`'s `profileOnsetTimbre`), which need brightness,
+ * harmonic richness and attack speed each independently dialled - something
+ * none of the fixtures above offer: `synthClip`'s triad and `clickTrainClip`'s
+ * click are each built for one specific detector, not for shaping a note's
+ * own spectrum and envelope together.
+ *
+ * `notes` is `[{ seconds, midi }]`, one onset each. `harmonicGains` is
+ * amplitude per harmonic number, index 0 the fundamental - a short array
+ * read like a drawbar registration, so a caller can build a near-sine
+ * (`[1]`), a rich, buzzy tone (`[1, 0.6, 0.5, 0.4, ...]`) or an odd-only one
+ * (zero at every even index) without this function knowing what any of that
+ * means. `attackSeconds` ramps linearly from silence; `sustainSeconds` holds
+ * at full level; a short fixed `releaseSeconds` avoids a click at the note's
+ * end. Overlapping notes simply sum, the same additive convention every
+ * other clip here uses.
+ */
+export function harmonicNotesClip({
+  sampleRate = 44100,
+  seconds,
+  notes,
+  harmonicGains = [1],
+  attackSeconds = 0.005,
+  sustainSeconds = 0.3,
+  releaseSeconds = 0.05,
+  gain = 0.5,
+  channels = 2,
+}) {
+  const numFrames = Math.round(seconds * sampleRate)
+  const mono = new Float32Array(numFrames)
+  const attackFrames = Math.max(1, Math.round(attackSeconds * sampleRate))
+  const sustainFrames = Math.max(1, Math.round(sustainSeconds * sampleRate))
+  const releaseFrames = Math.max(1, Math.round(releaseSeconds * sampleRate))
+  const noteFrames = attackFrames + sustainFrames + releaseFrames
+
+  for (const { seconds: onsetSeconds, midi } of notes) {
+    const start = Math.round(onsetSeconds * sampleRate)
+    const hz = 440 * Math.pow(2, (midi - 69) / 12)
+    for (let i = 0; i < noteFrames && start + i < numFrames; i++) {
+      if (start + i < 0) continue
+      let envelope
+      if (i < attackFrames) envelope = i / attackFrames
+      else if (i < attackFrames + sustainFrames) envelope = 1
+      else envelope = Math.max(0, 1 - (i - attackFrames - sustainFrames) / releaseFrames)
+
+      let sample = 0
+      for (let h = 0; h < harmonicGains.length; h++) {
+        const partialGain = harmonicGains[h]
+        if (!partialGain) continue
+        sample += partialGain * Math.sin((2 * Math.PI * hz * (h + 1) * i) / sampleRate)
+      }
+      mono[start + i] += gain * envelope * sample
+    }
+  }
+
+  const samples = []
+  for (let ch = 0; ch < channels; ch++) samples.push(mono)
+  return writeWavBuffer({ sampleRate, channels, float32: false, samples })
+}
+
 export function clickTrainClip({ sampleRate = 44100, seconds, bpm, hz = 400, tauSeconds, channels = 2 }) {
   const numFrames = Math.round(seconds * sampleRate)
   const beatFrames = Math.round((60 / bpm) * sampleRate)

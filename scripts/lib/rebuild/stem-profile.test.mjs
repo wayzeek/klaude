@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { clickTrainClip, rhythmClip, writeWavBuffer } from '../__fixtures__/make-wav.mjs'
+import { clickTrainClip, harmonicNotesClip, rhythmClip, writeWavBuffer } from '../__fixtures__/make-wav.mjs'
 import { makeNoise } from './resynth.mjs'
-import { decayFromEnvelope, profileDrumRoles, profileStem, profileStems } from './stem-profile.mjs'
+import { attackFromEnvelope, decayFromEnvelope, profileDrumRoles, profileOnsetTimbre, profileStem, profileStems } from './stem-profile.mjs'
 
 describe('decayFromEnvelope', () => {
   const HOP = 0.01
@@ -57,6 +57,61 @@ describe('decayFromEnvelope', () => {
   it('returns null for an empty envelope or onset list', () => {
     expect(decayFromEnvelope(null, [0, 1, 2], HOP).seconds).toBeNull()
     expect(decayFromEnvelope([1, 1, 1], [], HOP).seconds).toBeNull()
+  })
+})
+
+describe('attackFromEnvelope', () => {
+  const HOP = 0.01
+
+  it('reports null with too few onsets to trust', () => {
+    const energy = [0.01, 1, 0.9, 0.01, 0.01, 1, 0.9, 0.01]
+    const result = attackFromEnvelope(energy, [0, 0.04], HOP)
+    expect(result.seconds).toBeNull()
+    expect(result.count).toBe(2)
+  })
+
+  it('measures a fast rise as short', () => {
+    // Peaks one hop after each onset.
+    const energy = new Array(20).fill(0.001)
+    for (const onsetHop of [0, 5, 10]) {
+      energy[onsetHop] = 0.01
+      energy[onsetHop + 1] = 1
+      energy[onsetHop + 2] = 0.9
+    }
+    const result = attackFromEnvelope(energy, [0, 0.05, 0.1], HOP)
+    expect(result.count).toBe(3)
+    expect(result.seconds).toBeCloseTo(HOP, 5) // one hop to reach the peak
+  })
+
+  it('measures a slow rise as long', () => {
+    // Ramps up linearly over six hops before peaking.
+    const energy = new Array(30).fill(0.001)
+    for (const onsetHop of [0, 10, 20]) {
+      for (let i = 0; i <= 6; i++) energy[onsetHop + i] = i / 6
+    }
+    const result = attackFromEnvelope(energy, [0, 0.1, 0.2], HOP)
+    expect(result.count).toBe(3)
+    expect(result.seconds).toBeCloseTo(6 * HOP, 5)
+  })
+
+  it('caps a rise at the next onset, not letting a busy passage borrow rise length', () => {
+    // Each hit would naturally take six hops to peak, but the next onset
+    // always arrives after only two - without the cap this would measure
+    // close to six hops on average; with it, the peak search never sees past
+    // one hop in.
+    const onsets = [0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.14, 0.16, 0.18]
+    const energy = new Array(30).fill(0.001)
+    for (const seconds of onsets) {
+      const hop = Math.round(seconds / HOP)
+      for (let i = 0; i <= 6 && hop + i < energy.length; i++) energy[hop + i] = i / 6
+    }
+    const result = attackFromEnvelope(energy, onsets, HOP)
+    expect(result.seconds).toBeLessThan(2 * HOP)
+  })
+
+  it('returns null for an empty envelope or onset list', () => {
+    expect(attackFromEnvelope(null, [0, 1, 2], HOP).seconds).toBeNull()
+    expect(attackFromEnvelope([1, 1, 1], [], HOP).seconds).toBeNull()
   })
 })
 
@@ -184,5 +239,111 @@ describe('profileStems', () => {
     expect(profile.drums).toBeDefined()
     expect(profile.bass).toBeUndefined()
     expect(profile.other).toBeUndefined()
+  })
+})
+
+describe('profileOnsetTimbre', () => {
+  // E5 - inside LEAD_RANGE (150-2000Hz) so the attack/sustain envelope has
+  // real signal to measure, and low enough that its own higher harmonics
+  // still land inside a synthesized clip's own Nyquist limit.
+  const MIDI = 76
+
+  it('reports null spectral features and a low count with too few onsets', () => {
+    const onsets = [{ seconds: 1, midi: MIDI }, { seconds: 2, midi: MIDI }]
+    const buf = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1] })
+    const result = profileOnsetTimbre(buf, onsets)
+    expect(result.count).toBe(2)
+    expect(result.centroidHz).toBeNull()
+    expect(result.brightRatio).toBeNull()
+    expect(result.oddEvenRatio).toBeNull()
+  })
+
+  it('excludes an onset outside the stem\'s own duration from the usable count', () => {
+    const onsets = [{ seconds: 1, midi: MIDI }, { seconds: 2, midi: MIDI }, { seconds: 3, midi: MIDI }]
+    const buf = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1] })
+    const result = profileOnsetTimbre(buf, [...onsets, { seconds: 100, midi: MIDI }])
+    expect(result.count).toBe(3)
+  })
+
+  it('reads a harmonically rich tone as brighter (higher centroid, higher brightRatio) than a near-sine one', () => {
+    const onsets = [1, 2, 3, 4].map((seconds) => ({ seconds, midi: MIDI }))
+    const bright = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: new Array(10).fill(1) })
+    const dark = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1, 0.15] })
+
+    const brightFeatures = profileOnsetTimbre(bright, onsets)
+    const darkFeatures = profileOnsetTimbre(dark, onsets)
+
+    expect(brightFeatures.count).toBe(4)
+    expect(darkFeatures.count).toBe(4)
+    expect(brightFeatures.centroidHz).toBeGreaterThan(darkFeatures.centroidHz)
+    expect(brightFeatures.brightRatio).toBeGreaterThan(darkFeatures.brightRatio)
+    expect(darkFeatures.brightRatio).toBeLessThan(0.1)
+    expect(brightFeatures.brightRatio).toBeGreaterThan(0.5)
+  })
+
+  /**
+   * This is the test that would have caught the real bug found while
+   * rebuilding the two real tracks for the voice-selection report: an
+   * earlier version of `profileOnsetTimbre` called `bandEnergy(audio,
+   * LEAD_RANGE)` directly, but `LEAD_RANGE` is shaped `{ minHz, maxHz }` for
+   * `melody.mjs`'s own callers, not `bandEnergy`'s `{ lo, hi }` -
+   * `bandBins` silently produced `NaN` bin indices from the mismatched keys,
+   * which made every envelope sample `NaN`. `decayFromEnvelope`'s `Math.max`
+   * based peak search let that `NaN` slip through as a false, non-null
+   * `seconds: 0` for every single onset on real audio - a defect only
+   * visible by asserting that an actual measured number comes out the other
+   * end and is directionally correct, not merely that it isn't null.
+   */
+  it('measures a fast attack as shorter than a slow one, on the same tone', () => {
+    // Both read slower than their true ramp: `bandEnergy`'s 1024-sample
+    // (~23ms) analysis window and 512-sample (~11.6ms) hop smear a fast
+    // transient's rise across roughly a window's width before it is ever
+    // sampled - the same kind of FFT-window bias `profileStem`'s own decay
+    // test documents for `clickTrainClip`, just on the rising edge instead of
+    // the falling one. The bounds below bracket that bias with headroom
+    // rather than asserting the true (pre-smearing) attack times; the
+    // ordering, not the absolute number, is what a real measurement has to
+    // get right.
+    const onsets = [1, 2, 3, 4].map((seconds) => ({ seconds, midi: MIDI }))
+    const fast = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1], attackSeconds: 0.005, sustainSeconds: 0.3 })
+    const slow = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1], attackSeconds: 0.2, sustainSeconds: 0.3 })
+
+    const fastFeatures = profileOnsetTimbre(fast, onsets)
+    const slowFeatures = profileOnsetTimbre(slow, onsets)
+
+    expect(fastFeatures.attack.seconds).not.toBeNull()
+    expect(slowFeatures.attack.seconds).not.toBeNull()
+    expect(fastFeatures.attack.seconds).toBeLessThan(0.15)
+    expect(slowFeatures.attack.seconds).toBeGreaterThan(0.3)
+    expect(slowFeatures.attack.seconds).toBeGreaterThan(fastFeatures.attack.seconds)
+  })
+
+  it('measures sustain (onset-aligned decay) on the same envelope, independently of attack', () => {
+    const onsets = [1, 2, 3, 4].map((seconds) => ({ seconds, midi: MIDI }))
+    const buf = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1], attackSeconds: 0.005, sustainSeconds: 0.3 })
+    const result = profileOnsetTimbre(buf, onsets)
+    expect(result.sustain.seconds).not.toBeNull()
+    expect(result.sustain.seconds).toBeGreaterThan(0.05)
+  })
+
+  it('reads a higher odd/even harmonic ratio for an odd-harmonics-only tone than an all-harmonics-equal one', () => {
+    const onsets = [1, 2, 3, 4].map((seconds) => ({ seconds, midi: MIDI }))
+    const oddOnly = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1, 0, 1, 0, 1, 0, 1, 0] })
+    const equal = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: new Array(8).fill(1) })
+
+    const oddFeatures = profileOnsetTimbre(oddOnly, onsets)
+    const equalFeatures = profileOnsetTimbre(equal, onsets)
+
+    expect(oddFeatures.oddEvenRatio).not.toBeNull()
+    expect(equalFeatures.oddEvenRatio).not.toBeNull()
+    expect(oddFeatures.oddEvenRatio).toBeGreaterThan(equalFeatures.oddEvenRatio)
+  })
+
+  it('returns null oddEvenRatio when no onset carries a known pitch', () => {
+    const onsets = [1, 2, 3, 4].map((seconds) => ({ seconds, midi: MIDI }))
+    const buf = harmonicNotesClip({ seconds: 8, notes: onsets, harmonicGains: [1] })
+    const noPitch = onsets.map(({ seconds }) => ({ seconds, midi: null }))
+    const result = profileOnsetTimbre(buf, noPitch)
+    expect(result.oddEvenRatio).toBeNull()
   })
 })

@@ -229,8 +229,20 @@ export function compareEvents(expected, actual, { stepsPerBar = 16 } = {}) {
  * `expected` gain has to be computed the same way `emit.mjs` computed the
  * one it wrote, or a genuinely correct trimmed track fails this check purely
  * because the two sides disagree on what "the layer's base gain" means.
+ *
+ * `sounds`, likewise, has to be the SAME resolved map `emitTrack` used to
+ * write `code` (see `emit.mjs`'s `resolveSounds` and `voice-select.mjs`'s own
+ * doc comment for why a layer's `sound` is a per-run choice now, not always
+ * `SOUNDS`' frozen default). Every event this function queries back out of
+ * the pattern is sorted into a layer by matching its own `event.value.s`
+ * against `sounds[candidate].sound` below - if a caller emitted with a voice
+ * override but verified against the default `SOUNDS`, a run that measured
+ * `lead` as `square` would have every one of its own events sorted into
+ * whichever *other* layer's default happens to be `square` (none, today -
+ * see `voice-select.mjs`'s `LEAD_VOICES` comment on why that collision is
+ * avoided by construction), or simply match nothing and read as "all missing."
  */
-export async function verifyEmission(code, transcription, { soundMatch = null } = {}) {
+export async function verifyEmission(code, transcription, { soundMatch = null, sounds = SOUNDS } = {}) {
   const grid = gridFromJson(transcription.grid)
   const perBar = stepsPerBar(grid)
   const defects = []
@@ -313,7 +325,7 @@ export async function verifyEmission(code, transcription, { soundMatch = null } 
       const byLayer = new Map(LAYERS.map((layer) => [layer, []]))
       for (const event of events) {
         const sound = event.value.s ?? event.value.sound ?? null
-        const layer = LAYERS.find((candidate) => SOUNDS[candidate].sound === sound)
+        const layer = LAYERS.find((candidate) => sounds[candidate].sound === sound)
         if (layer) byLayer.get(layer).push(event)
       }
 
@@ -341,7 +353,7 @@ export async function verifyEmission(code, transcription, { soundMatch = null } 
         // so both sides of the comparison below describe what the emitter
         // actually promises to write, not just what the transcription
         // recorded.
-        const base = effectiveGain(layer, soundMatch)
+        const base = effectiveGain(layer, soundMatch, sounds)
         const loopSteps = loop.loopBars * perBar
         const expected = []
         const repetitions = Math.ceil(section.bars / loop.loopBars)

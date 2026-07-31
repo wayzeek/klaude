@@ -49,6 +49,36 @@ export const SOUNDS = Object.freeze({
   lead: Object.freeze({ kind: 'note', sound: 'gm_tenor_sax', suffix: '.s("gm_tenor_sax")', gain: 0.35 }),
 })
 
+/**
+ * `SOUNDS`, with a run's own measured voice choice applied to whichever
+ * layers `overrides` names - see `voice-select.mjs`'s own doc comment for
+ * why the lead can no longer be the same hardcoded `gm_tenor_sax` for every
+ * track. Only `sound`/`suffix` ever move; `kind` and `gain` always stay
+ * `SOUNDS`' own defaults, so a voice choice can never change what kind of
+ * mini-notation a layer emits or how loud its ceiling is, only which patch
+ * plays it. A layer absent from `overrides` is untouched.
+ *
+ * Every function below that used to read the module-level `SOUNDS` directly
+ * now takes a `sounds` option instead, defaulting to `SOUNDS` itself - every
+ * caller that never heard of voice selection (every existing test, every
+ * direct `emitTrack`/`verifyEmission` call) keeps producing exactly what it
+ * always did. `rebuild.mjs` is the only caller that resolves a real override
+ * and has to pass the SAME resolved map to both `emitTrack` (to write the
+ * code) and `verifyEmission` (to sort a queried event back into its layer by
+ * the sound the run actually gave it - see `verify-emission.mjs`'s own
+ * comment on why that lookup can no longer assume the frozen default).
+ */
+export function resolveSounds(overrides = {}) {
+  const result = { ...SOUNDS }
+  for (const layer of Object.keys(overrides)) {
+    const patch = overrides[layer]
+    if (!patch || !SOUNDS[layer]) continue
+    const { sound = SOUNDS[layer].sound, suffix = SOUNDS[layer].suffix } = patch
+    result[layer] = Object.freeze({ ...SOUNDS[layer], sound, suffix })
+  }
+  return Object.freeze(result)
+}
+
 const SHARP_TO_FLAT = { 'C#': 'Db', 'D#': 'Eb', 'F#': 'Gb', 'G#': 'Ab', 'A#': 'Bb' }
 
 /**
@@ -132,14 +162,14 @@ export function barToMini(slots) {
  * transcriber never varies velocity (bass.mjs hardcodes 0.8; nothing in this
  * pipeline emits higher) must still land at or under its own base gain.
  */
-function loopToPatterns(loop, layer, perBar, { flats, soundMatch }) {
+function loopToPatterns(loop, layer, perBar, { flats, soundMatch, sounds = SOUNDS }) {
   const total = loop.loopBars * perBar
-  const base = effectiveGain(layer, soundMatch)
+  const base = effectiveGain(layer, soundMatch, sounds)
   const slots = new Array(total).fill(null)
   for (const event of loop.events) {
     if (event.step < 0 || event.step >= total) continue
     slots[event.step] = {
-      token: tokenFor(event, layer, { flats }),
+      token: tokenFor(event, layer, { flats, sounds }),
       // Clamp to the loop's end, not the bar's: a note may legitimately sustain
       // across a bar line and clipping it there silently shortens every pad.
       length: Math.max(1, Math.min(event.length, total - event.step)),
@@ -200,14 +230,14 @@ const round2 = (value) => Math.round(value * 100) / 100
  * so a track emitted with a trim and the reuse check that decides whether two
  * sections match agree on what "the same gain" means.
  */
-export function effectiveGain(layer, soundMatch) {
+export function effectiveGain(layer, soundMatch, sounds = SOUNDS) {
   const trim = soundMatch?.[layer]?.gainTrim
-  const base = SOUNDS[layer].gain
+  const base = sounds[layer].gain
   return Number.isFinite(trim) ? round2(base * trim) : base
 }
 
-function tokenFor(event, layer, { flats }) {
-  const sound = SOUNDS[layer]
+function tokenFor(event, layer, { flats, sounds = SOUNDS }) {
+  const sound = sounds[layer]
   if (sound.kind === 'sample') return sound.token
   if (sound.kind === 'chord') return respell(event.symbol ?? '', { flats })
   return midiToNoteName(event.midi ?? 60, { flats })
@@ -327,17 +357,17 @@ export function expandVariation(loop, perBar, base) {
  * evaluates identically to the main pattern's at whatever cycle the
  * variation actually plays - reusing the string is safe, not just convenient.
  */
-function variationChain(loop, layer, perBar, { flats, soundMatch, anchor, sectionBars, chainExtra }) {
+function variationChain(loop, layer, perBar, { flats, soundMatch, anchor, sectionBars, chainExtra, sounds = SOUNDS }) {
   if (!loop.variation) return ''
-  const sound = SOUNDS[layer]
-  const base = effectiveGain(layer, soundMatch)
+  const sound = sounds[layer]
+  const base = effectiveGain(layer, soundMatch, sounds)
   const expanded = expandVariation(loop, perBar, base)
   const barStart = loop.variation.bar * perBar
   const slots = new Array(perBar).fill(null)
   for (const event of expanded) {
     const localStep = event.step - barStart
     if (localStep < 0 || localStep >= perBar) continue
-    slots[localStep] = { token: tokenFor(event, layer, { flats }), length: event.length, gain: event.gain }
+    slots[localStep] = { token: tokenFor(event, layer, { flats, sounds }), length: event.length, gain: event.gain }
   }
   const mini = barToMini(slots)
   const gains = barToGains(slots, base)
@@ -361,9 +391,9 @@ function variationChain(loop, layer, perBar, { flats, soundMatch, anchor, sectio
  * `sound-match.mjs` derived reads exactly like a hand-written effect chain
  * would.
  */
-function layerExpression(loop, layer, perBar, { flats, anchor, soundMatch, dynamics, sectionBars }) {
-  const sound = SOUNDS[layer]
-  const { mini, gains, slow } = loopToPatterns(loop, layer, perBar, { flats, soundMatch })
+function layerExpression(loop, layer, perBar, { flats, anchor, soundMatch, dynamics, sectionBars, sounds = SOUNDS }) {
+  const sound = sounds[layer]
+  const { mini, gains, slow } = loopToPatterns(loop, layer, perBar, { flats, soundMatch, sounds })
   const wrappedMini = wrapTokens(mini)
   const wrappedGains = wrapTokens(gains)
   // Both chains have to land here, before `.gain()`/`.slow()`, not spliced on
@@ -380,7 +410,7 @@ function layerExpression(loop, layer, perBar, { flats, anchor, soundMatch, dynam
   // forces two sections with different dynamics to never share one const.
   const extra = (soundMatch?.[layer]?.chain ?? '') + (dynamics?.layers?.[layer]?.chain ?? '') + sweepChain(dynamics?.layers?.[layer]?.sweepLpf, slow, sectionBars)
   const tail = `.gain(\`${wrappedGains}\`)${slow > 1 ? `.slow(${slow})` : ''}`
-  const variation = variationChain(loop, layer, perBar, { flats, soundMatch, anchor, sectionBars, chainExtra: extra })
+  const variation = variationChain(loop, layer, perBar, { flats, soundMatch, anchor, sectionBars, chainExtra: extra, sounds })
   if (sound.kind === 'sample') return `s(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}${variation}`
   if (sound.kind === 'chord') {
     return `chord(\`${wrappedMini}\`).anchor("${anchor}").mode("above")${sound.suffix}${extra}${tail}${variation}`
@@ -417,7 +447,7 @@ function soundMatchHeader(soundMatch) {
  * definitions; see `reuseTarget` for why that, and not `sameAs`, is the
  * condition.
  */
-export function emitTrack(transcription, { title = null, source = null, soundMatch = null, dynamics = null } = {}) {
+export function emitTrack(transcription, { title = null, source = null, soundMatch = null, dynamics = null, sounds = SOUNDS } = {}) {
   const grid = gridFromJson(transcription.grid)
   const perBar = stepsPerBar(grid)
   const keyName = transcription.key?.name ?? ''
@@ -445,7 +475,7 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
   // now that dynamics are baked into the const itself (see `layerExpression`).
   const definitionOf = new Map()
   for (const section of transcription.sections) {
-    const target = reuseTarget(section, transcription.sections, soundMatch, dynamics) ?? section.index
+    const target = reuseTarget(section, transcription.sections, soundMatch, dynamics, sounds) ?? section.index
     definitionOf.set(section.index, target)
   }
 
@@ -461,7 +491,7 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
       const name = `s${section.index}_${layer}`
       const note = section.loops[layer].variation?.note
       if (note) lines.push(`//   ${layer} ${section.loops[layer].variation.kind}: ${note}`)
-      lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor, soundMatch, dynamics: dyn, sectionBars: section.bars })}`)
+      lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor, soundMatch, dynamics: dyn, sectionBars: section.bars, sounds })}`)
       emitted.add(name)
     }
     lines.push('')
@@ -508,11 +538,11 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
  * kick that only pumps the bass in one of them are not the same output and
  * must not share one definition.
  */
-function reuseTarget(section, sections, soundMatch, dynamics) {
+function reuseTarget(section, sections, soundMatch, dynamics, sounds = SOUNDS) {
   if (section.sameAs === null || section.sameAs === undefined) return null
   const original = sections.find((candidate) => candidate.index === section.sameAs)
   if (!original || original.bars !== section.bars) return null
-  if (!sameLoops(original.loops, section.loops, soundMatch)) return null
+  if (!sameLoops(original.loops, section.loops, soundMatch, sounds)) return null
   if (!sameDynamics(dynamics?.[original.index], dynamics?.[section.index])) return null
   return section.sameAs
 }
@@ -541,7 +571,7 @@ function sameDynamics(a, b) {
 }
 
 /** Do two sections carry identical material on every layer? */
-function sameLoops(a, b, soundMatch) {
+function sameLoops(a, b, soundMatch, sounds = SOUNDS) {
   for (const layer of LAYERS) {
     const left = a?.[layer] ?? null
     const right = b?.[layer] ?? null
@@ -549,7 +579,7 @@ function sameLoops(a, b, soundMatch) {
     if (left === null || right === null) return false
     if (left.loopBars !== right.loopBars) return false
     if (left.events.length !== right.events.length) return false
-    const base = effectiveGain(layer, soundMatch)
+    const base = effectiveGain(layer, soundMatch, sounds)
     for (let i = 0; i < left.events.length; i++) {
       const x = left.events[i]
       const y = right.events[i]

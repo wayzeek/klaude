@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SOUNDS, barToMini, emitTrack, midiToNoteName, prefersFlats, respell } from './emit.mjs'
+import { SOUNDS, barToMini, emitTrack, midiToNoteName, prefersFlats, resolveSounds, respell } from './emit.mjs'
 
 const GRID = { bpm: 138, beatSeconds: 60 / 138, barSeconds: (60 / 138) * 4, downbeatSeconds: 0.348, beatsPerBar: 4 }
 
@@ -645,5 +645,58 @@ describe('emitTrack', () => {
       const arrangeBlock = code.slice(code.indexOf('arrange('))
       expect(arrangeBlock).toContain('repeats section 0')
     })
+  })
+})
+
+describe('resolveSounds', () => {
+  it('returns SOUNDS unchanged with no overrides', () => {
+    const resolved = resolveSounds()
+    expect(resolved.lead.sound).toBe(SOUNDS.lead.sound)
+    expect(resolved.lead.suffix).toBe(SOUNDS.lead.suffix)
+  })
+
+  it('overrides only sound/suffix on the named layer, leaving kind and gain alone', () => {
+    const resolved = resolveSounds({
+      lead: { sound: 'triangle', suffix: '.s("triangle")', kind: 'sample', gain: 99, token: 'bd' },
+    })
+    expect(resolved.lead.sound).toBe('triangle')
+    expect(resolved.lead.suffix).toBe('.s("triangle")')
+    expect(resolved.lead.kind).toBe(SOUNDS.lead.kind)
+    expect(resolved.lead.gain).toBe(SOUNDS.lead.gain)
+    expect(resolved.lead.token).toBeUndefined()
+  })
+
+  it('leaves every other layer exactly as SOUNDS defines it', () => {
+    const resolved = resolveSounds({ lead: { sound: 'square', suffix: '.s("square")' } })
+    for (const layer of ['kick', 'snare', 'hats', 'bass', 'sub', 'chords']) {
+      expect(resolved[layer]).toEqual(SOUNDS[layer])
+    }
+  })
+
+  it('ignores an override for a layer that does not exist', () => {
+    const resolved = resolveSounds({ notALayer: { sound: 'triangle' } })
+    expect(resolved.notALayer).toBeUndefined()
+    expect(resolved.lead).toEqual(SOUNDS.lead)
+  })
+})
+
+describe('emitTrack with a voice override', () => {
+  const leadLoop = { loopBars: 1, events: [note(0, 60, 4), note(8, 64, 4)], confidence: 0.9 }
+
+  it('writes the overridden sound and suffix, not the SOUNDS default', () => {
+    const sounds = resolveSounds({ lead: { sound: 'triangle', suffix: '.s("triangle")' } })
+    const code = emitTrack(
+      transcription([{ index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), lead: leadLoop } }]),
+      { sounds },
+    )
+    expect(code).toContain('.s("triangle")')
+    expect(code).not.toContain('gm_tenor_sax')
+  })
+
+  it('defaults to the SOUNDS lead (gm_tenor_sax) with no override, unchanged from before voice selection existed', () => {
+    const code = emitTrack(
+      transcription([{ index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), lead: leadLoop } }]),
+    )
+    expect(code).toContain('.s("gm_tenor_sax")')
   })
 })

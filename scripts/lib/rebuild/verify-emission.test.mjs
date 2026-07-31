@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { emitTrack } from './emit.mjs'
+import { SOUNDS, emitTrack } from './emit.mjs'
 import { compareEvents, verifyEmission } from './verify-emission.mjs'
 
 const GRID = { bpm: 120, beatSeconds: 0.5, barSeconds: 2, downbeatSeconds: 0, beatsPerBar: 4 }
@@ -324,6 +324,42 @@ describe('verifyEmission', () => {
       const result = await verifyEmission(code, t)
       expect(result.ok).toBe(false)
       expect(result.sections[0].layers.bass.wrongGain).toBeGreaterThan(0)
+    })
+  })
+
+  describe('with a lead voice override (voice-select.mjs)', () => {
+    // `resolveSounds` isn't imported here on purpose: verify-emission.mjs's
+    // sorting has to work off whatever `sounds` map it is given, and
+    // constructing the override by hand keeps this test from silently
+    // passing just because both sides happen to call the same helper.
+    const overrideSounds = { ...SOUNDS, lead: { ...SOUNDS.lead, sound: 'triangle', suffix: '.s("triangle")' } }
+    // A single-bar (16-step) section so the loop plays exactly once - bars
+    // defaults to 4 in this file's own `transcription` helper, which would
+    // repeat this 1-bar loop four times and make "2 events" the wrong count
+    // to assert against.
+    const t = transcription(
+      { ...emptyLoops(), lead: { loopBars: 1, events: [note(0, 60, 4), note(8, 64, 4)], confidence: 0.9 } },
+      1,
+    )
+
+    it('sorts a variable-sound lead\'s events into the lead layer when told the same sounds map', async () => {
+      const code = emitTrack(t, { sounds: overrideSounds })
+      expect(code).toContain('.s("triangle")')
+      const result = await verifyEmission(code, t, { sounds: overrideSounds })
+      expect(result.ok).toBe(true)
+      expect(result.sections[0].layers.lead.matched).toBe(2)
+      expect(result.sections[0].layers.lead.missing).toBe(0)
+    })
+
+    it('fails to find the lead\'s events when verified against the wrong sounds map', async () => {
+      // Proves the coupling matters: a track genuinely emitted correctly
+      // reads as broken if verifyEmission does not know the lead's own
+      // `sound` changed - every one of its events has `s: "triangle"`, which
+      // matches no layer in the default SOUNDS, so they are sorted nowhere.
+      const code = emitTrack(t, { sounds: overrideSounds })
+      const result = await verifyEmission(code, t)
+      expect(result.ok).toBe(false)
+      expect(result.sections[0].layers.lead.missing).toBeGreaterThan(0)
     })
   })
 
