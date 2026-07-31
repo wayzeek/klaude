@@ -382,6 +382,17 @@ describe('reconcileTempo', () => {
     expect(result.bpm).toBe(104)
   })
 
+  it('treats a known tempo with an out-of-range but finite matchConfidence as untrusted, never producing an out-of-range confidence', () => {
+    // Unlike reconcileKey, the "known, detector unsure" branch below has no
+    // later clamp - a raw finite-but-invalid matchConfidence (e.g. 5) would
+    // otherwise flow straight into `0.5 + 0.5 * matchConfidence` and produce
+    // a confidence outside [0, 1].
+    const result = reconcileTempo(104, 0.19, { bpm: 200, matchConfidence: 5 }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(104)
+    expect(result.confidence).toBeLessThanOrEqual(1)
+  })
+
   it('case 1: agrees within tolerance and raises confidence even over a low raw score', () => {
     // The detector's own confidence (0.05) is a guess; it happens to be
     // right, and agreement with the known tempo is what proves that, not

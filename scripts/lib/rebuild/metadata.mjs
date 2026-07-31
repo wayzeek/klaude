@@ -563,9 +563,11 @@ export function reconcileKey(detected, known, opts = {}) {
   // A missing or invalid `matchConfidence` is untrusted, not maximally
   // trusted: `?? 1` here used to mean "no confidence reported? assume
   // perfect" - the opposite of what an absent or corrupt measurement should
-  // imply. `Number.isFinite` also rejects a `NaN`/out-of-range value that
-  // slipped past a looser guard upstream, not just `undefined`/`null`.
-  const knownMatchConfidence = Number.isFinite(known?.matchConfidence) ? known.matchConfidence : 0
+  // imply. The range check (not just `Number.isFinite`) also rejects a
+  // finite-but-nonsensical value (e.g. `5`) that a looser guard upstream let
+  // through - `Number.isFinite` alone would let it clear `minMatch` outright
+  // as if it were a genuinely high-confidence match.
+  const knownMatchConfidence = Number.isFinite(known?.matchConfidence) && known.matchConfidence >= 0 && known.matchConfidence <= 1 ? known.matchConfidence : 0
   if (!knownName || knownMatchConfidence < minMatch) {
     return { name: detectedName, confidence: detectedConfidence, agreement: 'none' }
   }

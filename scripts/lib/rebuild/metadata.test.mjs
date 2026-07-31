@@ -694,6 +694,15 @@ describe('reconcileKey', () => {
     expect(result.name).toBe('D major')
   })
 
+  it('treats a known key with an out-of-range but finite matchConfidence as untrusted, not as a perfect match', () => {
+    // A finite value outside [0, 1] (e.g. a bug elsewhere passing a raw,
+    // un-clamped score) must not clear MIN_MATCH_CONFIDENCE just because
+    // `Number.isFinite` alone would accept it.
+    const result = reconcileKey({ name: 'D major', confidence: 0.094 }, { name: 'C major', matchConfidence: 5 })
+    expect(result.agreement).toBe('none')
+    expect(result.name).toBe('D major')
+  })
+
   it('treats a known key with a non-finite matchConfidence as untrusted, not as clearing the gate by comparing false', () => {
     const result = reconcileKey({ name: 'D major', confidence: 0.094 }, { name: 'C major', matchConfidence: NaN })
     expect(result.agreement).toBe('none')

@@ -518,10 +518,14 @@ export function reconcileTempo(detectedBpm, detectedConfidence, known, gate) {
   // trusted - `?? 1` used to mean "nothing reported? assume a perfect match,"
   // which let a syntactically-valid-but-unmeasured cache field elevate a
   // known tempo to full trust (measured directly: a cached bpm of 200 with
-  // no real confidence behind it beat a detected 104 at confidence 1.0).
-  // `Number.isFinite` also catches an out-of-range value a looser guard
-  // upstream let through, not just `undefined`/`null`.
-  const knownMatchConfidence = Number.isFinite(known?.matchConfidence) ? known.matchConfidence : 0
+  // no real confidence behind it beat a detected 104 at confidence 1.0). The
+  // range check (not just `Number.isFinite`) also catches a finite but
+  // out-of-range value (e.g. `5`) a looser guard upstream let through -
+  // unlike `reconcileKey`, the branch below has no later `clamp01` of its
+  // own, so an out-of-range value here would otherwise flow straight into
+  // `0.5 + 0.5 * knownMatchConfidence` and produce a confidence outside
+  // [0, 1].
+  const knownMatchConfidence = Number.isFinite(known?.matchConfidence) && known.matchConfidence >= 0 && known.matchConfidence <= 1 ? known.matchConfidence : 0
   if (!known || known.bpm == null || knownMatchConfidence < MIN_MATCH_CONFIDENCE) {
     return { bpm: detectedBpm, confidence: detectedConfidence, agreement: 'none' }
   }
