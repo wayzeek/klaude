@@ -315,6 +315,48 @@ describe('emitTrack', () => {
     expect(code).toContain('sec({})')
   })
 
+  describe('lead approximation note', () => {
+    // 15.4% exact-note accuracy is the measured ceiling for melody extraction
+    // from a polyphonic stem (melodia-report.md, lead-improvement-report.md);
+    // every other layer is measured and solid. The lead ships labeled as an
+    // approximation rather than pretending otherwise - this locks that label
+    // to presence of the lead layer, not to some other layer's own comment.
+    const leadLoop = { loopBars: 1, events: [note(0, 60, 4), note(8, 64, 4)], confidence: 0.5 }
+
+    it('adds the note directly above the first lead const when a lead layer is present', () => {
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR, lead: leadLoop } },
+      ]))
+      expect(code).toContain('lead: approximate')
+      expect(code).toContain('edit by ear')
+      const noteIndex = code.indexOf('// --- lead: approximate ---')
+      const constIndex = code.indexOf('const s0_lead =')
+      expect(noteIndex).toBeGreaterThan(-1)
+      expect(constIndex).toBeGreaterThan(noteIndex)
+      // Directly above: nothing but this section's other layer consts (none
+      // here) sits between the note and the lead const it labels.
+      expect(code.slice(noteIndex, constIndex)).not.toContain('const ')
+    })
+
+    it('omits the note entirely when no section carries a lead layer', () => {
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
+      ]))
+      expect(code).not.toContain('lead: approximate')
+      expect(code).not.toContain('edit by ear')
+    })
+
+    it('emits the note once, not once per section, when several sections define their own lead', () => {
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), lead: leadLoop } },
+        { index: 1, startBar: 4, bars: 4, label: 'high', sameAs: null, loops: { ...emptyLoops(), lead: leadLoop } },
+      ]))
+      expect(code).toContain('const s0_lead =')
+      expect(code).toContain('const s1_lead =')
+      expect((code.match(/lead: approximate/g) ?? []).length).toBe(1)
+    })
+  })
+
   describe('with a soundMatch', () => {
     const sections = () => [
       { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },

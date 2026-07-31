@@ -441,6 +441,27 @@ function soundMatchHeader(soundMatch) {
 }
 
 /**
+ * Placed once, directly above the first lead-layer const a track emits.
+ *
+ * Every other layer here is measured and solid; the lead is not. Melodia,
+ * Basic Pitch and five other approaches were all measured against ground
+ * truth and topped out at 15.4% exact-note accuracy transcribing a melody
+ * out of a polyphonic stem (see melodia-report.md, lead-improvement-report.md)
+ * - not a bug to fix here, the honest ceiling of what has been tried. Rather
+ * than dress that up, the track says so where the musician will actually see
+ * it: register and rhythm placement survive (they are what the other measured
+ * layers - key, grid, sections - actually constrain), the notes themselves
+ * are a best guess to be replaced by ear.
+ */
+function leadApproximationNote() {
+  return [
+    '// --- lead: approximate ---',
+    '// Melody extraction from a polyphonic stem is beyond current measured tooling.',
+    '// Register and rhythm here are measured; the exact notes likely are not - edit by ear.',
+  ]
+}
+
+/**
  * Assemble the whole track.
  *
  * Sections whose transcriptions came out identical share one set of
@@ -480,6 +501,7 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
   }
 
   const emitted = new Set()
+  let leadNoted = false
   for (const section of transcription.sections) {
     if (definitionOf.get(section.index) !== section.index) continue
     const present = LAYERS.filter((layer) => section.loops?.[layer])
@@ -489,6 +511,10 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
     if (dyn?.summary) lines.push(`//   ${dyn.summary}`)
     for (const layer of present) {
       const name = `s${section.index}_${layer}`
+      if (layer === 'lead' && !leadNoted) {
+        lines.push(...leadApproximationNote())
+        leadNoted = true
+      }
       const note = section.loops[layer].variation?.note
       if (note) lines.push(`//   ${layer} ${section.loops[layer].variation.kind}: ${note}`)
       lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor, soundMatch, dynamics: dyn, sectionBars: section.bars, sounds })}`)
