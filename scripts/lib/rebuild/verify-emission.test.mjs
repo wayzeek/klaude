@@ -158,6 +158,20 @@ describe('verifyEmission', () => {
     expect(result.defects).toEqual([])
   })
 
+  it('confirms a round trip for sub, sorted correctly by its own distinct sound', async () => {
+    const t = transcription({
+      ...emptyLoops(),
+      bass: { loopBars: 1, events: [note(0, 41, 8), note(8, 44, 8)], confidence: 0.8 },
+      sub: { loopBars: 1, events: [note(4, 24, 4), note(12, 27, 4)], confidence: 0.8 },
+    })
+    const result = await verifyEmission(emitTrack(t), t)
+    expect(result.ok).toBe(true)
+    expect(result.defects).toEqual([])
+    // loopBars: 1 over a 4-bar section repeats each loop's 2 events 4 times.
+    expect(result.sections[0].layers.sub.matched).toBe(8)
+    expect(result.sections[0].layers.bass.matched).toBe(8)
+  })
+
   it('reports a defect when the code drops a layer', async () => {
     const t = transcription({
       ...emptyLoops(),

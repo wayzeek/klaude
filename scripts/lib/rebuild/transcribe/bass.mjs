@@ -191,6 +191,112 @@ export function transcribeBass(wavBuf, grid, sections) {
 }
 
 /**
+ * The register boundary between `sub` and `bass`: a note whose transcribed
+ * MIDI value is strictly below this stays part of the busy mid-bass line only
+ * as far as pitch is concerned - `splitByRegister` moves it to the sustained,
+ * filtered-sine voice instead. Below this the emitted synth also changes (see
+ * `emit.mjs`'s `SOUNDS.sub`, a low-passed sine rather than `bass`'s sawtooth),
+ * because a genuinely low fundamental reads as thin and harsh through a
+ * sawtooth + `hpf(95)` and reads as weight through a filtered sine - the same
+ * choice `tracks/MINUIT/02-the-chase.md`'s own `mkBass`/`mkSub` make by hand.
+ *
+ * MIDI 32 (~51.9 Hz), not the ~65 Hz/MIDI 36 that is the usual studio rule of
+ * thumb for "sub" - that convention was measured against this pipeline's own
+ * output and rejected, not assumed. Full numbers in `sub-bass-report.md`;
+ * summary here because the boundary constant needs its own justification on
+ * the page, not just a pointer to one. `transcribeBass`'s emitted note events
+ * (not raw F0 frames, and not the hand-authored ground truth - the actual
+ * per-section loops this function folds down to) were histogrammed on both
+ * real bass stems this project has ground truth or a second independent
+ * recording for:
+ *
+ *   the-chase (a rendered moltek track with an exact answer key, 132 notes,
+ *   8 sections): 24:11  25:48  27:21  29:35  34:8  37:1  39:3  41:5
+ *     widest gap between populated values: 29 to 34 (centre 31.5)
+ *
+ *   Bicep "Glue" (an independent commercial recording, 134 notes,
+ *   10 sections): 24:1  28:1  35:18  36:17  38:47  40:50
+ *     widest gap between populated values: 28 to 35 (centre 31.5)
+ *
+ * Both real stems show their own transcribed line's density thin out around
+ * the *same* point, MIDI 31.5, even though the two tracks' bass registers
+ * barely overlap otherwise (the-chase's line sits mostly at 24-29, Glue's
+ * mostly at 35-40). 32 sits on the `bass` side of that midpoint so an exact
+ * 31.5 (impossible - MIDI is integer) rounds toward keeping content on the
+ * *mid*-bass line rather than moving it to sub.
+ *
+ * MIDI 36 was tried and measured worse, not just assumed inferior. Scoring
+ * `transcribeBass`'s the-chase output after a register split against the
+ * track's own separately-authored ground truth (`bySound.sine` for sub,
+ * `bySound.sawtooth` at midi<=52 for bass, the same per-(bar,step) matching
+ * `task-6-report.md` used for the pre-split 80.7% baseline):
+ *
+ *   boundary   sub exact-MIDI      bass exact-MIDI     combined
+ *   MIDI 32    63/81  (77.8%)      15/16  (93.8%)       78/97   (80.4%)
+ *   MIDI 36    65/83  (78.3%)       7/8   (87.5%)       72/91   (79.1%)
+ *   MIDI 40    65/83  (78.3%)       3/4   (75.0%)       68/87   (78.2%)
+ *
+ * 32 both matches the measured gap and scores best; every boundary from 30 to
+ * 34 scores identically because no transcribed the-chase note lands in that
+ * range at all (the same gap, seen from the other side).
+ *
+ * Honest limit: the-chase's own hand-authored `mkBass`/`mkSub` play the exact
+ * same root pitches (`rootsA`/`rootsB` feed both), so ground truth's `sub`
+ * (MIDI 24-34) sits entirely *inside* `bass`'s own range (MIDI 24-53) rather
+ * than in a genuinely separate register - real sub/mid-bass separation on this
+ * one track is rhythmic (sub plays a sparse two-hit pedal; bass plays a
+ * busier six-hit line) and timbral, not pitch-based. A single monophonic F0
+ * tracker reading one merged stem cannot recover *which instrument* played a
+ * given note when both play the same pitch at once; it can only say how low
+ * that note was. `splitByRegister` answers the question it can honestly
+ * answer - "was this note low enough to read as sub-register" - which is why
+ * the combined score (80.4%) sits close to but not above the unsplit 80.7%:
+ * the split trades a small amount of scoreable coverage (some transcribed low
+ * notes that are genuinely `bass` line content no longer match a `sub`-only
+ * truth table at their slot) for a real, audible register separation the
+ * unsplit line never offered.
+ */
+export const SUB_BASS_MAX_MIDI = 32
+
+/**
+ * Split one bass transcription into a sub voice and a mid-bass voice by
+ * register, per section.
+ *
+ * Takes exactly the shape `transcribeBass`/`transcribeBassFromNotes` return
+ * (one `{loopBars, events, confidence}` or `null` per section) and returns two
+ * arrays of the same shape and length, never mutating the input. Each output
+ * event is one of the input's own events, unchanged - this recolours an
+ * existing note by how low it is, it does not invent one. An octave-doubling
+ * heuristic (synthesising a sub note underneath a mid-bass note that has none)
+ * is deliberately not implemented anywhere in this pipeline: inventing content
+ * the source audio never had is the exact failure mode this project exists to
+ * avoid, so a section whose notes are entirely on one side of `boundary`
+ * simply has no loop on the other side (`null`), the same omission rule every
+ * other transcriber in this file already follows.
+ *
+ * `loopBars` and `confidence` are carried through unchanged to both sides:
+ * they describe the whole section's transcription quality and its fold
+ * length, neither of which changes by re-partitioning which register an
+ * event's own pitch puts it in.
+ */
+export function splitByRegister(loops, { boundary = SUB_BASS_MAX_MIDI } = {}) {
+  const sub = []
+  const bass = []
+  for (const loop of loops) {
+    if (!loop) {
+      sub.push(null)
+      bass.push(null)
+      continue
+    }
+    const subEvents = loop.events.filter((event) => event.midi < boundary)
+    const bassEvents = loop.events.filter((event) => event.midi >= boundary)
+    sub.push(subEvents.length ? { ...loop, events: subEvents } : null)
+    bass.push(bassEvents.length ? { ...loop, events: bassEvents } : null)
+  }
+  return { sub, bass }
+}
+
+/**
  * Reduce Basic Pitch's polyphonic note list to one bass voice by keeping the
  * lowest-pitched note among any group of notes that overlap in time.
  *

@@ -359,6 +359,24 @@ export function deriveTrackEffects(stemProfiles) {
     effects.bass = build({ room: space.room, lpf: tone.lpf, gainTrim: gain.trim, notes: [space.note, tone.note, width.note, gain.note] })
   }
 
+  {
+    // `sub` shares the bass stem physically - it is a register split of the
+    // same transcribed line (`bass.mjs`'s `splitByRegister`), not a second
+    // recorded source - so its decay and loudness are measured from that same
+    // stem profile. Tone is the one dimension NOT reused: `lpfFromBassTilt`'s
+    // comparison is built around `SOUNDS.bass`'s dry default (`lpf(440)`,
+    // considerably brighter than sub's own `lpf(130)`), so a "brighter than
+    // assumed, raise the cutoff" call sized for the mid-bass register would
+    // be nonsensical applied to a voice already filtered dark by design.
+    const space = roomFromDecay(bass?.decay, 'the bass stem')
+    const tone = {
+      note: "tone left alone on sub - lpfFromBassTilt's comparison is sized for bass's own lpf(440) default, not sub's already-dark lpf(130)",
+    }
+    const width = widthPan(bass, 'the bass stem', { centered: true })
+    const gain = gainTrim(SOUNDS.sub.gain, bass?.loudness?.rmsDb, drums?.loudness?.rmsDb, 'sub')
+    effects.sub = build({ room: space.room, gainTrim: gain.trim, notes: [space.note, tone.note, width.note, gain.note] })
+  }
+
   for (const layer of ['chords', 'lead']) {
     const space = roomFromDecay(other?.decay, 'the other stem (chords and lead share it)')
     const tone = lpfFromTilt(other, 'the other stem (chords and lead share it)', {

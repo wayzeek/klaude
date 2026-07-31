@@ -25,6 +25,12 @@ const VOICES = {
   snare: { kind: 'noise', lo: 180, hi: 1200, decay: 0.045, length: 0.18, gain: 0.8 },
   hats: { kind: 'noise', lo: 5000, hi: 16000, decay: 0.012, length: 0.06, gain: 0.5 },
   bass: { kind: 'pitched', partials: [1, 0.5, 0.25], attack: 0.005, release: 0.04, gain: 0.9 },
+  // Near-pure tone (a single partial), unlike `bass`'s harmonically rich
+  // sawtooth-shaped voice above - this is what `emit.mjs`'s `SOUNDS.sub`
+  // (`.s("sine")`) actually sounds like, and `bassAgreement` in
+  // `verify-hearing.mjs` compares by F0 pitch directly, not harmonic content,
+  // so the shape only has to be honest, not tuned for the scorer.
+  sub: { kind: 'pitched', partials: [1], attack: 0.006, release: 0.05, gain: 0.9 },
   chords: { kind: 'chord', partials: [1, 0.4], attack: 0.02, release: 0.08, gain: 0.5 },
   lead: { kind: 'pitched', partials: [1, 0.4, 0.15], attack: 0.008, release: 0.06, gain: 0.7 },
 }

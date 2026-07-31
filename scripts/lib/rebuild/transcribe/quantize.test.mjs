@@ -22,8 +22,8 @@ const GRID_JSON = {
 const grid = gridFromJson(GRID_JSON)
 
 describe('step maths', () => {
-  it('freezes the six layer names in order', () => {
-    expect(LAYERS).toEqual(['kick', 'snare', 'hats', 'bass', 'chords', 'lead'])
+  it('freezes the seven layer names in order', () => {
+    expect(LAYERS).toEqual(['kick', 'snare', 'hats', 'bass', 'sub', 'chords', 'lead'])
     expect(Object.isFrozen(LAYERS)).toBe(true)
   })
 

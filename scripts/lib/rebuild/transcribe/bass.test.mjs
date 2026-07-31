@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { writeWavBuffer } from '../../__fixtures__/make-wav.mjs'
 import { midiToHz } from './f0.mjs'
 import { gridFromJson } from './quantize.mjs'
-import { reduceToLowestVoice, transcribeBass, transcribeBassFromNotes } from './bass.mjs'
+import { SUB_BASS_MAX_MIDI, reduceToLowestVoice, splitByRegister, transcribeBass, transcribeBassFromNotes } from './bass.mjs'
 
 const SAMPLE_RATE = 44100
 const BPM = 120
@@ -171,6 +171,80 @@ describe('transcribeBass', () => {
       { index: 1, startBar: 2, bars: 2, label: 'mid', sameAs: null },
     ]
     expect(transcribeBass(bassClip(repeat(bar, 4)), grid, sections)).toHaveLength(2)
+  })
+})
+
+const loopNote = (step, midi, length = 1) => ({ step, length, velocity: 0.8, confidence: 0.9, midi, symbol: null, driftSteps: 0 })
+
+describe('splitByRegister', () => {
+  it('sends a note below the boundary to sub and keeps one at/above it in bass', () => {
+    const loop = { loopBars: 1, events: [loopNote(0, 24), loopNote(4, 40)], confidence: 0.9 }
+    const { sub, bass } = splitByRegister([loop])
+    expect(sub[0].events.map((e) => e.midi)).toEqual([24])
+    expect(bass[0].events.map((e) => e.midi)).toEqual([40])
+  })
+
+  it('treats the boundary itself as bass, not sub (strictly-below comparison)', () => {
+    const loop = { loopBars: 1, events: [loopNote(0, SUB_BASS_MAX_MIDI)], confidence: 0.9 }
+    const { sub, bass } = splitByRegister([loop])
+    expect(sub[0]).toBeNull()
+    expect(bass[0].events.map((e) => e.midi)).toEqual([SUB_BASS_MAX_MIDI])
+  })
+
+  it('omits sub rather than inventing one when every note is in the mid-bass register', () => {
+    const loop = { loopBars: 1, events: [loopNote(0, 40), loopNote(4, 44)], confidence: 0.9 }
+    const { sub, bass } = splitByRegister([loop])
+    expect(sub[0]).toBeNull()
+    expect(bass[0].events.map((e) => e.midi)).toEqual([40, 44])
+  })
+
+  it('omits bass rather than inventing one when every note is in the sub register', () => {
+    const loop = { loopBars: 1, events: [loopNote(0, 24), loopNote(4, 27)], confidence: 0.9 }
+    const { sub, bass } = splitByRegister([loop])
+    expect(bass[0]).toBeNull()
+    expect(sub[0].events.map((e) => e.midi)).toEqual([24, 27])
+  })
+
+  it('passes a null section through as null on both sides', () => {
+    const { sub, bass } = splitByRegister([null])
+    expect(sub[0]).toBeNull()
+    expect(bass[0]).toBeNull()
+  })
+
+  it('carries loopBars and confidence through unchanged on both sides', () => {
+    const loop = { loopBars: 2, events: [loopNote(0, 24), loopNote(4, 40)], confidence: 0.73 }
+    const { sub, bass } = splitByRegister([loop])
+    expect(sub[0].loopBars).toBe(2)
+    expect(sub[0].confidence).toBe(0.73)
+    expect(bass[0].loopBars).toBe(2)
+    expect(bass[0].confidence).toBe(0.73)
+  })
+
+  it('does not mutate the input loop', () => {
+    const loop = { loopBars: 1, events: [loopNote(0, 24), loopNote(4, 40)], confidence: 0.9 }
+    const before = JSON.parse(JSON.stringify(loop))
+    splitByRegister([loop])
+    expect(loop).toEqual(before)
+  })
+
+  it('respects a custom boundary', () => {
+    const loop = { loopBars: 1, events: [loopNote(0, 20), loopNote(4, 25)], confidence: 0.9 }
+    const { sub, bass } = splitByRegister([loop], { boundary: 22 })
+    expect(sub[0].events.map((e) => e.midi)).toEqual([20])
+    expect(bass[0].events.map((e) => e.midi)).toEqual([25])
+  })
+
+  it('returns one entry per section, aligned with the input array', () => {
+    const loops = [
+      { loopBars: 1, events: [loopNote(0, 24)], confidence: 0.9 },
+      null,
+      { loopBars: 1, events: [loopNote(0, 40)], confidence: 0.9 },
+    ]
+    const { sub, bass } = splitByRegister(loops)
+    expect(sub).toHaveLength(3)
+    expect(bass).toHaveLength(3)
+    expect(sub[1]).toBeNull()
+    expect(bass[1]).toBeNull()
   })
 })
 

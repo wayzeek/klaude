@@ -35,6 +35,16 @@ export const SOUNDS = Object.freeze({
   snare: Object.freeze({ kind: 'sample', token: 'rim', sound: 'rim', suffix: '.bank("RolandTR909")', gain: 0.35 }),
   hats: Object.freeze({ kind: 'sample', token: 'hh', sound: 'hh', suffix: '.bank("RolandTR909").hpf(2200)', gain: 0.25 }),
   bass: Object.freeze({ kind: 'note', sound: 'sawtooth', suffix: '.s("sawtooth").hpf(95).lpf(440).lpq(1)', gain: 0.35 }),
+  // A register split of the same transcribed bass line (`bass.mjs`'s
+  // `splitByRegister`), not an independent voice - see its doc comment for
+  // where the MIDI 32 boundary comes from. `.s("sine")` matches
+  // `sound: 'sine'` below so `verify-emission.mjs` can sort events back into
+  // this layer; the low `lpf` matches `tracks/MINUIT/02-the-chase.md`'s own
+  // hand-authored `mkSub` (`.s("sine").lpf(130)`). Gain sits under `bass`'s
+  // own (0.3 vs 0.35), same relative balance as the reference track's
+  // `mkSub`/`mkBass` (.24/.26) - a sub is felt more than heard, not louder
+  // than the line it sits under.
+  sub: Object.freeze({ kind: 'note', sound: 'sine', suffix: '.s("sine").lpf(130)', gain: 0.3 }),
   chords: Object.freeze({ kind: 'chord', sound: 'gm_epiano1', suffix: '.voicing().s("gm_epiano1").hpf(380)', gain: 0.3 }),
   lead: Object.freeze({ kind: 'note', sound: 'gm_tenor_sax', suffix: '.s("gm_tenor_sax")', gain: 0.35 }),
 })

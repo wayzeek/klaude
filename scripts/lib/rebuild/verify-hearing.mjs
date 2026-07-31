@@ -154,6 +154,16 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
  *
  * These numbers rest on one real track (the-chase, the only recording with
  * exact ground truth) - the same n=1 limitation the beat grid carries.
+ *
+ * `sub` is not independently corruption-calibrated the way kick/snare/hats/
+ * bass/chords above are - the same honest gap `lead` already discloses, not a
+ * fixed one.
+ * It reuses `bass`'s own threshold (0.29) rather than a placeholder near zero,
+ * because `scoreLayer` reuses `bassAgreement` unchanged for it (see below):
+ * `sub` is a register-filtered subset of the same transcribed line, scored by
+ * F0 pitch agreement against the same bass stem, so the mechanism `bass` was
+ * calibrated against applies to `sub` directly rather than needing its own
+ * corruption sweep to justify borrowing the number.
  */
 /** See `HEARING_THRESHOLDS`'s own doc comment: this exists only to reject
  *  the exact `score === 0` degenerate case (`scoreLayer`'s `hasSignal`
@@ -166,6 +176,7 @@ export const HEARING_THRESHOLDS = {
   snare: 0.49,
   hats: 0.67,
   bass: 0.29,
+  sub: 0.29,
   chords: 0.58,
   lead: MIN_LEAD_SCORE,
 }
@@ -181,6 +192,7 @@ const LAYER_STEM = {
   snare: 'drums',
   hats: 'drums',
   bass: 'bass',
+  sub: 'bass',
   chords: 'other',
   lead: 'other',
 }
@@ -388,7 +400,12 @@ export function scoreLayer(rendered, stemSlice, layer, grid) {
     return onsetAgreement(rendered, stemSlice, role, RESYNTH_SAMPLE_RATE)
   }
 
-  if (layer === 'bass') {
+  // `sub` is a register-filtered subset of the same transcribed bass line
+  // (see `bass.mjs`'s `splitByRegister`), scored against the same stem
+  // (`LAYER_STEM.sub`) by the same F0 mechanism - chroma is wrong for it for
+  // exactly the reason `bassAgreement`'s own comment gives for `bass`, more
+  // so: `sub` sits even further below chroma's 80 Hz floor.
+  if (layer === 'bass' || layer === 'sub') {
     return bassAgreement(rendered, stemSlice)
   }
 

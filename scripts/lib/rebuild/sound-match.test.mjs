@@ -331,7 +331,7 @@ describe('deriveTrackEffects - gain', () => {
 describe('deriveTrackEffects - overall shape', () => {
   it('returns every layer with a chain string and at least one note, even with no profiles at all', () => {
     const effects = deriveTrackEffects({})
-    for (const layer of ['kick', 'snare', 'hats', 'bass', 'chords', 'lead']) {
+    for (const layer of ['kick', 'snare', 'hats', 'bass', 'sub', 'chords', 'lead']) {
       expect(typeof effects[layer].chain).toBe('string')
       expect(effects[layer].notes.length).toBeGreaterThan(0)
       expect(effects[layer].gainTrim).toBe(1)
@@ -340,5 +340,44 @@ describe('deriveTrackEffects - overall shape', () => {
 
   it('does not throw when called with undefined stem profiles', () => {
     expect(() => deriveTrackEffects(undefined)).not.toThrow()
+  })
+})
+
+describe('deriveTrackEffects - sub', () => {
+  const noRoom = { roles: { kick: NO_DECAY, snare: NO_DECAY, hats: NO_DECAY } }
+
+  it('shares the bass stem\'s room, since sub is a register split of the same recorded audio', () => {
+    const effects = deriveTrackEffects({ drums: profile(noRoom), bass: profile({ decay: WET }) })
+    expect(effects.sub.chain).toContain('.room(')
+    expect(effects.bass.chain.match(/\.room\(([\d.]+)\)/)[1]).toBe(effects.sub.chain.match(/\.room\(([\d.]+)\)/)[1])
+  })
+
+  it('never touches sub tone - the bass-tilt comparison is sized for bass\'s own dry default, not sub\'s', () => {
+    const effects = deriveTrackEffects({
+      drums: profile(noRoom),
+      bass: profile({ tiltDb: tilt({ lowMid: -5, mid: -3 }) }), // would raise bass's own lpf to 900
+    })
+    expect(effects.bass.chain).toContain('.lpf(900)')
+    expect(effects.sub.chain).not.toContain('.lpf(')
+  })
+
+  it('never pans sub, same as bass', () => {
+    const effects = deriveTrackEffects({ drums: profile(noRoom), bass: profile({ correlation: 0.1 }) })
+    expect(effects.sub.chain).not.toContain('.pan(')
+  })
+
+  it('trims sub gain independently from bass, since their default gains differ', () => {
+    // Same measured gap (-10.5dB from drums) as the chords/lead independence
+    // test above, and the same two default gains (sub 0.3, bass 0.35 - same
+    // values as chords/lead) - reused deliberately so the two trims land at
+    // the same already-verified numbers (~0.656 and floor-clamped 0.6).
+    expect(SOUNDS.sub.gain).not.toBe(SOUNDS.bass.gain)
+    const effects = deriveTrackEffects({
+      drums: profile({ ...noRoom, rmsDb: -17 }),
+      bass: profile({ rmsDb: -27.5 }),
+    })
+    expect(effects.bass.gainTrim).toBeLessThan(1)
+    expect(effects.sub.gainTrim).toBeLessThan(1)
+    expect(effects.sub.gainTrim).not.toBe(effects.bass.gainTrim)
   })
 })

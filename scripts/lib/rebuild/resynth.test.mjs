@@ -174,12 +174,13 @@ describe('renderSection', () => {
         snare: null,
         hats: null,
         bass: { loopBars: 1, events: [noteEvent(0, 41, 8)], confidence: 0.8 },
+        sub: null,
         chords: null,
         lead: null,
       },
     }
     const { mix, layers } = renderSection(section, grid)
-    expect(Object.keys(layers).sort()).toEqual(['bass', 'chords', 'hats', 'kick', 'lead', 'snare'])
+    expect(Object.keys(layers).sort()).toEqual(['bass', 'chords', 'hats', 'kick', 'lead', 'snare', 'sub'])
     expect(rms(layers.kick)).toBeGreaterThan(0)
     expect(rms(layers.snare)).toBe(0)
     expect(rms(mix)).toBeGreaterThan(rms(layers.kick))

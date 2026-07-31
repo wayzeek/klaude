@@ -9,9 +9,17 @@
 
 export const STEPS_PER_BEAT = 4
 
-/** The six layers a transcription can carry. Frozen: the emitter, the studio's
- *  mixer and the rack all key off these exact names. */
-export const LAYERS = Object.freeze(['kick', 'snare', 'hats', 'bass', 'chords', 'lead'])
+/** The seven layers a transcription can carry. Frozen: the emitter, the
+ *  studio's mixer and the rack all key off these exact names.
+ *
+ *  `sub` sits next to `bass` rather than at the end: it is a register split of
+ *  the same transcribed bass line (see `bass.mjs`'s `splitByRegister`), not an
+ *  independent voice, and the studio's mixer/rack are name-agnostic - moltek's
+ *  own `tracks/MINUIT/02-the-chase.md` already hand-writes thirteen layer
+ *  names through the same `layers({...})` call, `sub` among them - so adding
+ *  a name here is not the studio-contract change it would be in a mixer that
+ *  hardcoded six rows. */
+export const LAYERS = Object.freeze(['kick', 'snare', 'hats', 'bass', 'sub', 'chords', 'lead'])
 
 /** Loop lengths worth trying, shortest first. A loop longer than four bars
  *  stops being a loop and starts being a transcript, which #46 rules out on

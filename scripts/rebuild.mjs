@@ -27,7 +27,7 @@ import { deriveTrackEffects } from './lib/rebuild/sound-match.mjs'
 import { profileStems } from './lib/rebuild/stem-profile.mjs'
 import { MissingToolError } from './lib/rebuild/tools.mjs'
 import { transcribeWithBasicPitch } from './lib/rebuild/transcribe/basic-pitch.mjs'
-import { transcribeBass } from './lib/rebuild/transcribe/bass.mjs'
+import { splitByRegister, transcribeBass } from './lib/rebuild/transcribe/bass.mjs'
 import { transcribeDrums } from './lib/rebuild/transcribe/drums.mjs'
 import { transcribeHarmony, transcribeHarmonyFromNotes } from './lib/rebuild/transcribe/harmony.mjs'
 import { transcribeMelody } from './lib/rebuild/transcribe/melody.mjs'
@@ -201,7 +201,11 @@ async function main() {
   const soundMatch = deriveTrackEffects(stemProfile)
 
   const drums = transcribeDrums(drumBuf, grid, sections)
-  const bass = transcribeBass(bassBuf, grid, sections)
+  // One transcribed bass line, then a register split into a sustained sub
+  // voice and the mid-bass line proper - see `splitByRegister`'s own doc
+  // comment for where the boundary comes from and why it recolours the same
+  // notes by pitch rather than inventing a second voice.
+  const { sub, bass } = splitByRegister(transcribeBass(bassBuf, grid, sections))
   const lead = transcribeMelody(otherBuf, grid, sections)
 
   // Basic Pitch is optional (see tools.mjs). Where installed, it changes two
@@ -263,6 +267,7 @@ async function main() {
         snare: drums.snare[i],
         hats: drums.hats[i],
         bass: bass[i],
+        sub: sub[i],
         chords: chords[i],
         lead: lead[i],
       },

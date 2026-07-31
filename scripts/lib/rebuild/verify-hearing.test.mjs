@@ -44,8 +44,16 @@ function stemsFromTranscription(transcription) {
   for (let i = 0; i < drums.length; i++) drums[i] = layers.kick[i] + layers.snare[i] + layers.hats[i]
   const other = new Float32Array(layers.chords.length)
   for (let i = 0; i < other.length; i++) other[i] = layers.chords[i] + layers.lead[i]
+  // `sub` shares the `bass` stem (`LAYER_STEM.sub === 'bass'`): a real Demucs
+  // separation puts both in the same "bass" source category, and `sub` is a
+  // register split of the same transcribed line, not a second instrument -
+  // see `bass.mjs`'s `splitByRegister`. Summed in here rather than kept
+  // separate, so a test that never sets `sub` (every test above this comment)
+  // adds a silent buffer and sees no change at all.
+  const bass = new Float32Array(layers.bass.length)
+  for (let i = 0; i < bass.length; i++) bass[i] = layers.bass[i] + layers.sub[i]
   const wrap = (samples) => writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [samples] })
-  return { drums: wrap(drums), bass: wrap(layers.bass), other: wrap(other) }
+  return { drums: wrap(drums), bass: wrap(bass), other: wrap(other) }
 }
 
 // Bass scoring now runs `trackF0` (YIN) over both the rendered buffer and the
@@ -245,6 +253,45 @@ describe('verifyHearing', () => {
     expect(result.sections[0].layers.lead).not.toBeNull()
     expect(result.sections[0].layers.lead.pass).toBe(true)
   })
+
+  // Placed on steps 4-7/12-15, where BASE_LOOPS.bass (steps 0-3/8-11) is
+  // silent - not because sub and bass never overlap in real material (the
+  // reference track's own sub and bass frequently sound at once), but because
+  // `bassAgreement` tracks one fundamental at a time and two real,
+  // simultaneous notes an octave-plus apart is a genuine, separate limitation
+  // of monophonic F0 tracking on a summed stem, not something this dispatch
+  // test is trying to characterise (Glue's own end-to-end run is where that
+  // gets measured on real audio).
+  it('scores a sub loop against the (shared) bass stem, same mechanism as bass', () => {
+    const sub = { loopBars: 1, events: [note(4, 24, 4), note(12, 27, 4)], confidence: 0.8 }
+    const transcription = transcriptionWith({ ...BASE_LOOPS, sub })
+    const result = verifyHearing(transcription, stemsFromTranscription(transcription))
+    expect(result.sections[0].layers.sub).not.toBeNull()
+    expect(result.sections[0].layers.sub.score).toBeGreaterThan(0.85)
+    expect(result.sections[0].layers.sub.pass).toBe(true)
+  }, BASS_TEST_TIMEOUT)
+
+  it('scores a sub loop lower when it is transposed a semitone off the stem', () => {
+    const sub = { loopBars: 1, events: [note(4, 24, 4), note(12, 27, 4)], confidence: 0.8 }
+    const truth = transcriptionWith({ ...BASE_LOOPS, sub })
+    const stems = stemsFromTranscription(truth)
+
+    const wrong = transcriptionWith({
+      ...BASE_LOOPS,
+      sub: { loopBars: 1, events: sub.events.map((e) => ({ ...e, midi: e.midi + 1 })), confidence: 0.8 },
+    })
+    const right = verifyHearing(truth, stems).sections[0].layers.sub.score
+    const off = verifyHearing(wrong, stems).sections[0].layers.sub.score
+    console.log(`semitone-off sub: correct=${right.toFixed(3)} wrong=${off.toFixed(3)}`)
+    expect(right).toBeGreaterThan(0.85)
+    expect(off).toBeLessThan(right - 0.1)
+  }, BASS_TEST_TIMEOUT)
+
+  it('reports null for sub when the section carries no sub loop', () => {
+    const transcription = transcriptionWith(BASE_LOOPS)
+    const result = verifyHearing(transcription, stemsFromTranscription(transcription))
+    expect(result.sections[0].layers.sub).toBeNull()
+  }, BASS_TEST_TIMEOUT)
 
   it('handles a section with no layers at all', () => {
     const empty = transcriptionWith({

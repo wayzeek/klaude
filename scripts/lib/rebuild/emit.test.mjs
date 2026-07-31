@@ -24,7 +24,7 @@ function transcription(sections) {
   }
 }
 
-const emptyLoops = () => ({ kick: null, snare: null, hats: null, bass: null, chords: null, lead: null })
+const emptyLoops = () => ({ kick: null, snare: null, hats: null, bass: null, sub: null, chords: null, lead: null })
 
 describe('midiToNoteName', () => {
   it('names notes with octaves', () => {
@@ -132,7 +132,7 @@ describe('emitTrack', () => {
     const code = emitTrack(transcription([
       { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
     ]))
-    for (const layer of ['kick', 'snare', 'hats', 'bass', 'chords', 'lead']) {
+    for (const layer of ['kick', 'snare', 'hats', 'bass', 'sub', 'chords', 'lead']) {
       expect(code).toContain(`${layer}: o.${layer} || S`)
     }
   })
@@ -254,6 +254,35 @@ describe('emitTrack', () => {
     // at it exactly, matching resynth.mjs's `voice.gain * velocity` and the
     // hand-authored gains in tracks/MINUIT (no extra headroom factor).
     expect(Math.max(...values)).toBeLessThanOrEqual(SOUNDS.kick.gain)
+  })
+
+  it('emits sub as a distinct sine voice, under the bass-register gain ceiling', () => {
+    const subLoop = { loopBars: 1, events: [note(0, 24, 4), note(8, 27, 4)], confidence: 0.8 }
+    const code = emitTrack(transcription([
+      { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), sub: subLoop } },
+    ]))
+    expect(code).toContain('.s("sine").lpf(130)')
+    // A distinct `sound` from every other layer - verify-emission.mjs sorts
+    // events back into layers by this field, so a collision would make sub
+    // events silently read as bass (or vice versa).
+    const otherSounds = ['kick', 'snare', 'hats', 'bass', 'chords', 'lead'].map((l) => SOUNDS[l].sound)
+    expect(otherSounds).not.toContain(SOUNDS.sub.sound)
+    const match = /note\(`([^`]+)`\)\.s\("sine"\)\.lpf\(130\)\.gain\(`([^`]+)`\)/.exec(code)
+    expect(match).not.toBeNull()
+    const gains = match[2].split(' ').map((token) => Number(token.split('@')[0]))
+    // check.mjs's BASS_GAIN_CEILING is 0.45; SOUNDS.sub.gain must clear it
+    // with margin, the same way SOUNDS.bass already does.
+    expect(Math.max(...gains)).toBeLessThanOrEqual(0.45)
+    expect(Math.max(...gains)).toBeLessThanOrEqual(SOUNDS.sub.gain)
+  })
+
+  it('omits sub from the arrangement when no section has one, same as any other layer', () => {
+    const code = emitTrack(transcription([
+      { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
+    ]))
+    const arrangeBlock = code.slice(code.indexOf('arrange('))
+    expect(arrangeBlock).not.toContain('sub:')
+    expect(code).not.toContain('.s("sine")')
   })
 
   it('sustains a chord across a bar line instead of clipping it', () => {
