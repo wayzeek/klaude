@@ -208,17 +208,41 @@ function runBasicPitch(wavPath, outDir, timeoutMs) {
 }
 
 /**
+ * Read and parse a CSV already confirmed `cacheComplete`, throwing if it
+ * parses to zero usable notes.
+ *
+ * `cacheComplete` only checks that the file has data rows *at all* - it
+ * cannot tell a real note list from a header followed entirely by rows
+ * `parseNoteEvents` throws out (non-finite fields, `endSec <= startSec`).
+ * Every caller of this module treats a `[]` result as "the tool found
+ * nothing to say" and reads it exactly like a missing binary would - but `[]`
+ * is truthy, so `otherNotes ? notesPath : dspPath`-shaped selection code
+ * (`rebuild.mjs`) picks the notes path anyway and gets no chords at all,
+ * instead of falling back to the DSP path that might still find something.
+ * Zero valid rows is the same kind of "not usable" as a bad header or a
+ * nonzero exit, so it is raised here and caught by both call sites below,
+ * which already turn any failure into `null`.
+ */
+async function readUsableNotes(csvPath) {
+  const notes = parseNoteEvents(await fsp.readFile(csvPath, 'utf8'))
+  if (!notes.length) throw new Error(`basic-pitch CSV at ${csvPath} parsed to zero usable notes`)
+  return notes
+}
+
+/**
  * Run Basic Pitch on one stem and return its notes - or `null` if the tool
  * is not usable at all, which every caller must treat as "use the DSP path
  * instead," never as an error. That covers a missing binary just as much as
  * one that is present but broken: an install that passes `probe()` (its
  * `--help` still prints a banner) but fails on the real invocation - a stale
  * checkpoint, an incompatible onnxruntime, a process that never exits, a CSV
- * shape this parser no longer recognises - must degrade exactly the same
- * way, per this module's own doc comment. The failure is not swallowed
- * silently, only downgraded from fatal to a logged warning, so a real,
- * fixable install problem stays visible without taking the whole rebuild
- * down with it.
+ * shape this parser no longer recognises, or a CSV whose every row fails
+ * `parseNoteEvents`'s own sanity checks (see `readUsableNotes`) - must
+ * degrade exactly the same way, per this module's own doc comment. The
+ * failure is not swallowed silently, only downgraded from fatal to a logged
+ * warning, so a real, fixable install problem stays visible without taking
+ * the whole rebuild down with it. The return value is therefore never `[]`:
+ * either at least one usable note, or `null`.
  *
  * Caches its own CSV: inference is cheap (~9s for a three-minute stem,
  * measured) but not free, and re-running a rebuild on a stem already
@@ -235,7 +259,7 @@ export async function transcribeWithBasicPitch(wavPath, outDir, { timeoutMs = BA
   const csvPath = basicPitchCsvPath(outDir, wavPath)
 
   try {
-    if (cacheComplete(csvPath)) return parseNoteEvents(await fsp.readFile(csvPath, 'utf8'))
+    if (cacheComplete(csvPath)) return await readUsableNotes(csvPath)
   } catch (error) {
     console.error(`basic-pitch cache at ${csvPath} looks corrupt (${error.message}); continuing without it`)
     return null
@@ -250,7 +274,7 @@ export async function transcribeWithBasicPitch(wavPath, outDir, { timeoutMs = BA
   try {
     await runBasicPitch(wavPath, outDir, timeoutMs)
     if (!cacheComplete(csvPath)) throw new Error(`basic-pitch finished but did not produce ${csvPath}`)
-    return parseNoteEvents(await fsp.readFile(csvPath, 'utf8'))
+    return await readUsableNotes(csvPath)
   } catch (error) {
     console.error(`basic-pitch is installed but failed (${error.message}); continuing without it`)
     return null

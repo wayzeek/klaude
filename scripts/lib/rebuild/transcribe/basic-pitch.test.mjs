@@ -153,6 +153,26 @@ describe('transcribeWithBasicPitch', () => {
     }
   })
 
+  it('returns null (not []) for a cached CSV whose rows all fail parseNoteEvents own sanity check', async () => {
+    const originalPath = process.env.PATH
+    process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), 'moltek-empty-path-'))
+    try {
+      const outDir = path.join(tmp, 'cache-zero-notes')
+      fs.mkdirSync(outDir, { recursive: true })
+      const wavPath = path.join(tmp, 'cache-zero-notes-input.wav')
+      // cacheComplete only checks for more than one non-blank line - it
+      // cannot tell this apart from a real cache. The row itself fails
+      // parseNoteEvents' endSec > startSec check, so it parses to [].
+      fs.writeFileSync(basicPitchCsvPath(outDir, wavPath), 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n0,0,60,90,1\n')
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const result = await transcribeWithBasicPitch(wavPath, outDir)
+      expect(result).toBeNull()
+      errorSpy.mockRestore()
+    } finally {
+      process.env.PATH = originalPath
+    }
+  })
+
   describe('against a fake basic-pitch binary', () => {
     const FAKE_SCRIPT = `#!/bin/sh
 if [ "$1" = "--help" ]; then
@@ -179,13 +199,18 @@ fi
 mkdir -p "$outDir"
 if [ -n "$FAKE_BASIC_PITCH_BAD_HEADER" ]; then
   printf 'pitch_midi,velocity,start_time_s,end_time_s\\n48,100,0,1\\n' > "$outDir/\${base}_basic_pitch.csv"
+elif [ -n "$FAKE_BASIC_PITCH_ZERO_NOTES" ]; then
+  # A header, plus a data row that fails parseNoteEvents' own sanity check
+  # (endSec <= startSec) - exactly the shape that passes cacheComplete's
+  # "more than one non-blank line" test but parses to zero usable notes.
+  printf 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\\n0,0,48,100,1\\n' > "$outDir/\${base}_basic_pitch.csv"
 else
   printf 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\\n0,1,48,100,1,1,1\\n0.5,1.5,52,80,1\\n' > "$outDir/\${base}_basic_pitch.csv"
 fi
 exit 0
 `
 
-    function installFakeBasicPitch({ exitCode = 0, hang = false, badHeader = false } = {}) {
+    function installFakeBasicPitch({ exitCode = 0, hang = false, badHeader = false, zeroNotes = false } = {}) {
       const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moltek-fake-basic-pitch-'))
       const scriptPath = path.join(binDir, 'basic-pitch')
       fs.writeFileSync(scriptPath, FAKE_SCRIPT, { mode: 0o755 })
@@ -195,11 +220,13 @@ exit 0
       process.env.FAKE_BASIC_PITCH_EXIT = String(exitCode)
       if (hang) process.env.FAKE_BASIC_PITCH_HANG = '1'
       if (badHeader) process.env.FAKE_BASIC_PITCH_BAD_HEADER = '1'
+      if (zeroNotes) process.env.FAKE_BASIC_PITCH_ZERO_NOTES = '1'
       return function restore() {
         process.env.PATH = originalPath
         delete process.env.FAKE_BASIC_PITCH_EXIT
         delete process.env.FAKE_BASIC_PITCH_HANG
         delete process.env.FAKE_BASIC_PITCH_BAD_HEADER
+        delete process.env.FAKE_BASIC_PITCH_ZERO_NOTES
       }
     }
 
@@ -274,6 +301,27 @@ exit 0
         const wavPath = path.join(tmp, 'fake-badheader-input.wav')
         fs.writeFileSync(wavPath, Buffer.alloc(16, 1))
         const outDir = path.join(tmp, 'fake-badheader-out')
+
+        const result = await transcribeWithBasicPitch(wavPath, outDir)
+        expect(result).toBeNull()
+        expect(errorSpy).toHaveBeenCalled()
+      } finally {
+        restore()
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('returns null (not throws, not []) when a present install produces a CSV with zero usable note rows', async () => {
+      // The bug this guards against: `[]` is truthy, so `otherNotes ? notesPath
+      // : dspPath`-shaped selection code in rebuild.mjs would pick the notes
+      // path on a technically-successful-but-empty run and silently emit no
+      // chords instead of falling back to the DSP path.
+      const restore = installFakeBasicPitch({ zeroNotes: true })
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        const wavPath = path.join(tmp, 'fake-zero-notes-input.wav')
+        fs.writeFileSync(wavPath, Buffer.alloc(16, 1))
+        const outDir = path.join(tmp, 'fake-zero-notes-out')
 
         const result = await transcribeWithBasicPitch(wavPath, outDir)
         expect(result).toBeNull()
