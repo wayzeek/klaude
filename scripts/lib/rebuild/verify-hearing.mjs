@@ -95,8 +95,8 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
  *   snare:  correct 0.637, worst (drop-half) 0.344 -> 0.49
  *   hats:   correct 0.774, worst (drop-half, deduplicated) 0.560 -> 0.67
  *   bass:   correct 1.0, worst discriminable *coverage* corruption (75% of
- *           notes dropped) 0.39 -> 0.45 (rounded up from the exact midpoint
- *           0.69 - see below for why the midpoint itself is not used)
+ *           notes dropped) 0.39 -> 0.45, deliberately NOT the exact midpoint
+ *           (0.69) - see below for why
  *   chords: correct 0.817, worst *discriminable* (tritone) 0.349 -> 0.58
  *
  * `bass`/`sub` were recalibrated (previously 0.29) once `bassAgreement`
@@ -367,6 +367,23 @@ const BASS_F0_WINDOW = 3200
  * boundary `splitByRegister` already used to build the two layers removes
  * the cross-contamination at the source: each layer's coverage is judged
  * only against the slice of the stem it could ever have explained.
+ *
+ * Disclosed, not fixed: the two ranges meet exactly at
+ * `midiToHz(SUB_BASS_MAX_MIDI)`, but `splitByRegister` classifies by a
+ * note's ROUNDED transcribed MIDI while the real stem's own fundamental at
+ * that instant is continuous - a note whose true pitch sits at MIDI 31.6
+ * rounds to 32 and is classified `bass`, but its real audio sits at
+ * `midiToHz(31.6)`, just below this boundary. A one-semitone guard band on
+ * each range was tried to cover exactly that gap and measured to cost more
+ * than the gap itself: on the existing shared-stem test fixture (sub and
+ * bass in completely different octaves, nowhere near this boundary), it
+ * dropped the score from 0.76 to 0.65 - widening `MID_BASS_TRACK_RANGE`'s
+ * `minHz` changes YIN's own lag search bounds, not just which frequencies
+ * pass a filter, with side effects wider than the boundary case it was
+ * meant to fix. Left as a narrow, disclosed imprecision: only notes within
+ * about half a semitone of `SUB_BASS_MAX_MIDI` are affected, and only their
+ * exact coverage score, not whether a genuinely wrong or missing line is
+ * caught.
  */
 const SUB_TRACK_RANGE = Object.freeze({ minHz: BASS_RANGE.minHz, maxHz: midiToHz(SUB_BASS_MAX_MIDI) })
 const MID_BASS_TRACK_RANGE = Object.freeze({ minHz: midiToHz(SUB_BASS_MAX_MIDI), maxHz: BASS_RANGE.maxHz })
