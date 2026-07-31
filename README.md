@@ -82,6 +82,54 @@ else needs a little setup, covered in the reference below.
 Nothing is hidden, by the way. The music is real, readable code sitting in the
 editor, and you can change it yourself whenever you like. You do not have to.
 
+## Rebuilding a song
+
+Point moltek at a record and get an editable track back:
+
+```bash
+node scripts/rebuild.mjs <url-or-file>
+```
+
+It fetches the audio, splits it into stems, measures the tempo, key and section
+boundaries, transcribes drums, bass, sub, chords and a lead, then writes a
+moltek track you can open and change. Everything lands in `.moltek/rebuilds/`.
+
+Nothing in the output is carried over from another song. Tempo, key, chords,
+reverb and filter amounts, sidechain depth and the lead's voice are each
+measured from the record in front of it, and where a value can't be measured
+it's a labelled default with the reasoning next to it. The pipeline errs toward
+silence: a layer it can't recover from its own rendering gets dropped instead of
+emitted, and a section only gets chords when there's real polyphonic evidence
+for them.
+
+Needs `ffmpeg`, `yt-dlp` and `demucs` on your PATH; the command tells you how to
+install whichever is missing. Basic Pitch is optional and improves note
+transcription when present.
+
+Two things worth knowing before the first run. Stem separation is slow and
+downloads a model of about 2GB the first time, so expect a wait even once
+everything is installed. And the run reaches the network: it fetches the audio
+from whatever site you point it at, and it asks Deezer, MusicBrainz and
+AcousticBrainz for a known tempo and key to cross-check its own reading. A local
+file skips the download but still does the lookups. YouTube, SoundCloud and
+Bandcamp go through `yt-dlp`; any other link is treated as a direct audio
+download; Spotify is refused with an explanation. What you fetch, and whether
+you have the right to, is your call.
+
+**The lead is approximate.** Pulling a melody out of a stem that still holds
+pads and keys is beyond what open tooling does reliably today: measured against
+a track with known notes, the best of seven approaches lands at 15.4% exact
+notes. The register, rhythm and timbre are right; the specific notes usually
+aren't. Emitted tracks say so in a comment above that layer, because it's the
+first thing worth editing by ear.
+
+Drums, tempo, structure and harmony hold up better. Even so, the clone won't
+sound like the record, and dense material transcribes far worse than sparse
+electronic music.
+
+The command is `node scripts/rebuild.mjs` or `pnpm run rebuild` — bare `pnpm
+rebuild` collides with pnpm's own built-in rebuild command and does not work.
+
 ## Under the hood
 
 The music engine is [Strudel](https://strudel.cc), an excellent open source project

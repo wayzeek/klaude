@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { rhythmClip } from '../__fixtures__/make-wav.mjs'
 import { decodeWav } from '../decoded-audio.mjs'
 import { ONSET_HOP, computeNovelty } from '../dsp.mjs'
-import { LowConfidenceGridError, beatPhase, detectGrid, detectMeter, findTempo } from './grid.mjs'
+import { LowConfidenceGridError, beatPhase, detectGrid, detectMeter, findTempo, reconcileTempo } from './grid.mjs'
+import { MIN_MATCH_CONFIDENCE } from './metadata.mjs'
 
 function decodedOf(bpm, opts = {}) {
   const audio = decodeWav(rhythmClip({ seconds: 16, bpm, ...opts }))
@@ -37,6 +38,114 @@ describe('findTempo', () => {
     novelty.fill(0)
     const tempo = findTempo(novelty, hopSeconds)
     expect(tempo.confidence).toBe(0)
+  })
+
+  /**
+   * The bug this module shipped with: Bicep's "Glue" (broken beat, true tempo
+   * 130 BPM) was detected as 104 BPM at confidence 0.19, below the 0.25 gate.
+   * `periodScore` summed onset energy on the beat and subtracted onset energy
+   * on the off-beat, on the reasoning that the true tempo's off-beats are
+   * empty. That holds on a four-on-the-floor clip - every fixture this module
+   * had before this test - and fails on syncopated material, where the
+   * off-beats are busy by construction: at Glue's true 130 BPM, off-beat
+   * energy measured 88% of on-beat energy, while at the wrong 104 BPM it was
+   * only 48%, so the subtraction preferred whichever candidate's off-beats
+   * happened to be emptiest rather than the candidate that was correct.
+   *
+   * `offBeatSkipEvery: 4` makes the off-beat kick busy on 3 of every 4 beats
+   * (skipped on the 4th) rather than every single beat, so the pattern is
+   * genuinely syncopated rather than a uniform doubled pulse a tracker could
+   * dismiss as "really double time". At 32 seconds and 130 BPM this fixture
+   * reproduces the exact wrong answer (104 BPM) against the code before this
+   * fix, and is proven by mutation: reverting `periodScore` to subtract
+   * off-beat energy again makes this test fail.
+   */
+  it('recovers the true tempo on a syncopated (broken-beat) pattern, not the tempo whose off-beats look emptiest', () => {
+    const bpm = 130
+    const { novelty, hopSeconds } = decodedOf(bpm, { seconds: 32, offBeatGain: 0.6, offBeatSkipEvery: 4 })
+    const tempo = findTempo(novelty, hopSeconds)
+    expect(Math.abs(tempo.bpm - bpm)).toBeLessThanOrEqual(1)
+    expect(tempo.confidence).toBeGreaterThanOrEqual(0.25)
+  })
+
+  /**
+   * The confidence gate must still reject a genuine guess after the fix
+   * above. Removing the off-beat subtraction makes `periodScore` a plain sum
+   * of onset energy at candidate beat positions, and incoherent noise still
+   * has real energy at every hop - the risk is that the gate stops meaning
+   * anything once nothing is subtracted. This is a stronger case than pure
+   * silence (already covered above): the curve is never zero, so the low
+   * score has to come from no candidate period explaining it any better than
+   * its neighbours, not from an empty sum. The generator is the same seeded
+   * LCG used elsewhere in this codebase's fixtures (see bands.test.mjs),
+   * not Math.random, so the test is deterministic.
+   */
+  it('still refuses to guess a tempo from incoherent noise with no periodicity', () => {
+    const { hopSeconds } = decodedOf(120)
+    let seed = 424242
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed / 0x7fffffff
+    }
+    const novelty = new Float32Array(20000)
+    for (let i = 0; i < novelty.length; i++) novelty[i] = rand() * 0.1
+    const tempo = findTempo(novelty, hopSeconds)
+    expect(tempo.confidence).toBeLessThan(0.25)
+  })
+
+  /**
+   * The bug the syncopation fix above reopened: on a plain, unsyncopated
+   * clip, on-beat sum alone cannot tell a slow tempo from its own double,
+   * because a candidate at twice the true tempo places a beat on every real
+   * hit plus one on every true silence, and the silences contribute nothing -
+   * both candidates' sums tie exactly. Measured directly: at 70 BPM (this
+   * test), the true candidate and its double, 140 BPM, both score 15.673 on
+   * raw on-beat sum. A tie leaves the tempo prior (centred on 120 BPM) to
+   * decide, and for a genuinely slow track it decides wrongly - prior(140) =
+   * 0.894 against prior(70) = 0.254. Against the code with the syncopation
+   * fix but no octave correction, this test fails with `tempo.bpm` at 140,
+   * not 70.
+   *
+   * This is not hypothetical: DOOM's "Funeral for the Damned" is 67 BPM, and
+   * against that same code it read as 134 BPM at confidence 0.68 - a wrong
+   * answer confident enough to clear the gate and build a bar grid twice too
+   * fast. The bar itself, not just the number, would have been wrong: every
+   * downstream quantisation step inherits a beat grid at the wrong rate.
+   *
+   * This assertion is on `tempo.bpm` alone, not confidence: on this
+   * particular fixture - a bare click with no accent and nothing else in the
+   * signal, closer to a worst case than anything real music produces -
+   * `tempo.confidence` comes out at 0 even after the fix, correctly halting
+   * the pipeline rather than shipping a guess (see `detectGrid`'s
+   * `LowConfidenceGridError`). What this test proves is narrower and more
+   * important: whatever tempo the pipeline does or doesn't commit to, it is
+   * no longer confusable with the wrong octave.
+   */
+  it('does not confuse a slow tempo with its own double on a plain, unaccented clip', () => {
+    const bpm = 70
+    const { novelty, hopSeconds } = decodedOf(bpm)
+    const tempo = findTempo(novelty, hopSeconds)
+    expect(Math.abs(tempo.bpm - bpm)).toBeLessThanOrEqual(1)
+  })
+
+  /**
+   * Two points the octave-halving fix does not reach: at 193 and 197 BPM -
+   * both unusual tempos, not anywhere a real track is likely to sit - the
+   * winner is wrong (96.5 and 98.5, roughly half) and only marginally over
+   * the old 0.25 gate (0.2555 and 0.2517). `findTempo` on its own has no
+   * fix for this - it is `detectGrid`'s `MIN_TEMPO_CONFIDENCE` (0.26) that
+   * catches it, so this test calls `findTempo` directly to pin the exact
+   * confidence values the gate has to clear, and `detectGrid`'s own test
+   * below proves the gate itself stops the run.
+   */
+  it('is only marginally confident on the two BPMs a 0.25 gate would have let through wrong', () => {
+    for (const bpm of [193, 197]) {
+      const { novelty, hopSeconds } = decodedOf(bpm)
+      const tempo = findTempo(novelty, hopSeconds)
+      expect(Math.abs(tempo.bpm - bpm)).toBeGreaterThan(1)
+      expect(tempo.confidence).toBeLessThan(0.26)
+      expect(tempo.confidence).toBeGreaterThanOrEqual(0.25)
+    }
   })
 })
 
@@ -206,6 +315,19 @@ describe('detectGrid', () => {
     expect(() => detectGrid(rhythmClip({ seconds: 16, bpm: 120 }))).toThrow(LowConfidenceGridError)
   })
 
+  /**
+   * The end-to-end proof for `MIN_TEMPO_CONFIDENCE`: at 193 BPM, `findTempo`
+   * alone would have returned the wrong tempo (96.5, see the findTempo test
+   * above) at confidence 0.2555 - over the general 0.25 gate, meaning
+   * `detectGrid` would have built a bar grid at roughly half the true rate
+   * and every quantised note downstream would have inherited that error.
+   * The tempo-specific 0.26 floor stops it here instead, on the same
+   * fixture, before phase or meter are even measured.
+   */
+  it('refuses a tempo that is only marginally over the general gate but still wrong', () => {
+    expect(() => detectGrid(rhythmClip({ seconds: 16, bpm: 193, accentEvery: 4 }))).toThrow(LowConfidenceGridError)
+  })
+
   it('halts rather than guessing when there is no rhythm to measure', () => {
     // A sustained triad with no kick has nothing for the beat tracker.
     const silent = rhythmClip({ seconds: 16, bpm: 120 })
@@ -224,5 +346,179 @@ describe('detectGrid', () => {
       expect(error).toBeInstanceOf(LowConfidenceGridError)
       expect(['tempo', 'phase', 'meter']).toContain(error.field)
     }
+  })
+})
+
+describe('reconcileTempo', () => {
+  const GATE = 0.26
+
+  it('passes the detector through unchanged when there is no known tempo', () => {
+    const result = reconcileTempo(120, 0.5, null, GATE)
+    expect(result).toEqual({ bpm: 120, confidence: 0.5, agreement: 'none' })
+  })
+
+  it('treats a known tempo below MIN_MATCH_CONFIDENCE as no known tempo at all', () => {
+    // Confidence 0.3 means the search itself was not confident it found the
+    // right song - trusting its tempo would risk building the grid on a
+    // completely different track's number, which is worse than no prior.
+    const result = reconcileTempo(120, 0.1, { bpm: 200, matchConfidence: 0.3 }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(120)
+  })
+
+  it('treats a known tempo with a missing matchConfidence as untrusted, never as maximally trusted', () => {
+    // `?? 1` used to mean "no confidence reported? assume a perfect match" -
+    // measured directly against this exact shape: a cached bpm of 200 with
+    // no matchConfidence field elevated to confidence 1.0 and beat a
+    // detected 104. It must instead be treated as no known tempo at all.
+    const result = reconcileTempo(104, 0.19, { bpm: 200 }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(104)
+  })
+
+  it('treats a known tempo with a non-finite matchConfidence as untrusted, not as clearing the gate by comparing false', () => {
+    const result = reconcileTempo(104, 0.19, { bpm: 200, matchConfidence: NaN }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(104)
+  })
+
+  it('treats a known tempo with an out-of-range but finite matchConfidence as untrusted, never producing an out-of-range confidence', () => {
+    // Unlike reconcileKey, the "known, detector unsure" branch below has no
+    // later clamp - a raw finite-but-invalid matchConfidence (e.g. 5) would
+    // otherwise flow straight into `0.5 + 0.5 * matchConfidence` and produce
+    // a confidence outside [0, 1].
+    const result = reconcileTempo(104, 0.19, { bpm: 200, matchConfidence: 5 }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(104)
+    expect(result.confidence).toBeLessThanOrEqual(1)
+  })
+
+  it('case 1: agrees within tolerance and raises confidence even over a low raw score', () => {
+    // The detector's own confidence (0.05) is a guess; it happens to be
+    // right, and agreement with the known tempo is what proves that, not
+    // the raw score - so confidence is raised well above the detector's own.
+    const result = reconcileTempo(130, 0.05, { bpm: 130.2, matchConfidence: 0.9, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('agree')
+    expect(result.bpm).toBe(130.2)
+    expect(result.confidence).toBeGreaterThan(0.8)
+  })
+
+  it('case 2: known tempo trusted outright when the detector is unsure and wrong', () => {
+    // Mirrors the real failure this module exists to fix: the detector
+    // returns a different number (104) at a confidence below its own gate.
+    // Pinned to the exact formula (0.5 + 0.5 * matchConfidence), not just
+    // ">= GATE": a loose bound like that cannot tell this formula apart from
+    // a broken one that just returns `gate` - see reconcileTempo's own
+    // comment on this branch for why `gate` can never actually win here.
+    const result = reconcileTempo(104, 0.19, { bpm: 130, matchConfidence: 1, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('known')
+    expect(result.bpm).toBe(130)
+    expect(result.confidence).toBe(1)
+  })
+
+  it('case 2: pins the low end of the formula at matchConfidence right on MIN_MATCH_CONFIDENCE', () => {
+    // The lowest `known.matchConfidence` that can reach this branch at all -
+    // anything below MIN_MATCH_CONFIDENCE is treated as no known tempo (see
+    // the "below MIN_MATCH_CONFIDENCE" case above), so 0.5 + 0.5 * 0.6 = 0.8
+    // is the floor of what this branch can ever return, always above `gate`.
+    const result = reconcileTempo(104, 0.19, { bpm: 130, matchConfidence: MIN_MATCH_CONFIDENCE, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('known')
+    expect(result.confidence).toBe(0.8)
+  })
+
+  it('case 2: does not let a caller-supplied gate inflate confidence past what the match quality earned', () => {
+    // The two tests above both use `GATE` (0.26), which is below every value
+    // this branch's formula can ever produce (floor 0.8) - so on its own,
+    // neither one can tell this formula apart from the pre-fix
+    // `Math.max(gate, 0.5 + 0.5 * matchConfidence)`, since gate never wins at
+    // that value either way (verified: reintroducing that exact `Math.max`
+    // leaves both those tests passing unchanged). A `gate` above the
+    // formula's floor is what actually distinguishes them - unrealistic for
+    // today's one real caller (see reconcileTempo's own comment on this
+    // branch) but not excluded by this exported, independently unit-tested
+    // function's own contract, and this is the case that would have caught a
+    // silent regression back to inflating confidence with `Math.max`. That
+    // inflation would itself be a form of the exact "confidence laundering"
+    // this file was built to stop (see metadata.mjs) - letting a match-
+    // quality-derived number quietly clear a threshold it did not actually
+    // earn - so returning the plain formula here, un-inflated, is the
+    // correct behaviour, not just today's dead-code cleanup.
+    const result = reconcileTempo(104, 0.19, { bpm: 130, matchConfidence: MIN_MATCH_CONFIDENCE, source: 'deezer' }, 0.95)
+    expect(result.agreement).toBe('known')
+    expect(result.confidence).toBe(0.8)
+  })
+
+  it('case 3: flags a material disagreement instead of silently choosing either side', () => {
+    const result = reconcileTempo(120, 0.6, { bpm: 90, matchConfidence: 0.9, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('disagreement')
+    expect(result.detectedBpm).toBe(120)
+    expect(result.knownBpm).toBe(90)
+  })
+
+  it('is tolerant of small measurement noise (Glue: detector 130, Deezer 130.01)', () => {
+    const result = reconcileTempo(130, 0.473, { bpm: 130.01, matchConfidence: 0.9, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('agree')
+  })
+})
+
+describe('detectGrid with a known tempo', () => {
+  it('case 1 end to end: agreement raises confidence and keeps the (matching) bpm', () => {
+    const grid = detectGrid(rhythmClip({ seconds: 16, bpm: 130, accentEvery: 4 }), {
+      knownTempo: { bpm: 130.2, matchConfidence: 0.9, source: 'test' },
+    })
+    expect(grid.tempoAgreement).toBe('agree')
+    expect(grid.bpm).toBeCloseTo(130.2, 5)
+    expect(grid.confidence.tempo).toBeGreaterThan(0.8)
+  })
+
+  /**
+   * Real, measured case (not a hand-picked confidence): on this fixture's
+   * own accented click at 82 BPM, `findTempo` alone returns the WRONG octave
+   * (164 BPM) at confidence 0.173 - comfortably under the 0.26 gate. Without
+   * a known tempo this fixture would halt the run (a correct, safe outcome).
+   * With one, `detectGrid` must recover the true 82 BPM instead of building
+   * the whole bar grid at double rate.
+   */
+  it('case 2 end to end: recovers when the detector is unsure and wrong', () => {
+    const grid = detectGrid(rhythmClip({ seconds: 16, bpm: 82, accentEvery: 4 }), {
+      knownTempo: { bpm: 82, matchConfidence: 0.9, source: 'test' },
+    })
+    expect(grid.tempoAgreement).toBe('known')
+    expect(grid.bpm).toBe(82)
+  })
+
+  it('case 3 end to end: halts on a material disagreement rather than picking a side', () => {
+    // 120 BPM is confidently and correctly detected on its own (see the
+    // sweep above); a known tempo of 90 is far outside tolerance.
+    expect(() =>
+      detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }), {
+        knownTempo: { bpm: 90, matchConfidence: 0.9, source: 'test' },
+      }),
+    ).toThrow(LowConfidenceGridError)
+  })
+
+  it('a disagreement message names both numbers, not just "not confident enough"', () => {
+    try {
+      detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }), {
+        knownTempo: { bpm: 90, matchConfidence: 0.9, source: 'test' },
+      })
+      throw new Error('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(LowConfidenceGridError)
+      expect(error.grid.tempoAgreement).toBe('disagreement')
+      expect(error.message).toContain('90')
+      expect(error.message).toMatch(/12\d/)
+    }
+  })
+
+  it('a known tempo that is too weak a match is ignored, same as no known tempo at all', () => {
+    // matchConfidence 0.3 is under MIN_MATCH_CONFIDENCE - this must behave
+    // exactly like the no-knownTempo sweep above, not like case 1 or 2.
+    const withWeakMatch = detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }), {
+      knownTempo: { bpm: 200, matchConfidence: 0.3, source: 'test' },
+    })
+    const withoutKnownTempo = detectGrid(rhythmClip({ seconds: 16, bpm: 120, accentEvery: 4 }))
+    expect(withWeakMatch.bpm).toBe(withoutKnownTempo.bpm)
+    expect(withWeakMatch.tempoAgreement).toBe('none')
   })
 })

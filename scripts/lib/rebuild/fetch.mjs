@@ -25,7 +25,56 @@ export class UnsupportedSourceError extends Error {
 
 async function localHandler(input) {
   if (!fs.existsSync(input)) throw new Error(`File not found: ${input}`)
-  return { path: path.resolve(input), source: 'local', title: path.basename(input) }
+  return { path: path.resolve(input), source: 'local', title: path.basename(input), artist: null, duration: null }
+}
+
+/**
+ * yt-dlp's `NA` sentinel for a field it could not resolve, versus a value
+ * genuinely absent from the print line (e.g. a truncated/blank field).
+ */
+const YTDLP_NA = 'NA'
+
+/**
+ * yt-dlp's output-template fields, one `--print` directive, one field
+ * separator per line.
+ *
+ * All four fields are requested at the same `after_move` stage the original
+ * code already used for `filepath`, so the existing "the print line is the
+ * last line of stdout" parsing strategy is unchanged - only what is packed
+ * into that line grows. `\x1f` (ASCII unit separator) is used rather than a
+ * printable delimiter because it cannot appear in a real title or uploader
+ * name, so splitting never mis-parses one because it happens to contain a
+ * pipe or a dash - both of which real titles do contain (this project's own
+ * probe of the target track: "BICEP | GLUE (Official Video)").
+ * `%(uploader,channel,uploader_id)s` falls back through yt-dlp's own
+ * alternate-field syntax so a source missing `uploader` (some SoundCloud
+ * pages) still yields something rather than `NA`.
+ */
+const YTDLP_FIELD_SEP = '\x1f'
+const YTDLP_PRINT_TEMPLATE = `after_move:%(filepath)s${YTDLP_FIELD_SEP}%(title)s${YTDLP_FIELD_SEP}%(uploader,channel,uploader_id)s${YTDLP_FIELD_SEP}%(duration)s`
+
+/**
+ * Parse the one line `YTDLP_PRINT_TEMPLATE` prints after the download moves
+ * into place. Exported so the parsing itself - the part with a real
+ * failure mode (missing fields, an `NA` sentinel, a non-numeric duration) -
+ * is unit-testable without shelling out to a real binary.
+ */
+export function parseYtdlpPrintLine(line) {
+  const [filepath, title, uploader, durationRaw] = line.trim().split(YTDLP_FIELD_SEP)
+  const clean = (value) => (value && value !== YTDLP_NA ? value : null)
+  const duration = Number(durationRaw)
+  return {
+    path: filepath,
+    title: clean(title),
+    artist: clean(uploader),
+    // `Number('NA')` and `Number(undefined)` are both already NaN, so the
+    // `Number.isFinite` check alone rejects the missing-field case; the
+    // truthy guard on `durationRaw` is what is actually load-bearing here -
+    // without it, an empty (as opposed to missing or "NA") field would parse
+    // to the number 0 and be reported as a real, if unlikely, zero-second
+    // duration rather than "unknown".
+    duration: durationRaw && Number.isFinite(duration) ? duration : null,
+  }
 }
 
 async function spotifyHandler() {
@@ -39,11 +88,11 @@ async function spotifyHandler() {
 async function ytdlpHandler(input, destDir) {
   await requireTool('ytdlp', TOOLS.ytdlp)
   const template = path.join(destDir, 'source.%(ext)s')
-  const args = ['--no-playlist', '-x', '--audio-format', 'best', '-o', template, '--print', 'after_move:filepath', input]
+  const args = ['--no-playlist', '-x', '--audio-format', 'best', '-o', template, '--print', YTDLP_PRINT_TEMPLATE, input]
 
-  const filepath = await new Promise((resolve, reject) => {
+  const printed = await new Promise((resolve, reject) => {
     execFile('yt-dlp', args, { timeout: 600000 }, (error, stdout, stderr) => {
-      if (!error) return resolve(stdout.trim().split('\n').pop())
+      if (!error) return resolve(parseYtdlpPrintLine(stdout.trim().split('\n').pop()))
       const text = `${stderr}`.toLowerCase()
       if (text.includes('video unavailable') || text.includes('has been removed')) {
         return reject(new Error(`That media is gone: ${input}`))
@@ -58,7 +107,16 @@ async function ytdlpHandler(input, destDir) {
     })
   })
 
-  return { path: filepath, source: 'ytdlp', title: path.basename(filepath) }
+  return {
+    path: printed.path,
+    source: 'ytdlp',
+    // Falls back to the filename on the rare source where yt-dlp cannot
+    // resolve a title at all, matching what this returned before this field
+    // existed, rather than surfacing `null` as a title.
+    title: printed.title ?? path.basename(printed.path),
+    artist: printed.artist,
+    duration: printed.duration,
+  }
 }
 
 async function httpHandler(input, destDir) {
@@ -67,7 +125,7 @@ async function httpHandler(input, destDir) {
   const name = path.basename(new URL(input).pathname) || 'source.audio'
   const dest = path.join(destDir, name)
   await fsp.writeFile(dest, Buffer.from(await response.arrayBuffer()))
-  return { path: dest, source: 'http', title: name }
+  return { path: dest, source: 'http', title: name, artist: null, duration: null }
 }
 
 /**
