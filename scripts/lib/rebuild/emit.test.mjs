@@ -373,4 +373,124 @@ describe('emitTrack', () => {
       expect(gainsOf(withDefault)).toBe(gainsOf(withoutSoundMatch))
     })
   })
+
+  describe('with dynamics', () => {
+    const sections = () => [
+      { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
+    ]
+
+    it('emits nothing extra and no comment without dynamics', () => {
+      const code = emitTrack(transcription(sections()))
+      expect(code).not.toContain('.orbit(')
+      expect(code).not.toContain('.duckorbit(')
+      expect(code).not.toContain('duck:')
+    })
+
+    it('splices the chain in before .gain()/.slow(), not onto the arrange() reference', () => {
+      // A held two-bar chord - the one shape where a control applied *after*
+      // .slow() duplicates a sustained hap (checked directly against the
+      // runtime, not assumed - see layerExpression's own comment). Baking the
+      // chain in here, ahead of .slow(2), is what this test is guarding.
+      const held = { loopBars: 2, events: [{ step: 0, length: 32, velocity: 0.7, confidence: 0.8, midi: null, symbol: 'Fm7', driftSteps: 0 }], confidence: 0.7 }
+      const dynamics = { 0: { layers: { chords: { chain: '.orbit(2)' } }, summary: 'duck: other dips 30%' } }
+      const code = emitTrack(
+        transcription([{ index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), chords: held } }]),
+        { dynamics },
+      )
+      expect(code).toMatch(/\.orbit\(2\)\.gain\(`[^`]+`\)\.slow\(2\)/)
+      expect(code).not.toMatch(/\.slow\(2\)\.orbit\(2\)/)
+      expect(code).toContain('duck: other dips 30%')
+      // The comment lands once, by the const definition - not on the
+      // arrange() line, which this section's own const already carries it.
+      const arrangeBlock = code.slice(code.indexOf('arrange('))
+      expect(arrangeBlock).not.toContain('duck:')
+    })
+
+    it('does not reuse a definition across sections whose dynamics differ', () => {
+      const loops = { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR }
+      const dynamics = { 1: { layers: { kick: { chain: '.duckorbit(2).duckdepth(0.3).duckattack(0.1)' } }, summary: 'duck: other' } }
+      const code = emitTrack(
+        transcription([
+          { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops },
+          { index: 1, startBar: 4, bars: 4, label: 'mid', sameAs: 0, loops },
+        ]),
+        { dynamics },
+      )
+      // Both get their own const - section 1 cannot borrow section 0's,
+      // which carries no duck at all.
+      expect(code).toContain('const s0_kick')
+      expect(code).toContain('const s1_kick')
+      const arrangeBlock = code.slice(code.indexOf('arrange('))
+      expect(arrangeBlock).not.toContain('repeats section 0')
+    })
+
+    it('still reuses a definition when both sections share the same dynamics', () => {
+      const loops = { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR }
+      const dynamics = {
+        0: { layers: { kick: { chain: '.duckorbit(2).duckdepth(0.3).duckattack(0.1)' } }, summary: 'duck: other' },
+        1: { layers: { kick: { chain: '.duckorbit(2).duckdepth(0.3).duckattack(0.1)' } }, summary: 'duck: other' },
+      }
+      const code = emitTrack(
+        transcription([
+          { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops },
+          { index: 1, startBar: 4, bars: 4, label: 'mid', sameAs: 0, loops },
+        ]),
+        { dynamics },
+      )
+      expect(code).toContain('const s0_kick')
+      expect(code).not.toContain('const s1_kick')
+      const arrangeBlock = code.slice(code.indexOf('arrange('))
+      expect(arrangeBlock).toContain('repeats section 0')
+    })
+
+    describe('a sweep/riser lpf ramp', () => {
+      // A sweep is exposed as raw {lpfStart, lpfEnd} numbers (dynamics.mjs
+      // does not know the loop's own .slow() factor); layerExpression has to
+      // scale the sweep's own .slow() by section.bars / that factor, or the
+      // ramp completes at the wrong rate - see sweepChain's own comment for
+      // the runtime-checked reasoning.
+      const lead = (loopBars, events) => ({ loopBars, events, confidence: 0.8 })
+      const noteEvent = (step, midi) => ({ step, length: 1, velocity: 0.8, confidence: 0.9, midi, symbol: null, driftSteps: 0 })
+
+      it('scales the ramp by the full section length when the loop carries no .slow() of its own', () => {
+        // A plain 1-bar loop (loopBars 1) inside a 4-bar section: outerSlow
+        // is 1, so the sweep needs .slow(4) to span the whole section.
+        const oneBarLead = lead(1, [noteEvent(0, 60), noteEvent(8, 64)])
+        const dynamics = { 0: { layers: { lead: { sweepLpf: { lpfStart: 500, lpfEnd: 3000 } } } } }
+        const code = emitTrack(
+          transcription([{ index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), lead: oneBarLead } }]),
+          { dynamics },
+        )
+        expect(code).toContain('.lpf(saw.range(500, 3000).slow(4))')
+      })
+
+      it('divides out the loop\'s own .slow() so the ramp still spans the whole section, not a multiple of it', () => {
+        // A 2-bar "crosses a bar" loop (outerSlow 2) repeated 3x across a
+        // 6-bar section: the sweep needs .slow(6/2=3), not .slow(6) (which
+        // the loop's own outer .slow(2) would then double to 6) or a bare
+        // saw.range (which would ramp once every 2 bars, six times over).
+        const crossing = lead(2, [{ step: 0, length: 32, velocity: 0.8, confidence: 0.9, midi: 60, symbol: null, driftSteps: 0 }])
+        const dynamics = { 0: { layers: { lead: { sweepLpf: { lpfStart: 500, lpfEnd: 3000 } } } } }
+        const code = emitTrack(
+          transcription([{ index: 0, startBar: 0, bars: 6, label: 'mid', sameAs: null, loops: { ...emptyLoops(), lead: crossing } }]),
+          { dynamics },
+        )
+        expect(code).toContain('.lpf(saw.range(500, 3000).slow(3))')
+        expect(code).not.toContain('.slow(6))')
+      })
+
+      it('omits a redundant .slow(1) when the ratio is exactly 1', () => {
+        // A loop whose own .slow() already equals the section length: the
+        // ramp already spans the whole section with no further scaling.
+        const wholeSection = lead(4, [{ step: 0, length: 64, velocity: 0.8, confidence: 0.9, midi: 60, symbol: null, driftSteps: 0 }])
+        const dynamics = { 0: { layers: { lead: { sweepLpf: { lpfStart: 500, lpfEnd: 3000 } } } } }
+        const code = emitTrack(
+          transcription([{ index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), lead: wholeSection } }]),
+          { dynamics },
+        )
+        expect(code).toContain('.lpf(saw.range(500, 3000))')
+        expect(code).not.toMatch(/saw\.range\(500, 3000\)\.slow/)
+      })
+    })
+  })
 })

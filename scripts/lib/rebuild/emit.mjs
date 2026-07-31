@@ -241,6 +241,31 @@ function wrapTokens(str, { width = 90, indent = '  ' } = {}) {
 }
 
 /**
+ * A `.lpf(saw.range(a, b))` sweep, `.slow()`-ed so it ramps once across the
+ * whole section rather than once per underlying cycle.
+ *
+ * `outerSlow` is this layer's own `.slow(n)` from `loopToPatterns` (1 for a
+ * single-bar or `<[...][...]>`-alternation loop, `loop.loopBars` for one
+ * that crosses a bar and gets wrapped in `.slow()` itself). That outer
+ * `.slow()` is applied *after* this whole expression (see `layerExpression`'s
+ * `tail`), and it stretches everything nested inside it - including an
+ * embedded control pattern already joined via an earlier `.lpf()` - by that
+ * same factor. Checked directly against the runtime: `note(...).lpf(saw
+ * .range(a,b).slow(6)).slow(6)` does *not* ramp across 6 bars, it ramps
+ * across 36 (6×6); `.slow(1)` in the same spot (i.e. `6 / outerSlow` with
+ * `outerSlow = 6`) ramps across exactly 6, matching a plain `saw.range(a,b)
+ * .slow(6)` with no outer `.slow()` at all. `sectionBars` always divides
+ * evenly by `outerSlow` - `loopToPatterns`/`foldToLoop` only ever produce a
+ * `loopBars` that divides the section's own bar count, or 1.
+ */
+function sweepChain(sweepLpf, outerSlow, sectionBars) {
+  if (!sweepLpf) return ''
+  const ratio = sectionBars / outerSlow
+  const slowSuffix = ratio > 1 ? `.slow(${ratio})` : ''
+  return `.lpf(saw.range(${sweepLpf.lpfStart}, ${sweepLpf.lpfEnd})${slowSuffix})`
+}
+
+/**
  * The wrapper around a layer's mini-notation. Template literals rather than
  * quoted strings throughout, so a wrapped (multi-line) pattern is still
  * valid JS - and so a short, unwrapped one costs nothing by using the same
@@ -252,12 +277,24 @@ function wrapTokens(str, { width = 90, indent = '  ' } = {}) {
  * `sound-match.mjs` derived reads exactly like a hand-written effect chain
  * would.
  */
-function layerExpression(loop, layer, perBar, { flats, anchor, soundMatch }) {
+function layerExpression(loop, layer, perBar, { flats, anchor, soundMatch, dynamics, sectionBars }) {
   const sound = SOUNDS[layer]
   const { mini, gains, slow } = loopToPatterns(loop, layer, perBar, { flats, soundMatch })
   const wrappedMini = wrapTokens(mini)
   const wrappedGains = wrapTokens(gains)
-  const extra = soundMatch?.[layer]?.chain ?? ''
+  // Both chains have to land here, before `.gain()`/`.slow()`, not spliced on
+  // afterward at the arrange() call site: a control applied *after* `.slow()`
+  // duplicates any hap whose span crosses one of the original (pre-slow)
+  // cycle boundaries, the same failure `sound-match.mjs`'s own `.pan()`
+  // comment documents for a *varying* control - checked directly (probe
+  // script, not committed) against a *constant* one too (`.orbit(2)` after
+  // `.slow(4)` turned 8 events into 11 on a sustained lead line; the same
+  // call before `.slow(4)` stayed at 8), so this restriction is not limited
+  // to controls whose value changes per cycle. That is why dynamics are
+  // baked into the const itself rather than decorating the shared reference
+  // in `arrange()` - see `dynamics.mjs`'s own emission comment for how that
+  // forces two sections with different dynamics to never share one const.
+  const extra = (soundMatch?.[layer]?.chain ?? '') + (dynamics?.layers?.[layer]?.chain ?? '') + sweepChain(dynamics?.layers?.[layer]?.sweepLpf, slow, sectionBars)
   const tail = `.gain(\`${wrappedGains}\`)${slow > 1 ? `.slow(${slow})` : ''}`
   if (sound.kind === 'sample') return `s(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}`
   if (sound.kind === 'chord') {
@@ -295,7 +332,7 @@ function soundMatchHeader(soundMatch) {
  * definitions; see `reuseTarget` for why that, and not `sameAs`, is the
  * condition.
  */
-export function emitTrack(transcription, { title = null, source = null, soundMatch = null } = {}) {
+export function emitTrack(transcription, { title = null, source = null, soundMatch = null, dynamics = null } = {}) {
   const grid = gridFromJson(transcription.grid)
   const perBar = stepsPerBar(grid)
   const keyName = transcription.key?.name ?? ''
@@ -317,10 +354,13 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
   lines.push('')
 
   // Which section each section takes its definitions from. A repeat only
-  // borrows when both it and its original were heard confidently.
+  // borrows when both it and its original were heard confidently *and* carry
+  // the same dynamics - see `reuseTarget`'s own comment for why a section
+  // whose kick pumps the bass can never share a const with one that doesn't,
+  // now that dynamics are baked into the const itself (see `layerExpression`).
   const definitionOf = new Map()
   for (const section of transcription.sections) {
-    const target = reuseTarget(section, transcription.sections, soundMatch) ?? section.index
+    const target = reuseTarget(section, transcription.sections, soundMatch, dynamics) ?? section.index
     definitionOf.set(section.index, target)
   }
 
@@ -329,10 +369,12 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
     if (definitionOf.get(section.index) !== section.index) continue
     const present = LAYERS.filter((layer) => section.loops?.[layer])
     if (!present.length) continue
+    const dyn = dynamics?.[section.index]
     lines.push(`// section ${section.index} - bar ${section.startBar}, ${section.bars} bars, ${section.label}`)
+    if (dyn?.summary) lines.push(`//   ${dyn.summary}`)
     for (const layer of present) {
       const name = `s${section.index}_${layer}`
-      lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor, soundMatch })}`)
+      lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor, soundMatch, dynamics: dyn, sectionBars: section.bars })}`)
       emitted.add(name)
     }
     lines.push('')
@@ -371,12 +413,44 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
  * B would then be overwritten with A's material. Phase 1 measured false repeat
  * matches at 0.9464 and 0.9352 against a 0.9 threshold, so this is not a
  * hypothetical.
+ *
+ * Dynamics are checked here too, for the same reason velocity is: they reach
+ * the emitted const itself now (`layerExpression` bakes them in before
+ * `.slow()` - see its own comment for why they can no longer live on the
+ * shared `arrange()` reference), so two sections with identical notes but a
+ * kick that only pumps the bass in one of them are not the same output and
+ * must not share one definition.
  */
-function reuseTarget(section, sections, soundMatch) {
+function reuseTarget(section, sections, soundMatch, dynamics) {
   if (section.sameAs === null || section.sameAs === undefined) return null
   const original = sections.find((candidate) => candidate.index === section.sameAs)
   if (!original || original.bars !== section.bars) return null
-  return sameLoops(original.loops, section.loops, soundMatch) ? section.sameAs : null
+  if (!sameLoops(original.loops, section.loops, soundMatch)) return null
+  if (!sameDynamics(dynamics?.[original.index], dynamics?.[section.index])) return null
+  return section.sameAs
+}
+
+/** Do two sections carry the same per-layer dynamics chain, or both carry
+ *  none? Compared by the emitted chain string itself, not the raw measurement
+ *  - two sections whose measured numbers differ in the third decimal place
+ *  but round to the same chain are the same output either way, which is
+ *  exactly what reuse is checking for. */
+function sameDynamics(a, b) {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  const layers = new Set([...Object.keys(a.layers ?? {}), ...Object.keys(b.layers ?? {})])
+  for (const layer of layers) {
+    const layerA = a.layers?.[layer]
+    const layerB = b.layers?.[layer]
+    if ((layerA?.chain ?? null) !== (layerB?.chain ?? null)) return false
+    // sweepLpf's *numbers* are what has to match - the `.slow()` ratio
+    // `sweepChain` derives from them is already pinned equal by `sameLoops`
+    // requiring both sections' loopBars (and so `bars`, already checked by
+    // `reuseTarget` before this runs) to agree.
+    if ((layerA?.sweepLpf?.lpfStart ?? null) !== (layerB?.sweepLpf?.lpfStart ?? null)) return false
+    if ((layerA?.sweepLpf?.lpfEnd ?? null) !== (layerB?.sweepLpf?.lpfEnd ?? null)) return false
+  }
+  return true
 }
 
 /** Do two sections carry identical material on every layer? */

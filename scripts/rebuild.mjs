@@ -14,6 +14,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { toWav } from './lib/rebuild/decode.mjs'
+import { detectDynamics, dynamicsForEmission } from './lib/rebuild/dynamics.mjs'
 import { emitTrack } from './lib/rebuild/emit.mjs'
 import { UnsupportedSourceError, resolveSource } from './lib/rebuild/fetch.mjs'
 import { LowConfidenceGridError, detectGrid } from './lib/rebuild/grid.mjs'
@@ -200,6 +201,22 @@ async function main() {
   await fs.promises.writeFile(path.join(dirs.root, 'stem-profile.json'), `${JSON.stringify(stemProfile, null, 2)}\n`)
   const soundMatch = deriveTrackEffects(stemProfile)
 
+  // Time-varying effects the static soundMatch pass above cannot see:
+  // sidechain pumping on bass/other, filter sweeps and risers on other -
+  // measured against the raw stems and the grid/sections, independent of
+  // the note transcription below. See dynamics.mjs for the measurement
+  // behind each; `dynamicsForEmission` (further down, once the hearing
+  // check has dropped whatever it could not confirm) turns this into the
+  // per-section chains emitTrack splices onto the arrangement.
+  say('measuring time-varying effects')
+  const dynamics = detectDynamics({ drums: drumBuf, bass: bassBuf, other: otherBuf, grid, sections })
+  await fs.promises.writeFile(path.join(dirs.root, 'dynamics.json'), `${JSON.stringify(dynamics, null, 2)}\n`)
+  const duckedSectionCount = sections.filter((_, i) => dynamics.sidechain.bass[i] || dynamics.sidechain.other[i]).length
+  say(
+    `  sidechain: ${duckedSectionCount}/${sections.length} sections · ` +
+      `sweeps: ${dynamics.sweeps.filter(Boolean).length} · risers: ${dynamics.risers.filter(Boolean).length}`,
+  )
+
   const drums = transcribeDrums(drumBuf, grid, sections)
   // One transcribed bass line, then a register split into a sustained sub
   // voice and the mid-bass line proper - see `splitByRegister`'s own doc
@@ -315,8 +332,14 @@ async function main() {
     return
   }
 
+  // Reshaped only now, against the post-hearing-check `transcription.sections`
+  // - a layer dynamics measured ducking/sweeping on could still have been
+  // dropped above for failing its own hearing check, and `dynamicsForEmission`
+  // is what keeps `.orbit()`/`.duckorbit()` off an orbit nothing plays on.
+  const dynamicsMatch = dynamicsForEmission(dynamics, transcription.sections, LAYERS)
+
   say('emitting')
-  const code = emitTrack(transcription, { title: source.title, source: input, soundMatch })
+  const code = emitTrack(transcription, { title: source.title, source: input, soundMatch, dynamics: dynamicsMatch })
   const trackPath = outPath ?? path.join(dirs.root, 'track.js')
   await fs.promises.writeFile(trackPath, `${code}\n`)
 
@@ -338,6 +361,7 @@ async function main() {
   result.track = trackPath
   result.stemProfile = stemProfile
   result.soundMatch = soundMatch
+  result.dynamics = dynamics
 
   // The emission check is deterministic repair that should converge in one
   // pass, so a defect means the emitter is broken, not that the record was
