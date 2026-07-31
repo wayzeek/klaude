@@ -91,17 +91,31 @@ node scripts/rebuild.mjs <url-or-file>
 ```
 
 It fetches the audio, splits it into stems, measures the tempo, key and section
-boundaries, transcribes drums, bass and chords, then writes a moltek track you
-can open and change. Everything lands in `.moltek/rebuilds/`. (Lead-line
-transcription exists in the codebase but is disabled - it wasn't reliable
-enough to ship - so the clone never has a melody layer.)
+boundaries, transcribes drums, bass, sub, chords and a lead, then writes a
+moltek track you can open and change. Everything lands in `.moltek/rebuilds/`.
+
+Nothing in the output is carried over from another song. Tempo, key, chords,
+reverb and filter amounts, sidechain depth and the lead's voice are each
+measured from the record in front of it, and where a value can't be measured
+it's a labelled default with the reasoning next to it. The pipeline errs toward
+silence: a layer it can't recover from its own rendering gets dropped instead of
+emitted, and a section only gets chords when there's real polyphonic evidence
+for them.
 
 Needs `ffmpeg`, `yt-dlp` and `demucs` on your PATH; the command tells you how to
-install whichever is missing.
+install whichever is missing. Basic Pitch is optional and improves note
+transcription when present.
 
-The clone plays the right notes with moltek's own sounds. It will not sound like
-the record, and dense material transcribes far worse than sparse electronic
-music.
+**The lead is approximate.** Pulling a melody out of a stem that still holds
+pads and keys is beyond what open tooling does reliably today: measured against
+a track with known notes, the best of seven approaches lands at 15.4% exact
+notes. The register, rhythm and timbre are right; the specific notes usually
+aren't. Emitted tracks say so in a comment above that layer, because it's the
+first thing worth editing by ear.
+
+Drums, tempo, structure and harmony hold up better. Even so, the clone won't
+sound like the record, and dense material transcribes far worse than sparse
+electronic music.
 
 The command is `node scripts/rebuild.mjs` or `pnpm run rebuild` — bare `pnpm
 rebuild` collides with pnpm's own built-in rebuild command and does not work.
