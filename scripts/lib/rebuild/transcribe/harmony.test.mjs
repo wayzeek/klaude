@@ -274,16 +274,39 @@ describe('transcribeHarmonyFromNotes', () => {
   })
 
   it('does not misread a single sustained note as a full chord it is not part of', () => {
-    // Only the root of Fm sounding, nothing else - a real chord needs more
-    // than one pitch class to be worth naming with confidence, but this
-    // function does not special-case that; it simply reports whichever
-    // template best fits a single pitch class, which is not the same
-    // guarantee `MARGIN_THRESHOLD` gives the FFT path. Documented, not
-    // silently assumed: this asserts what actually happens rather than
-    // leaving it unverified.
+    // Only the root of Fm sounding, nothing else. A single pitch class ties
+    // every template containing it at the identical top score (margin
+    // exactly 0 - see this function's own doc comment for the measured
+    // numbers), so this must be rejected as unconfident rather than
+    // confidently naming whichever template happens to sort first. A real
+    // probe against the pre-fix code turned one sustained C4 into a
+    // four-bar "C" reading.
     const notes = chordNotes([53], 0, 4) // F alone, four bars
     const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
-    expect(loop).not.toBeNull()
+    expect(loop).toBeNull()
+  })
+
+  it('does not resolve a two-note perfect fifth into a major or minor triad it cannot distinguish', () => {
+    // A power chord (root + fifth) ties every triad/sus4 containing both
+    // notes - major, minor and sus4 all score identically - which is
+    // genuinely ambiguous evidence, not a chord this function has any basis
+    // to name one way or the other.
+    const notes = chordNotes([53, 60], 0, 4) // F + C, four bars
+    const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop).toBeNull()
+  })
+
+  it('does not invent chords under a moving monophonic melody with no harmonic accompaniment', () => {
+    // A melodic line moving between single notes, one at a time - never more
+    // than one pitch class sounding at once. This is exactly the shape the
+    // "other" stem's own melody produces on a passage with nothing playing
+    // chords underneath it, which is the real-world case the false-positive
+    // bug this test guards against actually manifests as: a fabricated
+    // chord progression is worse than reporting no harmony, per this
+    // module's own doc comment.
+    const notes = [...chordNotes([53], 0, 1), ...chordNotes([55], 1, 1), ...chordNotes([58], 2, 1), ...chordNotes([60], 3, 1)]
+    const loop = transcribeHarmonyFromNotes(notes, grid, SECTION_4, { key: 'F minor' })[0]
+    expect(loop).toBeNull()
   })
 
   it('reports outOfKey for a chord outside the given key', () => {

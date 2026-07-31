@@ -399,16 +399,33 @@ function beatNotePitchClasses(notes, grid, fromBeat, toBeat) {
  * pass would lose, and scoping this way needs no separate "how many total
  * beats does the stem have" bookkeeping.
  *
- * Confidence gating is simpler than `transcribeHarmony`'s `MARGIN_THRESHOLD`
- * needs: that constant's whole justification (see its doc comment) is that
- * FFT-derived chroma is never exactly zero even over silence, so a raw-score
- * floor cannot separate real harmony from noise and a *margin* has to carry
- * the weight instead. A beat built from discrete notes with literally
- * nothing sounding *is* exactly zero - unambiguous silence, not noise - so a
- * beat only counts as confident here when something was actually detected,
- * and `MIN_CONFIDENT_BARS` (bars, not raw beats) is reused as-is: the
- * question it answers ("is one confident bar enough to trust, or could that
- * be a fluke") does not change with where the pitch-class vector came from.
+ * Confidence gating reuses `transcribeHarmony`'s own `MARGIN_THRESHOLD` and
+ * `beatMargins`, not a bare "something is sounding" check. An earlier
+ * version used exactly that bare check - "a beat built from discrete notes
+ * with nothing sounding is exactly zero, unambiguous silence, so a beat only
+ * counts as confident when something was actually detected" - and it was
+ * wrong: a *single* sounding pitch class is not evidence of a chord, only of
+ * a note, and every triad/sus4 template containing that one pitch class
+ * scores identically (`scoreChroma`'s dot product against a one-note chroma
+ * vector depends only on whether the template contains that pitch class, not
+ * on anything else) - measured directly, a lone sustained C ties `C`, `Cm`,
+ * `Csus`, `Am`, `F` and every other template holding C at the same top
+ * score, margin exactly 0. Because the "other" stem carries melody as well
+ * as chords, a monophonic melodic passage with no harmonic accompaniment at
+ * all used to acquire an invented chord this way - a probe turned one
+ * sustained C4 into a four-bar `C` reading. A genuine chord does not have
+ * this problem: three or four simultaneous, *different* pitch classes
+ * forming one template's exact note set scores a clean, isolated best
+ * (measured: a plain root-third-fifth triad scores margin 0.134 against its
+ * nearest rival, a shared seventh-chord superset) - the same order-of-
+ * magnitude gap `MARGIN_THRESHOLD` (0.03) was already calibrated to separate
+ * FFT bleed from real harmony on, and it separates this cleaner, more
+ * discrete case just as well, including the specific case a plain two-note
+ * perfect-fifth dyad ties three different triads at once (also margin 0) -
+ * correctly unresolved, since a fifth alone cannot tell major from minor.
+ * `MIN_CONFIDENT_BARS` (bars, not raw beats) is reused as-is: the question
+ * it answers ("is one confident bar enough to trust, or could that be a
+ * fluke") does not change with where the pitch-class vector came from.
  */
 export function transcribeHarmonyFromNotes(notes, grid, sections, { key = null } = {}) {
   const beatsPerBar = grid.beatsPerBar
@@ -420,7 +437,8 @@ export function transcribeHarmonyFromNotes(notes, grid, sections, { key = null }
     const vectors = beatNotePitchClasses(notes, grid, fromBeat, toBeat)
     const rows = vectors.map((vector) => scoreChroma(vector))
     const path = smoothChordPath(rows, { selfBonus: SELF_BONUS })
-    const confidentBeat = (i) => vectors[i].some((value) => value > 0)
+    const margins = beatMargins(rows)
+    const confidentBeat = (i) => margins[i] >= MARGIN_THRESHOLD
 
     const events = []
     let runStart = null
