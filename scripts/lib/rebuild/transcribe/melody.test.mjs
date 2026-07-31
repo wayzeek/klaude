@@ -261,6 +261,43 @@ describe('detectMelodySalience', () => {
     const silenced = detectMelodySalience(leadClip(fourBars), grid, SECTION_4, { rmsFloor: 10 })[0]
     expect(silenced).toBeNull()
   })
+
+  it('still segments a re-articulated note correctly under a non-default salience hop', () => {
+    // The onset detector this relies on to split a same-pitch repeat (see
+    // f0.mjs's segmentNotes doc comment: neither a pitch change nor a
+    // voicing drop fires here, only an amplitude attack) must convert its
+    // onset seconds using the same hop computeMelodyContour actually used -
+    // not bands.mjs's own ONSET_HOP default - or the reported onset time is
+    // off by whatever ratio the two hops differ by. At the shipped default
+    // (`hop` unset) the two happen to already agree, so this only shows up
+    // once a caller overrides `hop`, exactly like `rmsFloor` above.
+    //
+    // Every bar repeats `65,68,68,72` (one beat each) - the back-to-back 68s
+    // are the re-articulation with nothing else to split them. Correct
+    // behaviour is the same clean one-bar, four-note loop regardless of the
+    // hop override; before this fix, several representative overrides
+    // (600/700/800/900, all a long way from ONSET_HOP=512) instead produced
+    // a garbled loop with a dozen or more spurious extra fragments, because
+    // the onset seconds landed at essentially arbitrary points relative to
+    // the actual note boundaries.
+    const phraseWithRepeat = [
+      { midi: 65, beats: 1 },
+      { midi: 68, beats: 1 },
+      { midi: 68, beats: 1 },
+      { midi: 72, beats: 1 },
+    ]
+    const clip = leadClip(Array(4).fill(phraseWithRepeat).flat())
+    for (const hop of [600, 700, 800, 900]) {
+      const loop = detectMelodySalience(clip, grid, SECTION_4, { hop })[0]
+      expect(loop.loopBars).toBe(1)
+      expect(loop.events.map((e) => ({ step: e.step, length: e.length, midi: e.midi }))).toEqual([
+        { step: 0, length: 4, midi: 65 },
+        { step: 4, length: 4, midi: 68 },
+        { step: 8, length: 4, midi: 68 },
+        { step: 12, length: 4, midi: 72 },
+      ])
+    }
+  })
 })
 
 // `transcribeMelody` is what the rebuild pipeline actually calls. It now

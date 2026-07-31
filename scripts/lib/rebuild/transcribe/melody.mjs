@@ -214,7 +214,21 @@ export function detectMelodySalience(
   // contour alone cannot see a note re-struck at the same pitch with no gap,
   // so an amplitude attack in the lead register is measured separately and
   // handed to `segmentNotes` as a forced split point.
-  const novelty = bandNovelty(audio, { lo: SALIENCE_RANGE.minHz, hi: SALIENCE_RANGE.maxHz })
+  //
+  // `bandNovelty` is told the exact hop `computeMelodyContour` actually used
+  // (recovered from `track.hopSeconds`, its own authoritative record - not
+  // re-derived from `salienceOptions.hop` and a duplicated default, which
+  // would need to track `salience.mjs`'s default independently and could
+  // silently drift from it) rather than left to default to `bands.mjs`'s own
+  // `ONSET_HOP`. The two happen to agree today (both 512), so this is latent
+  // rather than live, but `computeMelodyContour`'s `hop` is a real, forwarded,
+  // documented option (`melody.test.mjs`'s "forwards salience-specific
+  // options" exercises the same `...salienceOptions` spread with a different
+  // option) - a future caller overriding it would otherwise have every
+  // re-articulation onset converted to seconds against the wrong frame
+  // spacing, silently corrupting `segmentNotes`'s forced-split points.
+  const hopSamples = Math.round(track.hopSeconds * audio.sampleRate)
+  const novelty = bandNovelty(audio, { lo: SALIENCE_RANGE.minHz, hi: SALIENCE_RANGE.maxHz, hop: hopSamples })
   const onsets = novelty
     ? pickBandOnsets(novelty, track.hopSeconds, { threshold: 4.0, minSeparation: 0.05 }).map((onset) => onset.seconds)
     : []
