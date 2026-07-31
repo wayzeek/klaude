@@ -3,6 +3,7 @@ import { rhythmClip } from '../__fixtures__/make-wav.mjs'
 import { decodeWav } from '../decoded-audio.mjs'
 import { ONSET_HOP, computeNovelty } from '../dsp.mjs'
 import { LowConfidenceGridError, beatPhase, detectGrid, detectMeter, findTempo, reconcileTempo } from './grid.mjs'
+import { MIN_MATCH_CONFIDENCE } from './metadata.mjs'
 
 function decodedOf(bpm, opts = {}) {
   const audio = decodeWav(rhythmClip({ seconds: 16, bpm, ...opts }))
@@ -378,10 +379,46 @@ describe('reconcileTempo', () => {
   it('case 2: known tempo trusted outright when the detector is unsure and wrong', () => {
     // Mirrors the real failure this module exists to fix: the detector
     // returns a different number (104) at a confidence below its own gate.
+    // Pinned to the exact formula (0.5 + 0.5 * matchConfidence), not just
+    // ">= GATE": a loose bound like that cannot tell this formula apart from
+    // a broken one that just returns `gate` - see reconcileTempo's own
+    // comment on this branch for why `gate` can never actually win here.
     const result = reconcileTempo(104, 0.19, { bpm: 130, matchConfidence: 1, source: 'deezer' }, GATE)
     expect(result.agreement).toBe('known')
     expect(result.bpm).toBe(130)
-    expect(result.confidence).toBeGreaterThanOrEqual(GATE)
+    expect(result.confidence).toBe(1)
+  })
+
+  it('case 2: pins the low end of the formula at matchConfidence right on MIN_MATCH_CONFIDENCE', () => {
+    // The lowest `known.matchConfidence` that can reach this branch at all -
+    // anything below MIN_MATCH_CONFIDENCE is treated as no known tempo (see
+    // the "below MIN_MATCH_CONFIDENCE" case above), so 0.5 + 0.5 * 0.6 = 0.8
+    // is the floor of what this branch can ever return, always above `gate`.
+    const result = reconcileTempo(104, 0.19, { bpm: 130, matchConfidence: MIN_MATCH_CONFIDENCE, source: 'deezer' }, GATE)
+    expect(result.agreement).toBe('known')
+    expect(result.confidence).toBe(0.8)
+  })
+
+  it('case 2: does not let a caller-supplied gate inflate confidence past what the match quality earned', () => {
+    // The two tests above both use `GATE` (0.26), which is below every value
+    // this branch's formula can ever produce (floor 0.8) - so on its own,
+    // neither one can tell this formula apart from the pre-fix
+    // `Math.max(gate, 0.5 + 0.5 * matchConfidence)`, since gate never wins at
+    // that value either way (verified: reintroducing that exact `Math.max`
+    // leaves both those tests passing unchanged). A `gate` above the
+    // formula's floor is what actually distinguishes them - unrealistic for
+    // today's one real caller (see reconcileTempo's own comment on this
+    // branch) but not excluded by this exported, independently unit-tested
+    // function's own contract, and this is the case that would have caught a
+    // silent regression back to inflating confidence with `Math.max`. That
+    // inflation would itself be a form of the exact "confidence laundering"
+    // this file was built to stop (see metadata.mjs) - letting a match-
+    // quality-derived number quietly clear a threshold it did not actually
+    // earn - so returning the plain formula here, un-inflated, is the
+    // correct behaviour, not just today's dead-code cleanup.
+    const result = reconcileTempo(104, 0.19, { bpm: 130, matchConfidence: MIN_MATCH_CONFIDENCE, source: 'deezer' }, 0.95)
+    expect(result.agreement).toBe('known')
+    expect(result.confidence).toBe(0.8)
   })
 
   it('case 3: flags a material disagreement instead of silently choosing either side', () => {

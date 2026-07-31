@@ -530,9 +530,17 @@ export function reconcileTempo(detectedBpm, detectedConfidence, known, gate) {
   }
 
   if (detectedConfidence < gate) {
+    // No `Math.max(gate, ...)` here: this branch is only reachable once the
+    // guard above has already required `known.matchConfidence >=
+    // MIN_MATCH_CONFIDENCE` (0.6), so the formula below is always >= 0.8 -
+    // strictly above every `gate` any real caller passes (`rebuild.mjs`'s
+    // default produces 0.26; see `MIN_TEMPO_CONFIDENCE`). A `Math.max` against
+    // `gate` here was dead on every reachable path and, worse, made the test
+    // below unable to tell this formula apart from a broken one - see that
+    // test's own comment.
     return {
       bpm: known.bpm,
-      confidence: Math.max(gate, 0.5 + 0.5 * (known.matchConfidence ?? 1)),
+      confidence: 0.5 + 0.5 * (known.matchConfidence ?? 1),
       agreement: 'known',
     }
   }
