@@ -56,6 +56,7 @@ accepted.
 | `pnpm push <file> [--play]` | Check, then push; `--play` waits for the verdict |
 | `pnpm listen [secs]` | Record what is playing and analyse it |
 | `pnpm analyze [file]` | Analyse a WAV, or the newest recording |
+| `pnpm run rebuild <url-or-file>` | Rebuild a song into an editable track |
 | `pnpm themes` | Check every theme's contrast and regenerate the CSS |
 | `pnpm share [file]` | Print a strudel.cc link for a track |
 | `pnpm smoke` | Check the API against a running studio |
