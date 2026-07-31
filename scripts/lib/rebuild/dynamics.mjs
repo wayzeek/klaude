@@ -7,16 +7,28 @@
  * pad, its pads sweep open, and sections build into their own boundary. None
  * of that survives a static parameter.
  *
- * Three detectors, each measured against `tracks/MINUIT/02-the-chase.md`'s own
- * bounced render (`.duckorbit(2).duckdepth(.3).duckattack(.09)` on the kick,
- * targeting the orbit `chords`/`lead` share - `bass`/`sub` are never on that
- * orbit and carry no duck at all) - the one place in this codebase where the
- * *source* is a hand-authored moltek track, not a mystery record, so what the
- * detector should find is a written fact, not a guess. Numbers throughout are
- * quoted against that measurement, plus a cross-check against Bicep's "Glue"
- * for a second, unrelated real recording. Both are cited by name in this
- * file's own doc comments rather than in a companion report, because the
- * comments are what a future change to these constants has to argue with.
+ * Three detectors. The sidechain detector's constants are each measured
+ * against `tracks/MINUIT/02-the-chase.md`'s own bounced render
+ * (`.duckorbit(2).duckdepth(.3).duckattack(.09)` on the kick, targeting the
+ * orbit `chords`/`lead` share - `bass`/`sub` are never on that orbit and
+ * carry no duck at all) - the one place in this codebase where the *source*
+ * is a hand-authored moltek track, not a mystery record, so what the
+ * detector should find is a written fact, not a guess - plus a cross-check
+ * against Bicep's "Glue" for a second, unrelated real recording. Both are
+ * cited by name in that detector's own doc comments rather than in a
+ * companion report, because the comments are what a future change to these
+ * constants has to argue with.
+ *
+ * The sweep and riser detectors' gates (`SWEEP_R_MIN`,
+ * `SWEEP_MIN_RELATIVE_CHANGE`, `RISER_R_MIN`, `RISER_MIN_RELATIVE_RISE`) are
+ * reasoned defaults, not measurements against either track - see each
+ * constant's own comment for the reasoning. Neither calibration track
+ * carries a deliberate, monotonic per-section sweep or riser on the layers
+ * this module can detect one on (see `SWEEP_R_MIN`'s own comment for why),
+ * so there is no written fact for these four to be measured against the way
+ * the sidechain constants are - stated here plainly rather than left for a
+ * reader to infer from the sidechain detector's own citations looking
+ * different in kind.
  *
  * Detection is intentionally conservative in the same direction as
  * `sound-match.mjs`: a real effect measured as absent stays absent in the
@@ -250,21 +262,34 @@ export function detectSidechainStem(stemBuf, kickOnsetsSeconds, grid, sections) 
  *  open or close exactly that region. */
 const CENTROID_MIN_HZ = 100
 const CENTROID_MAX_HZ = 12000
-/** A trend has to correlate at least this strongly with time to count as a
- *  sweep rather than the wobble a `perlin`/`sine`-modulated pad's *own*
- *  filter LFO produces when it happens to be mid-swing over a section's span
- *  - see the module doc comment: neither of this module's two calibration
- *  tracks clears this on any section, which is the honest result for two
- *  reference records that do not carry a deliberate, monotonic per-section
- *  sweep on `chords`/`lead` (the-chase's own sweep-shaped moments are either
- *  a continuous pad LFO wobble, measurably not monotonic within a section, or
- *  a riser on an unrelated auxiliary noise layer this pipeline never
- *  transcribes as `chords`/`lead`). A high bar here is what makes "sections
- *  without audible sweeps come back flat" true on both, not a coincidence.
+/**
+ * A trend has to correlate at least this strongly with time to count as a
+ * sweep rather than the wobble a `perlin`/`sine`-modulated pad's *own* filter
+ * LFO produces when it happens to be mid-swing over a section's span.
+ *
+ * A reasoned default, not a measurement: neither of this module's two
+ * calibration tracks carries a deliberate, monotonic per-section sweep on
+ * `chords`/`lead` to measure a real threshold against (the-chase's own
+ * sweep-shaped moments are either a continuous pad LFO wobble, measurably not
+ * monotonic within a section, or a riser on an unrelated auxiliary noise
+ * layer this pipeline never transcribes as `chords`/`lead`), so there is no
+ * written fact here the way there is for the sidechain constants above. What
+ * *is* verified directly: neither track clears this bar on any section - the
+ * honest result for two records with no such sweep to find, and what makes
+ * "sections without audible sweeps come back flat" true on both, not a
+ * coincidence. The value itself is picked high enough to demand a strong,
+ * near-monotonic trend rather than tuned against a case known to need it.
  */
 const SWEEP_R_MIN = 0.7
-/** And the trend has to move the centroid by a musically real amount, not
- *  just a statistically confident sliver of it. */
+/**
+ * And the trend has to move the centroid by a musically real amount, not
+ * just a statistically confident sliver of it.
+ *
+ * A reasoned default alongside `SWEEP_R_MIN`, for the same reason: no
+ * calibration track carries a real sweep to size this against. 25% is a
+ * judgment call ("more than a rounding error, less than a demand for an
+ * extreme sweep"), not a value read off either track.
+ */
 const SWEEP_MIN_RELATIVE_CHANGE = 0.25
 /** Fewer frames than this and a linear fit is describing noise. */
 const MIN_TREND_FRAMES = 8
@@ -398,11 +423,30 @@ export function detectFilterSweeps(otherBuf, grid, sections) {
  *  measured over. Longer sections still only look at their last few bars -
  *  a riser is a run into the boundary, not the whole section. */
 const RISER_WINDOW_BARS_MAX = 4
-/** Both RMS and centroid must correlate at least this strongly with time -
- *  looser than `SWEEP_R_MIN` because the window is shorter (fewer frames, so
- *  more sensitive to noise per the same absolute threshold), but still a
- *  real trend, not a coin flip. */
+/**
+ * Both RMS and centroid must correlate at least this strongly with time -
+ * looser than `SWEEP_R_MIN` because the window is shorter (fewer frames, so
+ * more sensitive to noise per the same absolute threshold), but still a real
+ * trend, not a coin flip.
+ *
+ * A reasoned default, not a measurement, for the same reason `SWEEP_R_MIN`
+ * is: neither calibration track carries a deliberate riser on `chords`/
+ * `lead` into a section boundary to size this against. Set relative to
+ * `SWEEP_R_MIN` by the stated frame-count reasoning above, not read off
+ * either track directly.
+ */
 const RISER_R_MIN = 0.6
+/**
+ * And the rise has to be a musically real fraction of the starting value,
+ * not a statistically confident sliver of it - same role as
+ * `SWEEP_MIN_RELATIVE_CHANGE`, sized slightly lower because a riser's own
+ * window is shorter and a real build can still be underway without having
+ * moved as far yet as a full section-length sweep would.
+ *
+ * A reasoned default, not a measurement, for the same reason as
+ * `SWEEP_MIN_RELATIVE_CHANGE`: no calibration track carries a real riser to
+ * size this against.
+ */
 const RISER_MIN_RELATIVE_RISE = 0.2
 
 /** RMS trend over `[fromSec, toSec)`, via the same broadband envelope
