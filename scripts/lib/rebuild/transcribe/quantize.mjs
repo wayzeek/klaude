@@ -57,7 +57,7 @@ const DEFAULT_MIN_AGREEMENT = 0.9
  * has no short loop to fold into (must survive, even as a long transcript),
  * or a couple of spurious hits that correctly failed to recur (must stay
  * empty). `agreement` cannot tell them apart - measured on the real drum and
- * bass stems (task-6-report.md), the spurious case (a 5-bar kick section, 2
+ * bass stems, the spurious case (a 5-bar kick section, 2
  * hits, ground truth has none) scores 0.400 agreement, *higher* than one of
  * the real cases (a 5-bar bass section, 4 notes, scores 4/4 against truth)
  * at 0.300.

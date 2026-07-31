@@ -6,8 +6,8 @@
  * there is, and discard any line that turns out to be the chords' own top
  * voice. It produced zero false positives on the real track (`the-chase`) -
  * every section it emitted a lead for genuinely had the sax playing - but
- * measured directly against the true part (task-9-report.md's addendum) the
- * *notes* barely correlated with it even in sections that passed every gate:
+ * measured directly against the true part the *notes* barely correlated with
+ * it even in sections that passed every gate:
  * aggregate exact-MIDI agreement of 9/129 (~7%), chance level. The cause is
  * structural, not a threshold: YIN finds *the* periodicity of a signal, and a
  * stem holding a sax over an electric piano, a sawtooth and other pitched
@@ -47,9 +47,7 @@
  * individual notes are still not exactly right (29.9% pitch-class, 15.4%
  * exact-MIDI), and per-section performance is uneven - some sections on
  * `the-chase` score 60%+ exact-MIDI, others land at zero even where the true
- * part plays continuously throughout. See melody-salience-report.md for the
- * full per-section breakdown and the parameter sweep this shipped
- * configuration came from.
+ * part plays continuously throughout.
  *
  * One gap found in review and deliberately left open rather than
  * band-aided: `detectMelody`'s `isChordTopVoice` check (a stem with no real
@@ -63,10 +61,10 @@
  * (0.92-0.93) sitting *inside* the range of its clearly-wrong sections
  * (0.87-0.99) - real tonal melodies lean on chord tones too, and there is no
  * threshold in that range that separates the two. The check was reverted,
- * not recalibrated, because the data shows no calibration exists to find:
- * see melody-salience-report.md for the full measurement. A stem with
- * nothing sounding but a chord progression can still produce a fake "lead"
- * here - a known, accepted limitation, not a silently unhandled one.
+ * not recalibrated, because the data shows no calibration exists to find. A
+ * stem with nothing sounding but a chord progression can still produce a
+ * fake "lead" here - a known, accepted limitation, not a silently unhandled
+ * one.
  */
 
 import { decodeWav } from '../../decoded-audio.mjs'
@@ -328,10 +326,9 @@ function isChordTopVoice(notes, chordLoop, section, grid) {
 /**
  * Selecting the lead from Basic Pitch's polyphonic notes.
  *
- * Not called by `transcribeMelody` - see basic-pitch-report.md for the full
- * measurement. Summary: Basic Pitch's raw notes on the reference track's
- * `other` stem are far more accurate than anything the DSP path can produce
- * (an oracle that could perfectly pick out only the notes exactly matching
+ * Not called by `transcribeMelody`. Basic Pitch's raw notes on the reference
+ * track's `other` stem are far more accurate than anything the DSP path can
+ * produce (an oracle that could perfectly pick out only the notes exactly matching
  * ground truth reaches 81% exact-MIDI on what's available), but every
  * selection strategy tried here - the one shipped below, several weight
  * combinations swept against it, a fragment-merge preprocessing pass, and a
@@ -526,9 +523,8 @@ function continuityScore(previous, candidate) {
  * Default weights (`salienceWeight: 3, registerWeight: 1`) are the best
  * simple combination found in the sweep described above: 12.6% exact-MIDI
  * against the reference track's 462-event ground truth, `onset` 48.6%,
- * `pitch class` 23.3% (see basic-pitch-report.md for the full table,
- * including why this stops short of `detectMelodySalience`'s shipped 15.4%
- * and is therefore not called by `transcribeMelody`).
+ * `pitch class` 23.3% - short of `detectMelodySalience`'s shipped 15.4%
+ * exact-MIDI, which is why `transcribeMelody` calls that instead of this.
  */
 export function selectMelodicLine(
   notes,
@@ -592,8 +588,8 @@ const NOTES_MIN_DISTINCT_PITCHES = SALIENCE_MIN_DISTINCT_PITCHES
  * contour: select the melodic line per section (`selectMelodicLine`),
  * quantise each chosen note's onset with the same `stepAt`/`stepDrift` every
  * other transcriber uses, and fold with `foldToLoop` exactly as
- * `detectMelodySalience` does. See basic-pitch-report.md for the measurement
- * that justifies this over `transcribeMelody` where the tool is available.
+ * `detectMelodySalience` does. See `selectMelodicLine`'s own doc comment
+ * above for the measurement this function's use is weighed against.
  *
  * A note is assigned to the section it *starts* in, matching how every other
  * transcriber in this file partitions events by onset rather than by any
@@ -663,8 +659,8 @@ export function transcribeMelodyFromNotes(
  * `stepAt`/`stepDrift` quantisation, same `foldToLoop` call, same gates.
  *
  * Not called by `transcribeMelody`. Measured against the reference track's
- * 462-event ground truth (`lead-improvement-report.md`): 8.3% exact-MIDI
- * post-fold - below the `selectMelodicLine`-only baseline this builds on
+ * 462-event ground truth: 8.3% exact-MIDI post-fold - below the
+ * `selectMelodicLine`-only baseline this builds on
  * (12.6%) and further below the shipped `detectMelodySalience` path's 15.4%.
  * (An earlier, buggy version of `affinity.mjs`'s Fiedler solver had measured
  * 13.4% here, ahead of the DP baseline; independent review found the solver

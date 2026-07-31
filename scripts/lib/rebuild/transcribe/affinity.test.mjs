@@ -182,9 +182,9 @@ describe('partitionBySign', () => {
 
 describe('pickMelodyCluster', () => {
   it('prefers the smaller cluster even when it is quieter and lower', () => {
-    // The measured-best rule (lead-improvement-report.md): a lead is one
-    // voice, "everything else" is usually several at once, so it wins on
-    // count even when it loses on loudness/register.
+    // The measured-best rule: a lead is one voice, "everything else" is
+    // usually several at once, so it wins on count even when it loses on
+    // loudness/register.
     const quietLowSmall = [note(0, 0.3, 48, 0.2), note(0.3, 0.6, 50, 0.2)]
     const loudHighBig = [
       note(0, 0.3, 80, 0.9),

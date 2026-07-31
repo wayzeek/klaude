@@ -66,8 +66,8 @@ const phrase = [
 const fourBars = [...phrase, ...phrase, ...phrase, ...phrase]
 
 // `detectMelody` is the full pitch-tracking pipeline. It is not what ships -
-// see melody.mjs's module doc comment and task-9-report.md's addendum for the
-// measurement that took it out of `transcribeMelody` - but the gates and the
+// see melody.mjs's module doc comment for the measurement that took it out
+// of `transcribeMelody` - but the gates and the
 // chord-tone check are correct on their own terms, so this suite still pins
 // them down directly.
 describe('detectMelody', () => {
@@ -450,8 +450,8 @@ describe('transcribeMelodyByAffinity', () => {
   })
 
   it('recovers the smaller, monophonic hook cluster out of a denser pad bed', () => {
-    // `pickMelodyCluster` prefers the smaller cluster (lead-improvement-
-    // report.md) - so the fixture makes the pad the *larger* group (six short
+    // `pickMelodyCluster` prefers the smaller cluster - so the fixture makes
+    // the pad the *larger* group (six short
     // segments) and the hook the smaller one (four notes), the shape a real
     // stem actually has: one lead voice against several accompaniment voices'
     // worth of note detections.

@@ -60,9 +60,8 @@ const WINDOWS_PER_BEAT = 3
  * 0.5774` against every four-note template at once (a triad's own floor is
  * `sqrt(3/12) = 0.5`) - a threshold has to clear that structural ceiling to
  * reject anything, and this module's first version, `MIN_CHORD_SCORE: 0.55`,
- * did not. Measured on the real `other` stem (`the-chase`,
- * task-8-report.md's addendum): two sections with no harmony instrument at
- * all in the source (`kickSoft`/`stepsLone`/`air` only) both averaged a
+ * did not. Measured on the real `other` stem (`the-chase`): two sections
+ * with no harmony instrument at all in the source (`kickSoft`/`stepsLone`/`air` only) both averaged a
  * *raw* top score above 0.70 per bar - comfortably past 0.55 - while their
  * *margin* to the runner-up averaged 0.016-0.020 and never exceeded 0.028 in
  * either section. Noise ties templates; a real chord does not.
@@ -83,8 +82,9 @@ const WINDOWS_PER_BEAT = 3
  * and comfortably below the real half's floor (0.085). The same measurement
  * on five sections with real, correctly-detected harmony elsewhere in the
  * track found bar margins as low as 0.020-0.032 in three of them - so this
- * threshold does cost a small number of real bars (see task-8-report.md's
- * addendum for the exact count); it does not cost whole sections.
+ * threshold does cost a small number of real bars (four, across three
+ * sections - see the exact-cost measurement below); it does not cost whole
+ * sections.
  *
  * What kind of guarantee this actually is - three different cases, not one:
  *
@@ -116,8 +116,8 @@ const WINDOWS_PER_BEAT = 3
  * Raising the threshold to also cover the uniform-noise case is not the fix:
  * this pipeline's actual inputs look like the empirical case (correlated,
  * structured bleed - reverb tails, room tone, a wind sample), not like
- * uncorrelated per-bin noise, and task-8-report.md's addendum measures the
- * real cost of 0.03 already (four real bars, in three sections). A higher
+ * uncorrelated per-bin noise, and the real cost of 0.03 has already been
+ * measured (four real bars, in three sections). A higher
  * threshold buys protection against a distribution this pipeline does not
  * see and pays for it in bars that do carry real harmony.
  */

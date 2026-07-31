@@ -54,12 +54,12 @@ export const BASS_RANGE = Object.freeze({ minHz: 30, maxHz: 400 })
  * measured and rejected: matching `f0.mjs`'s own default margin ratio (4096
  * against a 2940 floor, 39%) needs `minHz` near 40 Hz, which would exclude
  * this track's own lowest roots (C1 at 32.7 Hz, Db1 at 34.6 Hz - both under
- * 40) and break real coverage measured in `task-6-report.md`. `BASS_RANGE`
- * stays at `minHz: 30`.
+ * 40) and break real coverage measured directly. `BASS_RANGE` stays at
+ * `minHz: 30`.
  *
  * On the real bass stem this also modestly helps, not just the synthetic
  * fixture: transcribing all twelve sections of `the-chase` and scoring every
- * emitted note against ground truth (`task-6-report.md`), 3200 matches
+ * emitted note against ground truth, 3200 matches
  * 4096's real-stem accuracy within a fraction of a point while fixing the
  * synthetic fixture's onset-quantisation failures outright.
  */
@@ -202,9 +202,7 @@ export function transcribeBass(wavBuf, grid, sections) {
  *
  * MIDI 32 (~51.9 Hz), not the ~65 Hz/MIDI 36 that is the usual studio rule of
  * thumb for "sub" - that convention was measured against this pipeline's own
- * output and rejected, not assumed. Full numbers in `sub-bass-report.md`;
- * summary here because the boundary constant needs its own justification on
- * the page, not just a pointer to one. `transcribeBass`'s emitted note events
+ * output and rejected, not assumed. `transcribeBass`'s emitted note events
  * (not raw F0 frames, and not the hand-authored ground truth - the actual
  * per-section loops this function folds down to) were histogrammed on both
  * real bass stems this project has ground truth or a second independent
@@ -229,7 +227,7 @@ export function transcribeBass(wavBuf, grid, sections) {
  * `transcribeBass`'s the-chase output after a register split against the
  * track's own separately-authored ground truth (`bySound.sine` for sub,
  * `bySound.sawtooth` at midi<=52 for bass, the same per-(bar,step) matching
- * `task-6-report.md` used for the pre-split 80.7% baseline):
+ * used for the pre-split 80.7% baseline):
  *
  *   boundary   sub exact-MIDI      bass exact-MIDI     combined
  *   MIDI 32    63/81  (77.8%)      15/16  (93.8%)       78/97   (80.4%)
@@ -300,17 +298,16 @@ export function splitByRegister(loops, { boundary = SUB_BASS_MAX_MIDI } = {}) {
  * Reduce Basic Pitch's polyphonic note list to one bass voice by keeping the
  * lowest-pitched note among any group of notes that overlap in time.
  *
- * Not called by `transcribeBass` - see basic-pitch-report.md for the full
- * measurement. Summary: on the reference track's bass stem, Basic Pitch's
- * raw notes (no selection at all) score 54.7% exact-MIDI against ground
- * truth events at or below MIDI 52; this function's lowest-voice reduction
- * improves that to 59.2%; the existing `transcribeBass` (a YIN pitch tracker
- * tuned specifically for this register - see `NOTE_WINDOW`'s doc comment
- * above) scores 80.7% on the same stem. Unlike the `other` stem the lead
- * reads from, the bass stem is close to genuinely monophonic already, which
- * is exactly the condition a dedicated single-pitch tracker is good at and a
- * general polyphonic model has no particular advantage on. This is kept,
- * tested and exported - like `detectMelody` in melody.mjs - because the
+ * Not called by `transcribeBass`. On the reference track's bass stem, Basic
+ * Pitch's raw notes (no selection at all) score 54.7% exact-MIDI against
+ * ground truth events at or below MIDI 52; this function's lowest-voice
+ * reduction improves that to 59.2%; the existing `transcribeBass` (a YIN
+ * pitch tracker tuned specifically for this register - see `NOTE_WINDOW`'s
+ * doc comment above) scores 80.7% on the same stem. Unlike the `other` stem
+ * the lead reads from, the bass stem is close to genuinely monophonic
+ * already, which is exactly the condition a dedicated single-pitch tracker
+ * is good at and a general polyphonic model has no particular advantage on.
+ * This is kept, tested and exported - like `detectMelody` in melody.mjs - because the
  * judgement it implements (see below) is correct on its own terms even
  * though it does not beat the existing path here.
  *
@@ -371,8 +368,8 @@ const NOTES_MIN_NOTES_PER_SECTION = MIN_NOTES_PER_SECTION
  * tracker: reduce to the lowest voice (`reduceToLowestVoice`), quantise each
  * note's onset to the grid with the same `stepAt`/`stepDrift` every other
  * transcriber uses, and fold each section into a loop exactly as the DSP
- * path does. See basic-pitch-report.md for the measurement that justifies
- * this over `transcribeBass` where the tool is available.
+ * path does. See `reduceToLowestVoice`'s doc comment above for the
+ * measurement this function's use is weighed against.
  *
  * Confidence and output velocity both come from the note's own Basic Pitch
  * velocity (already rescaled to 0-1 by `parseNoteEvents`) rather than the

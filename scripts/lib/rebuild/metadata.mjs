@@ -11,9 +11,7 @@
  * released track, tempo and key are usually documented facts, not things
  * that must be guessed from a waveform. This module fetches them.
  *
- * Sources probed live before writing any of this (see
- * .superpowers/sdd/2026-07-28-rebuild-transcription-emission/metadata-report.md
- * for the full coverage table):
+ * Sources probed live before writing any of this:
  *
  *   - Deezer's public search/track API: keyless, no auth, WORKS. Its `bpm`
  *     field is a real, populated, usably accurate number for some tracks

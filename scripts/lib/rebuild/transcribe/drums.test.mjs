@@ -92,7 +92,7 @@ describe('transcribeDrums', () => {
     // same step - the standard four-on-the-floor-plus-backbeat pattern this
     // whole classifier exists to serve. An earlier version of
     // `suppressKickBleed` compared raw levels across the kick and snare
-    // bands and could not recover this case at any gain (task-4-report.md):
+    // bands and could not recover this case at any gain:
     // `bandEnergy` divides by bin count, so a kick concentrated in ~2 bins
     // always reads louder than a noise-based snare spread across ~23,
     // regardless of which one is real - overfitting the rule to this one

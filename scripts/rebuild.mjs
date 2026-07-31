@@ -259,9 +259,9 @@ async function main() {
   }
   say(`  key: ${key.name ?? '(disagreement - see metadata)'} (confidence ${key.confidence.toFixed(3)}, ${key.agreement}, from ${noteKey ? 'notes' : 'chroma'})`)
 
-  // Measured against the reference track's 462-event ground truth
-  // (basic-pitch-report.md): a note-derived chord read
-  // (`transcribeHarmonyFromNotes`) beats the FFT-chroma path
+  // Measured against the reference track's 462-event ground truth: a
+  // note-derived chord read (`transcribeHarmonyFromNotes`) beats the
+  // FFT-chroma path
   // (`transcribeHarmony`) on both accuracy and coverage, but the same
   // exercise for bass and lead did not clear their existing DSP paths, so
   // those two are untouched here regardless of whether the tool is present.

@@ -23,7 +23,7 @@ const HOP_SECONDS = ONSET_HOP / SAMPLE_RATE
  * 100-300ms, so the slower decay is the more honest simulation, and it has
  * the side effect of keeping this fixture's two voices actually separable:
  * measured directly, the fast/instant version reads as onsets on the *other*
- * voice's schedule in both directions (see task-3-report.md).
+ * voice's schedule in both directions.
  */
 function twoBandClip({ seconds = 4, lowEvery = 0.5, highEvery = 0.25 } = {}) {
   const frames = Math.floor(seconds * SAMPLE_RATE)
@@ -156,10 +156,9 @@ describe('bandEnergyRise', () => {
   // because the ratio's own denominator shrinks through a decay and lets
   // ordinary jitter clear the floor for the whole tail. bandEnergyRise looks
   // at the absolute envelope instead - a decay has no positive rise in it, by
-  // definition - and raised precision to 99% at floor~10 on real material (see
-  // task-3-report.md for the full candidate comparison). This block proves
-  // that mechanism on the synthetic fixture: same clip, same thud, a curve
-  // built from bandEnergy instead of bandNovelty.
+  // definition - and raised precision to 99% at floor~10 on real material.
+  // This block proves that mechanism on the synthetic fixture: same clip,
+  // same thud, a curve built from bandEnergy instead of bandNovelty.
   it('returns null when energy is null', () => {
     expect(bandEnergyRise(null)).toBeNull()
   })
@@ -170,7 +169,7 @@ describe('bandEnergyRise', () => {
     // The absolute floor for a raw envelope isn't the 0-1 ratio scale
     // pickBandOnsets defaults to; unlike that default, though, this mechanism
     // isn't sensitive to the exact value - 1 through 20 all land the same
-    // seven onsets in this fixture (see task-3-report.md's sweep).
+    // seven onsets in this fixture.
     for (const floor of [1, 5, 10, 20]) {
       const onsets = pickBandOnsets(rise, HOP_SECONDS, { floor })
       expect(onsets.length).toBeGreaterThanOrEqual(6)
@@ -222,9 +221,9 @@ describe('bandEnergyRise', () => {
 
 describe('fftSize override', () => {
   // fftSize is flat at ONSET_FFT by default for every band - auto-widening a
-  // narrow band was tried and measured off (see bands.mjs's comment and
-  // task-3-report.md: it doesn't fix the kick band's step-level accuracy, and
-  // the one window that fixes its raw rate has a disqualifying timing delay).
+  // narrow band was tried and measured off (see bands.mjs's comment: it
+  // doesn't fix the kick band's step-level accuracy, and the one window that
+  // fixes its raw rate has a disqualifying timing delay).
   // That leaves an explicit override as the only remaining way a caller can
   // give a narrow band more bins, so this guards that the override actually
   // takes effect rather than being silently ignored. hop is fixed at

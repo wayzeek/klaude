@@ -4,7 +4,7 @@
  * `selectMelodicLine` (melody.mjs) picks a monophonic line note-by-note: a
  * weighted interval-scheduling DP that decides, one note at a time, "is this
  * worth adding to the chain." Measured against the reference track's 462-event
- * ground truth (basic-pitch-report.md), that ceiling is 12.6% exact-MIDI - a
+ * ground truth, that ceiling is 12.6% exact-MIDI - a
  * real, if modest, lift over chance, but a ceiling, not a moving target: every
  * weight swept against it plateaus in the same place. The literature reframes
  * the problem as *global*, not per-onset: Hsiao & Su, ISMIR 2021 ("Learning
@@ -44,8 +44,8 @@
  * comment covers it in full - so several structurally different fixed seeds
  * are tried and the one that converges to the largest eigenvalue is kept.
  *
- * The verdict, measured in full in `lead-improvement-report.md`: this
- * reaches 8.3% exact-MIDI post-fold on the reference track, below both
+ * The verdict, measured in full: this reaches 8.3% exact-MIDI post-fold on
+ * the reference track, below both
  * `selectMelodicLine` alone (12.6%) and the shipped `detectMelodySalience`
  * path (15.4%), so `transcribeMelody` (melody.mjs) does not call the
  * pipeline built on this module (`transcribeMelodyByAffinity`). That number
@@ -69,10 +69,9 @@
  * measured end to end through `selectMelodicLine` -> quantise -> `foldToLoop`
  * -> unfold, exactly the pipeline `transcribeMelodyByAffinity` runs - but
  * against an earlier, buggy version of `fiedlerVector` (see that function's
- * own doc comment for what was wrong and how it was found and fixed). See
- * `lead-improvement-report.md` for the full table, including why this search
- * was not re-run against the fixed solver: the fixed solver's result (8.3%
- * exact-MIDI post-fold) already misses both `selectMelodicLine`'s own
+ * own doc comment for what was wrong and how it was found and fixed). This
+ * search was not re-run against the fixed solver: the fixed solver's result
+ * (8.3% exact-MIDI post-fold) already misses both `selectMelodicLine`'s own
  * baseline (12.6%) and the shipped `detectMelodySalience` path (15.4%)
  * clearly enough that re-tuning would need to close a much larger gap than
  * the original, buggy-solver result's 1.5-point miss did. The constants
@@ -396,9 +395,8 @@ function mean(values) {
  *
  * The first version of this function scored each cluster by mean loudness and
  * mean register - `selectMelodicLine`'s own two measured-useful per-note
- * signals (basic-pitch-report.md's sweep), applied to a whole cluster's mean
- * instead of one note. Measured against the reference track's ground truth
- * (`lead-improvement-report.md`) against the (then buggy - see
+ * signals, applied to a whole cluster's mean instead of one note. Measured
+ * against the reference track's ground truth against the (then buggy - see
  * `fiedlerVector`'s doc comment) Fiedler solver, that lost outright to a much
  * simpler rule: **prefer the smaller cluster** (9.3% vs. 13.4% exact-MIDI
  * post-fold, same kernel, same everything else downstream). Re-checked after

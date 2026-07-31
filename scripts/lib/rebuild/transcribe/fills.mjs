@@ -12,13 +12,12 @@
  * early reviewer named as the give-away that a machine wrote the track.
  *
  * Restricted to drum roles (kick/snare/hats) only - the one place this
- * codebase measured per-onset detection at 86-99% precision
- * (task-4-report.md). Melody's fold residue measured 15.4% accuracy overall
- * against ground truth (lead-improvement-report.md, `detectMelodySalience`'s
- * own headline) - noise, not signal - so calling this on anything but a drum
- * role's discarded events would be inventing fills out of noise, which is
- * worse than reporting nothing. Nothing in this file is called for bass,
- * chords or lead.
+ * codebase measured per-onset detection at 86-99% precision. Melody's fold
+ * residue measured 15.4% accuracy overall against ground truth
+ * (`detectMelodySalience`'s own headline) - noise, not signal - so calling
+ * this on anything but a drum role's discarded events would be inventing
+ * fills out of noise, which is worse than reporting nothing. Nothing in this
+ * file is called for bass, chords or lead.
  *
  * Two shapes only, both gated hard against real, already-detected onsets -
  * never a synthesised or generic fill:

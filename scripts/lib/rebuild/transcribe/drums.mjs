@@ -19,7 +19,7 @@
  * denominator (the band's own recent magnitude) shrinks through a decay and
  * lets ordinary jitter clear the floor for the whole tail: 26.6% precision at
  * 100% recall. Measuring the same ground-truth method against snare and hats
- * (task-4-report.md) shows the same failure mode, just smaller: on the real
+ * shows the same failure mode, just smaller: on the real
  * drum stem's four-on-the-floor bars, normalised flux at its production
  * default floor (0.045) scores 11.3% precision on the snare band and 53.0% on
  * hats, against `bandEnergyRise` at a measured floor scoring 19.7% and 78.8%.
@@ -56,7 +56,7 @@ const DETECTORS = {
 
 /**
  * The three bands, one per moltek drum layer, each with the detector and
- * floor measured for it against the real drum stem (task-4-report.md).
+ * floor measured for it against the real drum stem.
  *
  * `kick` stops at 100 Hz rather than reaching up to 150: above that a bassline's
  * fundamental starts triggering the curve, and a bass note is not a kick. Its
@@ -75,7 +75,7 @@ const DETECTORS = {
  * roles, and the nearest one is the intended landing spot, not a bug. That
  * makes scoring the snare role against a single snare-family sound (e.g.
  * `crate_sd` ghost notes alone) understate it badly - a real, measured
- * example on the-chase (task-4-report.md): 37.9% precision against `crate_sd`
+ * example on the-chase: 37.9% precision against `crate_sd`
  * alone, 88.3% precision once `crate_stick` (rim/stick) is folded into the
  * reference too. Score this role against every percussion sound plausibly
  * living in 180-1200 Hz, not just the one named "snare" in the source.
@@ -131,7 +131,7 @@ const VELOCITY_PERCENTILE = 0.9
  * 97.8% across that whole range. The plateau's ceiling, not its exact value,
  * is what matters here: pushing the threshold higher stops helping because
  * the residual false positives left at 45.0% are themselves broadband
- * (most likely footstep bleed, left unaddressed - see task-4-report.md), not
+ * (most likely footstep bleed, left unaddressed), not
  * tonal, so flatness alone cannot tell them from a real hit either. 0.75 sits
  * in the middle of that plateau, comfortably clear of both a synthetic
  * backbeat snare's minimum (0.84-0.96) and confirmed kick splatter's maximum
@@ -147,7 +147,7 @@ const SNARE_FLATNESS_THRESHOLD = 0.75
  * normalised against that role's own 90th percentile, so a loud snare and a
  * loud hat both come out near 1 and a ratio between them measures nothing.
  *
- * Measured on the real drum stem (task-4-report.md), against the snare set
+ * Measured on the real drum stem, against the snare set
  * `suppressKickBleed` has already cleaned: of every hat onset landing on the
  * same step as a (cleaned) snare onset - 210 of 589 hat onsets do, down from
  * 496 before that cleanup - the hat/snare raw energy ratio has median 0.214

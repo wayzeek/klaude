@@ -9,8 +9,9 @@
  * measures 47.8% on the same stem, same events - not a marginal improvement
  * but a different tier of accuracy, because it is not fighting the same
  * structural problem: it estimates the whole vertical set of active notes,
- * not one dominant periodicity. See basic-pitch-report.md for the full
- * measurement, including the null (transposed-pitch) control.
+ * not one dominant periodicity. Measured against the null (transposed-pitch)
+ * control too, to confirm the gap is real signal, not an artefact of the
+ * comparison.
  *
  * This module owns exactly the boundary with that external tool: whether it
  * is installed, how to invoke it, and how to parse and cache what it prints.

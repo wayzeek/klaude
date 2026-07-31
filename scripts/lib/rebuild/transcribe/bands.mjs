@@ -16,8 +16,8 @@
  * the hit keeps clearing the floor for the whole tail. Measured on the-chase's
  * kick band (20-120Hz): 130/130 true steps found, but a kick predicted on 14
  * of every 16 sixteenths, 359 spurious against 130 real. `bandEnergyRise`
- * exists for exactly this case - see its doc comment and task-3-report.md for
- * the full comparison against unnormalised flux and a raised flux floor.
+ * exists for exactly this case - see its doc comment for the full comparison
+ * against unnormalised flux and a raised flux floor.
  */
 
 import { ONSET_FFT, ONSET_HOP, fft, makeHann } from '../../dsp.mjs'
@@ -53,8 +53,7 @@ const MIN_SEPARATION_SECONDS = 0.03
  * than the current over-triggering. There is no window in this range that
  * both fixes the step-level accuracy and keeps timing honest, so the fix is
  * not a window size at all - it turned out to be the wrong curve, not the
- * wrong resolution. See `bandEnergyRise`. Full sweep and the ground-truth
- * comparison are in task-3-report.md.
+ * wrong resolution. See `bandEnergyRise`.
  */
 
 /** Map each FFT bin to whether it falls inside [lo, hi). */
@@ -164,7 +163,7 @@ export function bandEnergy(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_HOP
  * Built for exactly that second question. A kick's harmonics land in a few
  * discrete bins of the snare band and read as low flatness there; a real
  * snare or hat's broadband noise spreads across the whole band and reads
- * high. Measured on the-chase (task-4-report.md): kick bleed coincident with
+ * high. Measured on the-chase: kick bleed coincident with
  * a kick hit in the snare band reads 0.12-0.68 (bars 8-39: confirmed false
  * positives top out at 0.68); a synthetic backbeat snare genuinely coincident
  * with a kick on every hit reads 0.84-0.96. The two do not overlap.
@@ -220,8 +219,8 @@ export function bandFlatness(audio, { lo, hi, fftSize = ONSET_FFT, hop = ONSET_H
  * apply - a caller needs to pass a `floor` measured on their own material.
  * On the-chase's kick band (20-120Hz, fftSize 1024) a floor around 10 took
  * step-level precision from 27% (via `bandNovelty`) to 99%, at a cost of one
- * missed step out of 130 - see task-3-report.md. That number is calibrated to
- * this recording's gain staging, not universal; it is not exported as a
+ * missed step out of 130. That number is calibrated to this recording's gain
+ * staging, not universal; it is not exported as a
  * default because doing so would hide exactly the per-band judgement call
  * this function exists to make explicit.
  */
