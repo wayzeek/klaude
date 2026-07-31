@@ -28,9 +28,9 @@
 import { decodeWav } from '../decoded-audio.mjs'
 import { CHROMA_FFT, ONSET_HOP, fft, makeHann } from '../dsp.mjs'
 import { bandEnergy, bandEnergyRise, bandNovelty, pickBandOnsets } from './transcribe/bands.mjs'
-import { BASS_RANGE } from './transcribe/bass.mjs'
+import { BASS_RANGE, SUB_BASS_MAX_MIDI } from './transcribe/bass.mjs'
 import { DRUM_ROLES } from './transcribe/drums.mjs'
-import { trackF0 } from './transcribe/f0.mjs'
+import { midiToHz, trackF0 } from './transcribe/f0.mjs'
 import { beatChroma } from './transcribe/harmony.mjs'
 import { LAYERS, gridFromJson, sectionRange } from './transcribe/quantize.mjs'
 import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
@@ -94,8 +94,32 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
  *           0.7089, and 0.71 would have dropped a real correct section)
  *   snare:  correct 0.637, worst (drop-half) 0.344 -> 0.49
  *   hats:   correct 0.774, worst (drop-half, deduplicated) 0.560 -> 0.67
- *   bass:   correct 0.530, worst (random) 0.056 -> 0.29
+ *   bass:   correct 1.0, worst discriminable *coverage* corruption (75% of
+ *           notes dropped) 0.39 -> 0.45 (rounded up from the exact midpoint
+ *           0.69 - see below for why the midpoint itself is not used)
  *   chords: correct 0.817, worst *discriminable* (tritone) 0.349 -> 0.58
+ *
+ * `bass`/`sub` were recalibrated (previously 0.29) once `bassAgreement`
+ * started scoring voiced-frame coverage as well as pitch agreement (see that
+ * function's own doc comment for why the old formula was blind to a
+ * severely incomplete transcription). The pitch-only corruptions the
+ * original 0.29 was calibrated against are unaffected by this - coverage
+ * stays near 1 when only the pitch, not the timing, is wrong, so a synthetic
+ * fixture with every note transposed a semitone still scores 0.011 and an
+ * octave down still scores 0 - but the exact midpoint between an idealised
+ * correct rendering (1.0) and the coverage corruption this pipeline is
+ * actually being fixed to catch (a candidate rendering only one of four real
+ * notes, 0.39) would be 0.69, well above the real reference track's own
+ * *good* sections (0.74-0.93 measured on the-chase) only by luck of this one
+ * corruption's exact severity - 0.45 is used instead, high enough to fail
+ * the 75%-dropped case with room to spare and low enough not to threaten any
+ * real section that scored above the old 0.29 by a wide margin. This does
+ * cost real coverage: three the-chase `sub` sections that scored 0.33-0.35
+ * under the old formula (already close to its own floor) now fail outright,
+ * on top of the one (0.25) that already did - a real, measured drop in pass
+ * rate, not a free fix. `bass` itself is unaffected in practice: its own
+ * the-chase sections score 0.92-0.93 either way, since a genuinely present
+ * bass line's coverage was already near-total.
  *
  * `lead` is deliberately not calibrated the same way, and that is a real gap,
  * not an oversight - stated plainly rather than dressed up as a threshold it
@@ -151,19 +175,22 @@ import { RESYNTH_SAMPLE_RATE, renderSection } from './resynth.mjs'
  *   with a real, measured margin - a single scalar threshold over noisy real
  *   audio cannot do better than that without also rejecting some correct
  *   sections, which is the trade this plan avoids on purpose.
+ * - `bass`/`sub`'s new 0.45 does not reliably catch a HALF-dropped line
+ *   either: a synthetic fixture with 2 of 4 notes rendered scores 0.65,
+ *   comfortably above the threshold. It reliably catches 75%-dropped (0.39)
+ *   and everything worse; a coverage gap smaller than that is a disclosed
+ *   gap, the same shape as hats' half-dropped limit above, not a fixed one.
  *
  * These numbers rest on one real track (the-chase, the only recording with
  * exact ground truth) - the same n=1 limitation the beat grid carries.
  *
- * `sub` is not independently corruption-calibrated the way kick/snare/hats/
- * bass/chords above are - the same honest gap `lead` already discloses, not a
- * fixed one.
- * It reuses `bass`'s own threshold (0.29) rather than a placeholder near zero,
- * because `scoreLayer` reuses `bassAgreement` unchanged for it (see below):
- * `sub` is a register-filtered subset of the same transcribed line, scored by
- * F0 pitch agreement against the same bass stem, so the mechanism `bass` was
- * calibrated against applies to `sub` directly rather than needing its own
- * corruption sweep to justify borrowing the number.
+ * `sub` shares `bass`'s own threshold and mechanism (`scoreLayer` calls the
+ * same `bassAgreement`, register-restricted to `sub`'s own half of
+ * `BASS_RANGE` - see `SUB_TRACK_RANGE`) rather than being independently
+ * corruption-calibrated: it is a register-filtered subset of the same
+ * transcribed line (`bass.mjs`'s `splitByRegister`), and the coverage
+ * corruption `bass`'s own threshold was calibrated against (notes dropped)
+ * is exactly the failure mode `sub` needs the same protection from.
  */
 /** See `HEARING_THRESHOLDS`'s own doc comment: this exists only to reject
  *  the exact `score === 0` degenerate case (`scoreLayer`'s `hasSignal`
@@ -175,8 +202,8 @@ export const HEARING_THRESHOLDS = {
   kick: 0.7,
   snare: 0.49,
   hats: 0.67,
-  bass: 0.29,
-  sub: 0.29,
+  bass: 0.45,
+  sub: 0.45,
   chords: 0.58,
   lead: MIN_LEAD_SCORE,
 }
@@ -324,15 +351,92 @@ function onsetAgreement(rendered, stemSlice, role, sampleRate) {
  *  ~1470-sample period to find a full cycle. */
 const BASS_F0_WINDOW = 3200
 
+/**
+ * `bass` and `sub` are register-filtered subsets of one transcribed line
+ * (`bass.mjs`'s `splitByRegister`, boundary `SUB_BASS_MAX_MIDI`), but both
+ * are scored against the SAME raw "bass" stem - Demucs separates by
+ * instrument source, not by register, so that one stem genuinely carries
+ * both. Tracking F0 across the whole of `BASS_RANGE` for either layer lets
+ * the OTHER layer's real content register as "voiced" in the stem at times
+ * this layer never claims to sound, which `bassCoverage` below would then
+ * count as a missed note that was never this layer's to cover in the first
+ * place - measured directly: a section with a genuinely correct bass AND
+ * sub scored the bass layer at 0.16 with the whole-range tracker, purely
+ * because the sub's own real notes (a different register, same stem) were
+ * not covered by the bass rendering. Splitting the tracked range at the same
+ * boundary `splitByRegister` already used to build the two layers removes
+ * the cross-contamination at the source: each layer's coverage is judged
+ * only against the slice of the stem it could ever have explained.
+ */
+const SUB_TRACK_RANGE = Object.freeze({ minHz: BASS_RANGE.minHz, maxHz: midiToHz(SUB_BASS_MAX_MIDI) })
+const MID_BASS_TRACK_RANGE = Object.freeze({ minHz: midiToHz(SUB_BASS_MAX_MIDI), maxHz: BASS_RANGE.maxHz })
+
 /** How close two F0 estimates may sit, in semitones, and still count as the
  *  same note - wide enough for ordinary YIN jitter, narrow enough that a
  *  genuine semitone error still fails. */
 const BASS_PITCH_TOLERANCE_SEMITONES = 0.5
 
 /**
- * Fraction of frames where both sides are confidently voiced *and* agree on
- * pitch - full pitch, not pitch class, so an octave error costs the same as
- * any other wrong note.
+ * Of the frames where both sides happen to be voiced, the fraction that also
+ * agree on pitch - full pitch, not pitch class, so an octave error costs the
+ * same as any other wrong note.
+ *
+ * Deliberately blind to whether both sides are voiced at the SAME rate at
+ * all - `bassCoverage` below answers that question. A rendering missing most
+ * of the real line still gets full credit here on whatever little it does
+ * share with the stem, which is correct for this function's narrow job (of
+ * the notes both sides agree exist, are they the same note) and exactly why
+ * `bassAgreement` must never use this alone - see its own doc comment.
+ */
+function bassPitchAgreement(a, b, n) {
+  let voicedBoth = 0
+  let agree = 0
+  for (let i = 0; i < n; i++) {
+    if (!a[i].voiced || !b[i].voiced) continue
+    voicedBoth++
+    if (Math.abs(a[i].midi - b[i].midi) <= BASS_PITCH_TOLERANCE_SEMITONES) agree++
+  }
+  return voicedBoth > 0 ? agree / voicedBoth : 0
+}
+
+/**
+ * F1 of voiced-frame coverage between the two signals, independent of
+ * whether the pitch at those instants agrees.
+ *
+ * This is the term `bassAgreement` was missing entirely: dividing only by
+ * jointly-voiced frames (`bassPitchAgreement`, on its own) discards every
+ * frame where the stem has a real note and the rendering has nothing -
+ * exactly the frames a severely incomplete transcription is missing.
+ * Measured directly: a candidate rendering only one of a real four-note
+ * bass line's notes scored 0.975 by the old formula alone (the one shared,
+ * correctly-pitched note divided by itself) - far above the 0.29 pass
+ * threshold, for a line missing three quarters of its real content. The
+ * same shape `onsetAgreement` above already uses for drums (precision and
+ * recall of matched instants, combined by harmonic mean) applies here
+ * without change: "voiced" stands in for "an onset was detected."
+ */
+function bassCoverage(a, b, n) {
+  let aVoiced = 0
+  let bVoiced = 0
+  let both = 0
+  for (let i = 0; i < n; i++) {
+    if (a[i].voiced) aVoiced++
+    if (b[i].voiced) bVoiced++
+    if (a[i].voiced && b[i].voiced) both++
+  }
+  const precision = aVoiced > 0 ? both / aVoiced : 0
+  const recall = bVoiced > 0 ? both / bVoiced : 0
+  return precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0
+}
+
+/**
+ * How well a rendered bass/sub line matches the stem it came from - coverage
+ * (are the same instants voiced at all) combined with pitch agreement (of
+ * the ones that are, do they agree), multiplied together so a candidate must
+ * clear both: missing most of the real line costs it through `bassCoverage`
+ * even if every note it does render is pitched exactly right, and a
+ * consistently wrong pitch costs it through `bassPitchAgreement` even if its
+ * voicing timing is perfect.
  *
  * Bass-specific, and not a small tweak: chroma (used for chords and, if it
  * were ever enabled, lead) excludes everything below `CHROMA_MIN_HZ` (80 Hz,
@@ -345,24 +449,14 @@ const BASS_PITCH_TOLERANCE_SEMITONES = 0.5
  * 0.510, *higher* than correct, because chroma had no reliable signal to
  * lose in the first place. `trackF0` reads the fundamental directly (bass.mjs
  * already relies on it for the same reason, per its own module comment,
- * which says as much about chroma and basslines explicitly) and gives a real
- * gap on the same sections: correct scores 0.530, and every corruption tried
- * (a semitone, a tritone, an octave, a fixed wrong pattern, a held drone)
- * scores 0.000-0.056.
+ * which says as much about chroma and basslines explicitly).
  */
-function bassAgreement(rendered, stemSlice) {
-  const a = trackF0(asAudio(rendered), { ...BASS_RANGE, windowSize: BASS_F0_WINDOW }).frames
-  const b = trackF0(asAudio(stemSlice), { ...BASS_RANGE, windowSize: BASS_F0_WINDOW }).frames
+function bassAgreement(rendered, stemSlice, range = BASS_RANGE) {
+  const a = trackF0(asAudio(rendered), { ...range, windowSize: BASS_F0_WINDOW }).frames
+  const b = trackF0(asAudio(stemSlice), { ...range, windowSize: BASS_F0_WINDOW }).frames
   if (!a.length || !b.length) return 0
   const n = Math.min(a.length, b.length)
-  let voicedBoth = 0
-  let agree = 0
-  for (let i = 0; i < n; i++) {
-    if (!a[i].voiced || !b[i].voiced) continue
-    voicedBoth++
-    if (Math.abs(a[i].midi - b[i].midi) <= BASS_PITCH_TOLERANCE_SEMITONES) agree++
-  }
-  return voicedBoth > 0 ? agree / voicedBoth : 0
+  return bassCoverage(a, b, n) * bassPitchAgreement(a, b, n)
 }
 
 /**
@@ -404,9 +498,13 @@ export function scoreLayer(rendered, stemSlice, layer, grid) {
   // (see `bass.mjs`'s `splitByRegister`), scored against the same stem
   // (`LAYER_STEM.sub`) by the same F0 mechanism - chroma is wrong for it for
   // exactly the reason `bassAgreement`'s own comment gives for `bass`, more
-  // so: `sub` sits even further below chroma's 80 Hz floor.
+  // so: `sub` sits even further below chroma's 80 Hz floor. Each is tracked
+  // only across its own half of `BASS_RANGE` (see `SUB_TRACK_RANGE`/
+  // `MID_BASS_TRACK_RANGE`'s own doc comment) so the other's real content,
+  // sharing the same physical stem, cannot register as a note this layer
+  // was supposed to cover.
   if (layer === 'bass' || layer === 'sub') {
-    return bassAgreement(rendered, stemSlice)
+    return bassAgreement(rendered, stemSlice, layer === 'sub' ? SUB_TRACK_RANGE : MID_BASS_TRACK_RANGE)
   }
 
   // A grid anchored at zero, because both buffers start at the section's

@@ -263,12 +263,24 @@ describe('verifyHearing', () => {
   // of monophonic F0 tracking on a summed stem, not something this dispatch
   // test is trying to characterise (Glue's own end-to-end run is where that
   // gets measured on real audio).
+  //
+  // The score here is well short of the ~1.0 a `sub`-only stem reaches
+  // (verified directly: 1.0 with `bass: null`) even though sub and bass never
+  // sound at the same instant - `SUB_TRACK_RANGE`/`MID_BASS_TRACK_RANGE`
+  // remove most, not all, of the cross-contamination `bassCoverage` newly
+  // makes visible: `trackF0`'s YIN detector still occasionally reads a
+  // sub-range-plausible pitch off the bass note's own harmonics/aliasing
+  // during BASE_LOOPS.bass's own steps, which coverage then counts as a
+  // stem-voiced instant sub did not cover. The same, pre-existing "one
+  // fundamental at a time" limitation this test already disclosed, now
+  // partially visible through a metric that previously ignored coverage
+  // altogether.
   it('scores a sub loop against the (shared) bass stem, same mechanism as bass', () => {
     const sub = { loopBars: 1, events: [note(4, 24, 4), note(12, 27, 4)], confidence: 0.8 }
     const transcription = transcriptionWith({ ...BASE_LOOPS, sub })
     const result = verifyHearing(transcription, stemsFromTranscription(transcription))
     expect(result.sections[0].layers.sub).not.toBeNull()
-    expect(result.sections[0].layers.sub.score).toBeGreaterThan(0.85)
+    expect(result.sections[0].layers.sub.score).toBeGreaterThan(0.7)
     expect(result.sections[0].layers.sub.pass).toBe(true)
   }, BASS_TEST_TIMEOUT)
 
@@ -284,8 +296,29 @@ describe('verifyHearing', () => {
     const right = verifyHearing(truth, stems).sections[0].layers.sub.score
     const off = verifyHearing(wrong, stems).sections[0].layers.sub.score
     console.log(`semitone-off sub: correct=${right.toFixed(3)} wrong=${off.toFixed(3)}`)
-    expect(right).toBeGreaterThan(0.85)
+    expect(right).toBeGreaterThan(0.7)
     expect(off).toBeLessThan(right - 0.1)
+  }, BASS_TEST_TIMEOUT)
+
+  it('fails a sub rendering that drops 75% of the real source notes', () => {
+    // The exact demonstrated bug: `bassAgreement` used to divide only by
+    // jointly-voiced frames, so a candidate covering just one of four real
+    // notes scored close to perfect (0.975 - the one shared, correctly
+    // pitched note divided by itself) on whatever little it did share, far
+    // above the pass threshold. `bass: null` isolates this from the separate,
+    // already-disclosed cross-instrument bleed the shared-stem tests above
+    // exercise, so this measures the coverage mechanism on its own.
+    const full = { loopBars: 1, events: [note(0, 24, 4), note(4, 26, 4), note(8, 28, 4), note(12, 30, 4)], confidence: 0.8 }
+    const truth = transcriptionWith({ ...BASE_LOOPS, bass: null, sub: full })
+    const stems = stemsFromTranscription(truth)
+
+    const oneOfFour = transcriptionWith({ ...BASE_LOOPS, bass: null, sub: { loopBars: 1, events: [full.events[0]], confidence: 0.8 } })
+    const right = verifyHearing(truth, stems).sections[0].layers.sub
+    const dropped = verifyHearing(oneOfFour, stems).sections[0].layers.sub
+    console.log(`75%-dropped sub: correct=${right.score.toFixed(3)} dropped=${dropped.score.toFixed(3)}`)
+    expect(right.pass).toBe(true)
+    expect(dropped.score).toBeLessThan(right.score - 0.3)
+    expect(dropped.pass).toBe(false)
   }, BASS_TEST_TIMEOUT)
 
   it('reports null for sub when the section carries no sub loop', () => {
