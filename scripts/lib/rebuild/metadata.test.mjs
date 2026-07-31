@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { KEY_VOID_FALLBACK_CONFIDENCE, MIN_MATCH_CONFIDENCE, lookupTrack, parseArtistTitle, reconcileKey, scoreMatch } from './metadata.mjs'
+import { KEY_VOID_FALLBACK_CONFIDENCE, MIN_MATCH_CONFIDENCE, identityMatches, lookupTrack, parseArtistTitle, reconcileKey, scoreMatch } from './metadata.mjs'
 
 // --- fetch mocking -----------------------------------------------------------
 
@@ -141,6 +141,36 @@ describe('scoreMatch', () => {
 
   it('matches a candidate title that carries an extra suffix ("Glue (Mixed)" vs "Glue")', () => {
     expect(scoreMatch({ artist: 'Bicep', title: 'Glue (Mixed)' }, { artist: 'Bicep', title: 'Glue' })).toBeGreaterThanOrEqual(MIN_MATCH_CONFIDENCE)
+  })
+
+  it('cannot cross MIN_MATCH_CONFIDENCE on title + duration alone with the wrong artist', () => {
+    // The demonstrated false positive this closes: 0.5 (title) + 0.1
+    // (duration) = 0.6, exactly the old threshold, with a completely
+    // different artist. Duration must not be able to do this any more - see
+    // `identityMatches`' own doc comment.
+    const score = scoreMatch(
+      { artist: 'A Totally Different Artist', title: 'Glue', duration: 269 },
+      { artist: 'Bicep', title: 'Glue', duration: 270 },
+    )
+    expect(score).toBeLessThan(MIN_MATCH_CONFIDENCE)
+  })
+})
+
+describe('identityMatches', () => {
+  it('is true only when both artist and title match', () => {
+    expect(identityMatches({ artist: 'Bicep', title: 'Glue' }, { artist: 'Bicep', title: 'Glue' })).toBe(true)
+  })
+
+  it('is false when only the artist matches', () => {
+    expect(identityMatches({ artist: 'Bicep', title: 'A Different Song' }, { artist: 'Bicep', title: 'Glue' })).toBe(false)
+  })
+
+  it('is false when only the title matches', () => {
+    expect(identityMatches({ artist: 'A Totally Different Artist', title: 'Glue' }, { artist: 'Bicep', title: 'Glue' })).toBe(false)
+  })
+
+  it('does not consider duration - identity is artist and title only', () => {
+    expect(identityMatches({ artist: 'Bicep', title: 'Glue', duration: 1 }, { artist: 'Bicep', title: 'Glue', duration: 999 })).toBe(true)
   })
 })
 
@@ -326,6 +356,52 @@ describe('lookupTrack', () => {
     expect(result.bpm).toBeNull()
   })
 
+  it('rejects a Deezer hit with a completely wrong artist even when title and duration both match', async () => {
+    // The demonstrated false positive: matching title (0.5) + duration
+    // within 5s (0.1) = 0.6, exactly the old MIN_MATCH_CONFIDENCE, with a
+    // wrong artist. A probe against the pre-fix code returned bpm 211 from
+    // exactly this shape of candidate.
+    const fetchImpl = makeFetch([
+      [
+        'deezer.com/search',
+        jsonResponse({ data: [{ id: 42, title: 'Glue', duration: 269, artist: { name: 'A Totally Different Artist' } }] }),
+      ],
+      ['deezer.com/track/42', jsonResponse({ id: 42, title: 'Glue', duration: 269, bpm: 211, artist: { name: 'A Totally Different Artist' } })],
+      ['musicbrainz.org', jsonResponse({ recordings: [] })],
+    ])
+    const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 270 }, { fetchImpl })
+    expect(result.bpm).toBeNull()
+    expect(result.source).toBeNull()
+  })
+
+  it('rejects a MusicBrainz hit with a completely wrong title even at a maximal server relevance score', async () => {
+    // The demonstrated false positive: correct artist + duration (0.4 + 0.1
+    // = 0.5) averaged with a maximal server `score` (1.0) = 0.75,
+    // comfortably over MIN_MATCH_CONFIDENCE, with a wrong title. A probe
+    // against the pre-fix code returned bpm 999 / key C major from exactly
+    // this shape of candidate.
+    const wrongTitleSearch = {
+      recordings: [
+        {
+          id: 'cccccccc-0000-0000-0000-000000000003',
+          title: 'A Completely Different Song',
+          score: 100,
+          length: 269000,
+          'artist-credit': [{ name: 'Bicep' }],
+        },
+      ],
+    }
+    const fetchImpl = makeFetch([
+      ['deezer.com/search', jsonResponse({ data: [] })],
+      ['musicbrainz.org', jsonResponse(wrongTitleSearch)],
+      ['acousticbrainz.org', jsonResponse({ rhythm: { bpm: 999 }, tonal: { key_key: 'C', key_scale: 'major' } })],
+    ])
+    const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 269 }, { fetchImpl })
+    expect(result.bpm).toBeNull()
+    expect(result.key).toBeNull()
+    expect(result.source).toBeNull()
+  })
+
   it('sends a descriptive User-Agent to MusicBrainz', async () => {
     let sentHeaders = null
     const fetchImpl = async (url, init) => {
@@ -379,10 +455,10 @@ describe('lookupTrack', () => {
     it('treats a cache file with a non-numeric bpmMatchConfidence as corrupt, not as a hit', async () => {
       // A hand-edited or corrupted cache carrying a non-numeric
       // bpmMatchConfidence must not pass the shape guard: `reconcileTempo`'s
-      // gate (`(known.matchConfidence ?? 1) < MIN_MATCH_CONFIDENCE`) would
-      // otherwise compare a string against a number, silently evaluate to
-      // `false`, and treat the corrupted cache as having cleared the
-      // confidence bar it was never actually measured against.
+      // own gate on the same field would otherwise compare a string against
+      // a number, silently evaluate to `false`, and treat the corrupted
+      // cache as having cleared a confidence bar it was never actually
+      // measured against.
       const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-badcache-'))
       const corruptResult = {
         bpm: 999,
@@ -427,6 +503,94 @@ describe('lookupTrack', () => {
         matchConfidence: 0.95,
         bpmMatchConfidence: 0.9,
         keyMatchConfidence: 'garbage',
+      }
+      await fs.writeFile(
+        path.join(cacheDir, 'metadata-lookup.json'),
+        JSON.stringify({ query: { artist: 'Bicep', title: 'Glue', duration: 285 }, result: corruptResult }),
+      )
+      const fetchImpl = vi.fn(
+        makeFetch([
+          ['deezer.com/search', jsonResponse(DEEZER_SEARCH_GLUE)],
+          ['deezer.com/track/389034231', jsonResponse(DEEZER_TRACK_GLUE)],
+          ['musicbrainz.org', jsonResponse({ recordings: [] })],
+        ]),
+      )
+      const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 285 }, { fetchImpl, cacheDir })
+      expect(fetchImpl).toHaveBeenCalled()
+      expect(result.bpm).toBe(130.01)
+
+      await fs.rm(cacheDir, { recursive: true, force: true })
+    })
+
+    it('treats a cache file with an out-of-range bpmMatchConfidence as corrupt, not as a hit', async () => {
+      // A real number that is still nonsense as a confidence (a hand edit,
+      // or a bug elsewhere writing a raw score instead of a clamped one) -
+      // `typeof === 'number'` alone would accept this; only a [0, 1] range
+      // check catches it.
+      const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-badcache-range-'))
+      const corruptResult = {
+        bpm: 999,
+        key: 'C major',
+        source: 'deezer+acousticbrainz',
+        matchConfidence: 0.95,
+        bpmMatchConfidence: 5,
+        keyMatchConfidence: 0.95,
+      }
+      await fs.writeFile(
+        path.join(cacheDir, 'metadata-lookup.json'),
+        JSON.stringify({ query: { artist: 'Bicep', title: 'Glue', duration: 285 }, result: corruptResult }),
+      )
+      const fetchImpl = vi.fn(
+        makeFetch([
+          ['deezer.com/search', jsonResponse(DEEZER_SEARCH_GLUE)],
+          ['deezer.com/track/389034231', jsonResponse(DEEZER_TRACK_GLUE)],
+          ['musicbrainz.org', jsonResponse({ recordings: [] })],
+        ]),
+      )
+      const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 285 }, { fetchImpl, cacheDir })
+      expect(fetchImpl).toHaveBeenCalled()
+      expect(result.bpm).toBe(130.01)
+
+      await fs.rm(cacheDir, { recursive: true, force: true })
+    })
+
+    it('treats a cache file with a non-normalized key string as corrupt, not as a hit', async () => {
+      const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-badcache-keyname-'))
+      const corruptResult = {
+        bpm: 130.01,
+        key: 'not a key at all',
+        source: 'deezer+acousticbrainz',
+        matchConfidence: 0.95,
+        bpmMatchConfidence: 0.9,
+        keyMatchConfidence: 0.95,
+      }
+      await fs.writeFile(
+        path.join(cacheDir, 'metadata-lookup.json'),
+        JSON.stringify({ query: { artist: 'Bicep', title: 'Glue', duration: 285 }, result: corruptResult }),
+      )
+      const fetchImpl = vi.fn(
+        makeFetch([
+          ['deezer.com/search', jsonResponse(DEEZER_SEARCH_GLUE)],
+          ['deezer.com/track/389034231', jsonResponse(DEEZER_TRACK_GLUE)],
+          ['musicbrainz.org', jsonResponse({ recordings: [] })],
+        ]),
+      )
+      const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 285 }, { fetchImpl, cacheDir })
+      expect(fetchImpl).toHaveBeenCalled()
+      expect(result.bpm).toBe(130.01)
+
+      await fs.rm(cacheDir, { recursive: true, force: true })
+    })
+
+    it('treats a cache file with a non-positive bpm as corrupt, not as a hit', async () => {
+      const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-badcache-bpm-'))
+      const corruptResult = {
+        bpm: 0,
+        key: 'C major',
+        source: 'deezer+acousticbrainz',
+        matchConfidence: 0.95,
+        bpmMatchConfidence: 0.9,
+        keyMatchConfidence: 0.95,
       }
       await fs.writeFile(
         path.join(cacheDir, 'metadata-lookup.json'),
@@ -517,6 +681,21 @@ describe('reconcileKey', () => {
 
   it('treats a known key below MIN_MATCH_CONFIDENCE as no known key at all', () => {
     const result = reconcileKey({ name: 'D major', confidence: 0.094 }, { name: 'C major', matchConfidence: 0.2 })
+    expect(result.agreement).toBe('none')
+    expect(result.name).toBe('D major')
+  })
+
+  it('treats a known key with a missing matchConfidence as untrusted, never as maximally trusted', () => {
+    // `?? 1` used to mean "no confidence reported? assume a perfect match" -
+    // a caller (or a future field-shape change) that omits matchConfidence
+    // entirely must not silently clear MIN_MATCH_CONFIDENCE.
+    const result = reconcileKey({ name: 'D major', confidence: 0.094 }, { name: 'C major' })
+    expect(result.agreement).toBe('none')
+    expect(result.name).toBe('D major')
+  })
+
+  it('treats a known key with a non-finite matchConfidence as untrusted, not as clearing the gate by comparing false', () => {
+    const result = reconcileKey({ name: 'D major', confidence: 0.094 }, { name: 'C major', matchConfidence: NaN })
     expect(result.agreement).toBe('none')
     expect(result.name).toBe('D major')
   })

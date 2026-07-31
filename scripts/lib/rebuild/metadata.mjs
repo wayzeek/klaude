@@ -94,32 +94,71 @@ function normalizeForMatch(text) {
 }
 
 /**
- * How likely a search result is to actually be the track that was searched
- * for, independent of the specific database that returned it.
+ * The three raw signals `scoreMatch`/`identityMatches` below are both built
+ * from, kept in one place so the two functions can never quietly disagree
+ * about what "the artist matches" means.
  *
- * Weighted so that artist alone (0.4) or title alone (0.5) cannot cross
- * `MIN_MATCH_CONFIDENCE` (0.6) - only both together, or one plus a duration
- * within 5 seconds, do. Substring matching only runs one direction for
- * titles (candidate contains query) because search results routinely carry
- * a suffix moltek's query does not ("Glue" vs "Glue (Mixed)"); the reverse
- * would let a short, generic query title match nearly anything.
+ * Substring matching only runs one direction for titles (candidate contains
+ * query) because search results routinely carry a suffix moltek's query does
+ * not ("Glue" vs "Glue (Mixed)"); the reverse would let a short, generic
+ * query title match nearly anything.
  */
-export function scoreMatch(candidate, query) {
+function matchSignals(candidate, query) {
   const cArtist = normalizeForMatch(candidate.artist)
   const qArtist = normalizeForMatch(query.artist)
   const cTitle = normalizeForMatch(candidate.title)
   const qTitle = normalizeForMatch(query.title)
 
-  const artistMatches =
-    qArtist.length >= 2 && cArtist.length > 0 && (cArtist === qArtist || cArtist.includes(qArtist) || qArtist.includes(cArtist))
-  const titleMatches = qTitle.length >= 2 && cTitle.length > 0 && (cTitle === qTitle || cTitle.includes(qTitle))
+  return {
+    artistMatches:
+      qArtist.length >= 2 && cArtist.length > 0 && (cArtist === qArtist || cArtist.includes(qArtist) || qArtist.includes(cArtist)),
+    titleMatches: qTitle.length >= 2 && cTitle.length > 0 && (cTitle === qTitle || cTitle.includes(qTitle)),
+    durationMatches:
+      Number.isFinite(query.duration) && Number.isFinite(candidate.duration) && Math.abs(query.duration - candidate.duration) <= 5,
+  }
+}
+
+/**
+ * Does a candidate agree with the query on BOTH artist and title -
+ * independent of duration or any per-source server score?
+ *
+ * This is the gate a candidate has to clear before duration or a server's
+ * own relevance score may rank or boost it at all (see `lookupDeezer` and
+ * `lookupMusicBrainzAcousticBrainz`). Without it, a completely different
+ * recording that merely happens to share a title and land within 5 seconds
+ * of the query's duration (measured live: a wrong Deezer artist, matching
+ * title, matching duration - 0.5 title + 0.1 duration = 0.6, exactly
+ * `MIN_MATCH_CONFIDENCE`) or a wrong title that a search engine's own
+ * relevance score rates highly (measured live: a wrong MusicBrainz
+ * recording's `score` averaged with a correct-artist-plus-duration partial
+ * match - (1.0 + 0.5) / 2 = 0.75) could each cross the confidence floor on
+ * evidence that was never actually about identifying the right song.
+ */
+export function identityMatches(candidate, query) {
+  const { artistMatches, titleMatches } = matchSignals(candidate, query)
+  return artistMatches && titleMatches
+}
+
+/**
+ * How likely a search result is to actually be the track that was searched
+ * for, independent of the specific database that returned it.
+ *
+ * Weighted so that artist alone (0.4) or title alone (0.5) cannot cross
+ * `MIN_MATCH_CONFIDENCE` (0.6) on their own. Duration only ever adds to a
+ * candidate that already agrees on BOTH artist and title (`identityMatches`)
+ * - it breaks a tie among genuine matches, the same way a server's own
+ * relevance score does for `lookupMusicBrainzAcousticBrainz` below, and
+ * never contributes toward crossing the confidence floor by itself. See
+ * `identityMatches`' own doc comment for the two demonstrated false
+ * positives this closes.
+ */
+export function scoreMatch(candidate, query) {
+  const { artistMatches, titleMatches, durationMatches } = matchSignals(candidate, query)
 
   let score = 0
   if (artistMatches) score += 0.4
   if (titleMatches) score += 0.5
-  if (Number.isFinite(query.duration) && Number.isFinite(candidate.duration) && Math.abs(query.duration - candidate.duration) <= 5) {
-    score += 0.1
-  }
+  if (artistMatches && titleMatches && durationMatches) score += 0.1
   return clamp01(score)
 }
 
@@ -252,8 +291,16 @@ async function lookupMusicBrainzAcousticBrainz({ artist, title, duration }, opts
   for (const recording of recordings) {
     const recordingArtist = recording['artist-credit']?.map((credit) => credit.name).join(' ') ?? ''
     const recordingDuration = Number.isFinite(recording.length) ? recording.length / 1000 : null
+    const candidate = { artist: recordingArtist, title: recording.title, duration: recordingDuration }
+    // MusicBrainz's own `score` is a text-relevance rating, not evidence
+    // about identity - averaging it into `confidence` for a candidate that
+    // does not even agree on artist and title is exactly how a wrong
+    // recording with a high server score used to outrank a genuine one (see
+    // `identityMatches`' own doc comment for the measured case). A
+    // candidate failing this gate is skipped outright, never scored.
+    if (!identityMatches(candidate, { artist, title, duration })) continue
     const textScore = typeof recording.score === 'number' ? clamp01(recording.score / 100) : 0.5
-    const matchScore = scoreMatch({ artist: recordingArtist, title: recording.title, duration: recordingDuration }, { artist, title, duration })
+    const matchScore = scoreMatch(candidate, { artist, title, duration })
     const confidence = clamp01((textScore + matchScore) / 2)
     if (!best || confidence > best.confidence) best = { mbid: recording.id, confidence }
   }
@@ -291,6 +338,17 @@ async function lookupMusicBrainzAcousticBrainz({ artist, title, duration }, opts
 
 // --- caching -----------------------------------------------------------------
 
+/** Is `value` a real number usable as a confidence - finite and in [0, 1]?
+ *  `typeof value === 'number'` alone accepts `NaN` (its `typeof` is still
+ *  `'number'`) and any out-of-range value a hand-edited cache file can
+ *  express (JSON itself cannot encode `NaN`/`Infinity`, but nothing stops a
+ *  edited file from writing `"bpmMatchConfidence": 5`) - both would
+ *  otherwise pass a bare `typeof` check and then feed a downstream gate a
+ *  number that looks real but was never actually measured against anything. */
+function isUnitConfidence(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 1
+}
+
 /**
  * Is this shaped like a real result this module produced, rather than a
  * corrupted file, a hand-edited one, or a cache written by an earlier,
@@ -303,27 +361,35 @@ function looksLikeResult(value) {
   return (
     value !== null &&
     typeof value === 'object' &&
-    (value.bpm === null || typeof value.bpm === 'number') &&
-    (value.key === null || typeof value.key === 'string') &&
-    // `undefined` is accepted, not just `null`/`number`: a cache file written
-    // before this field existed must still be trusted (it is not corrupted,
-    // just older), rather than forcing a re-query that may hit an
-    // unreachable network - see `reconcileKey`'s fallback for the same field.
-    (value.keyConfidence === undefined || value.keyConfidence === null || typeof value.keyConfidence === 'number') &&
+    (value.bpm === null || (typeof value.bpm === 'number' && Number.isFinite(value.bpm) && value.bpm > 0)) &&
+    // Round-tripped through the same normaliser this module uses to produce
+    // a key in the first place: a non-canonical or garbled string (a stray
+    // cache-editing typo, a value written by some future/past format this
+    // module never produced) fails to reproduce itself and is rejected,
+    // rather than trusted as-is because it happened to be *a* string.
+    (value.key === null || (typeof value.key === 'string' && normalizeKeyName(value.key) === value.key)) &&
+    // `undefined` is accepted, not just `null`/a valid confidence: a cache
+    // file written before this field existed must still be trusted (it is
+    // not corrupted, just older), rather than forcing a re-query that may
+    // hit an unreachable network - see `reconcileKey`'s fallback for the
+    // same field.
+    (value.keyConfidence === undefined || value.keyConfidence === null || isUnitConfidence(value.keyConfidence)) &&
     (value.source === null || typeof value.source === 'string') &&
-    typeof value.matchConfidence === 'number' &&
+    isUnitConfidence(value.matchConfidence) &&
     // No `undefined` grandfather clause for these two, unlike `keyConfidence`
     // above: they are what the confidence-laundering fix (9ac6726) actually
     // introduced, and `reconcileTempo`/`reconcileKey` gate on them directly
     // (see `rebuild.mjs`). A cache written before they existed predates that
     // fix and must not be trusted as-is; without this, `bpmMatchConfidence:
-    // "garbage"` (or simply absent) would pass this guard, and the gate
-    // `(known.matchConfidence ?? 1) < MIN_MATCH_CONFIDENCE` would then compare
-    // a non-number and silently evaluate to `false` - a corrupted or
-    // hand-edited cache clearing the confidence bar it was never actually
-    // measured against.
-    typeof value.bpmMatchConfidence === 'number' &&
-    typeof value.keyMatchConfidence === 'number'
+    // "garbage"` (or simply absent, or a real number outside [0, 1]) would
+    // pass a bare `typeof` guard, and reconciliation's own gate on the same
+    // field would then compare against a value that was never actually
+    // measured. Reconciliation itself no longer defaults a missing/invalid
+    // confidence to full trust either (see `reconcileKey` and grid.mjs's
+    // `reconcileTempo`) - this validates the cache boundary, that fixes the
+    // reconciliation boundary, and neither substitutes for the other.
+    isUnitConfidence(value.bpmMatchConfidence) &&
+    isUnitConfidence(value.keyMatchConfidence)
   )
 }
 
@@ -494,7 +560,13 @@ export function reconcileKey(detected, known, opts = {}) {
   const detectedConfidence = detected?.confidence ?? 0
 
   const knownName = known?.name ? normalizeKeyName(known.name) : null
-  if (!knownName || (known.matchConfidence ?? 1) < minMatch) {
+  // A missing or invalid `matchConfidence` is untrusted, not maximally
+  // trusted: `?? 1` here used to mean "no confidence reported? assume
+  // perfect" - the opposite of what an absent or corrupt measurement should
+  // imply. `Number.isFinite` also rejects a `NaN`/out-of-range value that
+  // slipped past a looser guard upstream, not just `undefined`/`null`.
+  const knownMatchConfidence = Number.isFinite(known?.matchConfidence) ? known.matchConfidence : 0
+  if (!knownName || knownMatchConfidence < minMatch) {
     return { name: detectedName, confidence: detectedConfidence, agreement: 'none' }
   }
 
