@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { CHROMA_FFT } from '../dsp.mjs'
 import { writeWavBuffer } from '../__fixtures__/make-wav.mjs'
 import { renderSection } from './resynth.mjs'
 import { gridFromJson } from './transcribe/quantize.mjs'
-import { HEARING_THRESHOLDS, scoreLayer, verifyHearing } from './verify-hearing.mjs'
+import { HEARING_THRESHOLDS, scoreLayer, spectralCentroid, verifyHearing } from './verify-hearing.mjs'
 
 const SAMPLE_RATE = 44100
 const BPM = 120
@@ -347,5 +348,29 @@ describe('scoreLayer', () => {
     const score = scoreLayer(rendered, trueSilence, 'lead', grid)
     expect(score).toBe(0)
     expect(score >= HEARING_THRESHOLDS.lead).toBe(false)
+  })
+})
+
+describe('spectralCentroid', () => {
+  it('measures the second of exactly two full FFT blocks, not just the first', () => {
+    // A buffer of precisely 2 * CHROMA_FFT samples sits exactly on the
+    // boundary the hop-count fix targets: `floor((2*CHROMA_FFT - CHROMA_FFT)
+    // / CHROMA_FFT)` is 1, so without the `+ 1` only hop 0 (the first block)
+    // gets measured and the second block - a second, fully valid
+    // CHROMA_FFT-sized window - is silently dropped. The first half carries a
+    // low tone, the second half a much higher one, so dropping the second
+    // half understates the centroid by a wide, unmistakable margin rather
+    // than a rounding sliver. Measured directly (see the probe this test
+    // replaced): the buggy hop count (only the first block) scores ~200 Hz -
+    // the low tone's own frequency; counting both blocks scores ~6100 Hz.
+    const lowHz = 200
+    const highHz = 12000
+    const samples = new Float32Array(2 * CHROMA_FFT)
+    for (let i = 0; i < CHROMA_FFT; i++) samples[i] = Math.sin((2 * Math.PI * lowHz * i) / 44100)
+    for (let i = 0; i < CHROMA_FFT; i++) {
+      samples[CHROMA_FFT + i] = Math.sin((2 * Math.PI * highHz * i) / 44100)
+    }
+
+    expect(spectralCentroid(samples)).toBeGreaterThan(2000)
   })
 })

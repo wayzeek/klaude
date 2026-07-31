@@ -454,14 +454,23 @@ function centroidAgreement(a, b) {
   return Math.max(0, 1 - octaves)
 }
 
-function spectralCentroid(samples, fftSize = CHROMA_FFT) {
+export function spectralCentroid(samples, fftSize = CHROMA_FFT) {
   if (samples.length < fftSize) return 0
   const window = makeHann(fftSize)
   const re = new Float32Array(fftSize)
   const im = new Float32Array(fftSize)
   const bins = fftSize / 2
   const binHz = RESYNTH_SAMPLE_RATE / fftSize
-  const hops = Math.max(1, Math.floor((samples.length - fftSize) / fftSize))
+  // The number of whole, non-overlapping `fftSize` blocks that fit in
+  // `samples` - hop 0 through `floor((length - fftSize) / fftSize)`
+  // inclusive, hence the `+ 1`. Dropping it (as a previous version did)
+  // silently discards the last full block: at exactly two blocks
+  // (`samples.length === 2 * fftSize`), `floor((2*fftSize - fftSize) /
+  // fftSize)` is 1, so only hop 0 ran and hop 1 - a second, fully valid,
+  // fftSize-sized block - was never measured. `beatChroma` in dsp.mjs
+  // computes the equivalent count with the same `+ 1` already; this brings
+  // the two in line.
+  const hops = Math.max(1, Math.floor((samples.length - fftSize) / fftSize) + 1)
   let weighted = 0
   let total = 0
   for (let hop = 0; hop < hops; hop++) {
