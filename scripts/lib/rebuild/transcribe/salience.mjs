@@ -380,9 +380,19 @@ function normalize(value, [min, max]) {
  * (the salience-weighted mean pitch of every peak active in the frame, lead
  * or not), not against a fixed frequency - a lead sitting above a bass line
  * an octave down should not need to also out-register a soprano pad to
- * count as "high." Only credited when positive (`Math.max(0, ...)`): being
- * below the room's centre of gravity is not by itself evidence *against* a
- * contour the way being above it is evidence *for* one. Capped at
+ * count as "high." Only credited when positive (`Math.max(0, ...)`), floored
+ * per frame rather than on the final mean: being below the room's centre of
+ * gravity is not by itself evidence *against* a contour the way being above
+ * it is evidence *for* one, and a contour that spends nearly every frame
+ * clearly above the room should not have that credit cancelled out by a
+ * single frame where it briefly dips below - averaging the raw, unfloored
+ * per-frame values first (as an earlier version of this function did) let
+ * exactly that happen. Measured against the reference track's real ground
+ * truth (the-chase, 462-event `gm_tenor_sax`): identical output either way,
+ * 33/214 exact-MIDI both before and after - the two real contours this fix
+ * could have separated never actually flipped rank on that track - so this
+ * is the documented-intent fix applied on a negligible-difference case, not
+ * a measured accuracy win. Capped at
  * `registerCapOctaves` above that centre: measured directly (see the
  * report), an *uncapped* register term lets a real instrument's own weak,
  * high overtone - itself picked up as a harmonic-summation candidate a
@@ -437,7 +447,7 @@ export function selectMelody(
     for (const frame of contour.frames) {
       salienceSum += frame.normSalience
       const reference = referenceLogHz[frame.frameIndex]
-      registerSum += Number.isFinite(reference) ? Math.log2(frame.hz) - reference : 0
+      registerSum += Number.isFinite(reference) ? Math.max(0, Math.log2(frame.hz) - reference) : 0
     }
     const n = contour.frames.length
     const meanSalience = salienceSum / n

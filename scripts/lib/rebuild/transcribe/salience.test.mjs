@@ -319,6 +319,46 @@ describe('selectMelody', () => {
     })
     expect([220, 880]).toContain(timeline[0].hz)
   })
+
+  it('floors register credit per frame, so one dip below the room does not cancel out several frames above it', () => {
+    // The room sits at a fixed 220 Hz every frame (an overwhelmingly salient
+    // anchor peak, so its own presence barely moves under either contour).
+    // `steady` sits a modest, constant +0.2 octaves above the room every
+    // frame - flooring per frame or on the mean makes no difference to it,
+    // since it is never negative. `mostlyHigh` sits well above the room
+    // (+0.6 octaves) in three of four frames, then dips hard below it
+    // (-1.8 octaves) in the fourth - a contour that is genuinely high-
+    // register almost throughout, exactly the case the doc comment above
+    // describes. Averaging the raw (unfloored) per-frame values first gives
+    // `mostlyHigh` a mean of exactly 0 (0.6+0.6+0.6-1.8, divided by 4) - the
+    // single dip cancels out all three strong frames, so the modest but
+    // always-positive `steady` wins on register alone. Flooring each frame
+    // before averaging gives `mostlyHigh` 0.45 instead (the dip contributes
+    // 0, not -1.8) - now clearly ahead of `steady`'s 0.2, flipping the
+    // winner. This only isolates register: salience and length are zeroed.
+    const anchorHz = 220
+    const mostlyHighHz = anchorHz * 2 ** 0.6
+    const dipHz = anchorHz * 2 ** -1.8
+    const steadyHz = anchorHz * 2 ** 0.2
+    const peaksPerFrame = [0, 1, 2, 3].map(() => [{ hz: anchorHz, salience: 1000, normSalience: 0.01 }])
+    const mostlyHigh = {
+      frames: [
+        { frameIndex: 0, hz: mostlyHighHz, salience: 1, normSalience: 0.05 },
+        { frameIndex: 1, hz: mostlyHighHz, salience: 1, normSalience: 0.05 },
+        { frameIndex: 2, hz: mostlyHighHz, salience: 1, normSalience: 0.05 },
+        { frameIndex: 3, hz: dipHz, salience: 1, normSalience: 0.05 },
+      ],
+    }
+    const steady = {
+      frames: [0, 1, 2, 3].map((i) => ({ frameIndex: i, hz: steadyHz, salience: 1, normSalience: 0.05 })),
+    }
+    const timeline = selectMelody([mostlyHigh, steady], peaksPerFrame, 4, {
+      salienceWeight: 0,
+      registerWeight: 1,
+      lengthWeight: 0,
+    })
+    expect(timeline[0].hz).toBeCloseTo(mostlyHighHz, 6)
+  })
 })
 
 /** Same synthesis helper `melody.test.mjs` uses for its YIN fixtures: a
