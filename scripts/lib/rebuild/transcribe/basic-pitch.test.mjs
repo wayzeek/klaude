@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
+  BasicPitchHeaderError,
   basicPitchArgs,
   basicPitchCsvPath,
   cacheComplete,
@@ -77,6 +78,26 @@ describe('parseNoteEvents', () => {
   it('returns an empty array for a header-only file', () => {
     expect(parseNoteEvents('start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n')).toEqual([])
   })
+
+  it('throws a named error when the header columns are reordered', () => {
+    // The exact "CLI-format drift" this validation exists for: a future
+    // Basic Pitch version that reorders its columns. Without the header
+    // check, this row would still pass every Number.isFinite/endSec>startSec
+    // sanity check and silently read velocity as pitch and pitch as
+    // velocity.
+    const csv = 'pitch_midi,velocity,start_time_s,end_time_s\n60,90,0.5,0.9\n'
+    expect(() => parseNoteEvents(csv)).toThrow(BasicPitchHeaderError)
+  })
+
+  it('throws a named error when a column is missing entirely', () => {
+    const csv = 'start_time_s,end_time_s,pitch_midi\n0.5,0.9,60\n'
+    expect(() => parseNoteEvents(csv)).toThrow(BasicPitchHeaderError)
+  })
+
+  it('does not throw on the real header even with the variable-length pitch_bend tail', () => {
+    const csv = 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\n0,1,60,90,1,1,1\n'
+    expect(() => parseNoteEvents(csv)).not.toThrow()
+  })
 })
 
 describe('cacheComplete', () => {
@@ -141,16 +162,30 @@ fi
 outDir="$1"
 wavPath="$2"
 base=$(basename "$wavPath" | sed 's/\\.[^.]*$//')
+if [ -n "$FAKE_BASIC_PITCH_HANG" ]; then
+  # exec, not a plain "sleep 30 &" or "sleep 30": a forked subprocess would
+  # inherit this script's stdout/stderr pipes and keep them open even after
+  # this process is SIGKILLed, which stalls Node's 'close' event on the
+  # orphan rather than on the process actually being tested. exec replaces
+  # this process's own image, so killing it closes its own pipe ends
+  # immediately - matching how a real hung basic-pitch (one process, no
+  # forked children holding the pipes) behaves.
+  exec sleep 30
+fi
 if [ "$FAKE_BASIC_PITCH_EXIT" != "0" ] && [ -n "$FAKE_BASIC_PITCH_EXIT" ]; then
   echo "boom" >&2
   exit "$FAKE_BASIC_PITCH_EXIT"
 fi
 mkdir -p "$outDir"
-printf 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\\n0,1,48,100,1,1,1\\n0.5,1.5,52,80,1\\n' > "$outDir/\${base}_basic_pitch.csv"
+if [ -n "$FAKE_BASIC_PITCH_BAD_HEADER" ]; then
+  printf 'pitch_midi,velocity,start_time_s,end_time_s\\n48,100,0,1\\n' > "$outDir/\${base}_basic_pitch.csv"
+else
+  printf 'start_time_s,end_time_s,pitch_midi,velocity,pitch_bend\\n0,1,48,100,1,1,1\\n0.5,1.5,52,80,1\\n' > "$outDir/\${base}_basic_pitch.csv"
+fi
 exit 0
 `
 
-    function installFakeBasicPitch({ exitCode = 0 } = {}) {
+    function installFakeBasicPitch({ exitCode = 0, hang = false, badHeader = false } = {}) {
       const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moltek-fake-basic-pitch-'))
       const scriptPath = path.join(binDir, 'basic-pitch')
       fs.writeFileSync(scriptPath, FAKE_SCRIPT, { mode: 0o755 })
@@ -158,9 +193,13 @@ exit 0
       const originalPath = process.env.PATH
       process.env.PATH = `${binDir}${path.delimiter}${originalPath}`
       process.env.FAKE_BASIC_PITCH_EXIT = String(exitCode)
+      if (hang) process.env.FAKE_BASIC_PITCH_HANG = '1'
+      if (badHeader) process.env.FAKE_BASIC_PITCH_BAD_HEADER = '1'
       return function restore() {
         process.env.PATH = originalPath
         delete process.env.FAKE_BASIC_PITCH_EXIT
+        delete process.env.FAKE_BASIC_PITCH_HANG
+        delete process.env.FAKE_BASIC_PITCH_BAD_HEADER
       }
     }
 
@@ -201,17 +240,68 @@ exit 0
       }
     })
 
-    it('throws (not returns null) when the tool is present but fails', async () => {
+    it('returns null (not throws) when a present install exits non-zero - degrades like a missing binary', async () => {
+      // A present-but-broken install (the module's own doc comment names the
+      // real ones: a stale checkpoint, an incompatible onnxruntime) must not
+      // take the whole rebuild down - every caller falls back to the DSP path
+      // exactly as if the tool were never installed.
       const restore = installFakeBasicPitch({ exitCode: 1 })
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
         const wavPath = path.join(tmp, 'fake-fail-input.wav')
         fs.writeFileSync(wavPath, Buffer.alloc(16, 1))
         const outDir = path.join(tmp, 'fake-fail-out')
 
-        await expect(transcribeWithBasicPitch(wavPath, outDir)).rejects.toThrow(/basic-pitch exited 1/)
+        const result = await transcribeWithBasicPitch(wavPath, outDir)
+        expect(result).toBeNull()
+        // The failure is downgraded, not swallowed - a diagnostic still
+        // reaches stderr so a fixable install problem stays visible.
+        expect(errorSpy).toHaveBeenCalled()
       } finally {
         restore()
+        errorSpy.mockRestore()
       }
     })
+
+    it('returns null (not throws) when the tool produces a CSV with an unrecognised header', async () => {
+      // The other half of "present but broken": the exit code is 0, but a
+      // future basic-pitch version reordered its columns. This must degrade
+      // exactly like a non-zero exit, not propagate BasicPitchHeaderError and
+      // kill the rebuild.
+      const restore = installFakeBasicPitch({ badHeader: true })
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        const wavPath = path.join(tmp, 'fake-badheader-input.wav')
+        fs.writeFileSync(wavPath, Buffer.alloc(16, 1))
+        const outDir = path.join(tmp, 'fake-badheader-out')
+
+        const result = await transcribeWithBasicPitch(wavPath, outDir)
+        expect(result).toBeNull()
+        expect(errorSpy).toHaveBeenCalled()
+      } finally {
+        restore()
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('kills a hung invocation after timeoutMs and returns null instead of hanging forever', async () => {
+      const restore = installFakeBasicPitch({ hang: true })
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        const wavPath = path.join(tmp, 'fake-hang-input.wav')
+        fs.writeFileSync(wavPath, Buffer.alloc(16, 1))
+        const outDir = path.join(tmp, 'fake-hang-out')
+
+        // A tiny timeoutMs, not the real ~5 minute default - this only
+        // proves the timeout mechanism kills the child and resolves the
+        // promise, not that the production ceiling itself is well chosen.
+        const result = await transcribeWithBasicPitch(wavPath, outDir, { timeoutMs: 200 })
+        expect(result).toBeNull()
+        expect(errorSpy).toHaveBeenCalled()
+      } finally {
+        restore()
+        errorSpy.mockRestore()
+      }
+    }, 10000)
   })
 })
