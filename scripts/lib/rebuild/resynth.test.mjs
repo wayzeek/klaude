@@ -196,6 +196,27 @@ describe('renderSection', () => {
     const { mix } = renderSection(section, grid)
     for (const sample of mix) expect(Math.abs(sample)).toBeLessThanOrEqual(1)
   })
+
+  it('renders only the requested layers and skips the mix when asked', () => {
+    // `verify-hearing.mjs` relies on exactly this: a section with dozens of
+    // bars but only one or two loops present should not pay for six unread
+    // full-length buffers plus an unread mix. Asserting on `layers`' own keys
+    // (rather than measuring bytes) is what the housekeeping brief calls
+    // "the returned layers object shape" - it fails against the old
+    // unconditional-`LAYERS`-plus-mix implementation because that always
+    // returns all seven keys and a non-null mix, no matter what's asked for.
+    const section = {
+      index: 0, startBar: 0, bars: 2, label: 'mid', sameAs: null,
+      loops: {
+        kick: { loopBars: 1, events: [drumEvent(0), drumEvent(8)], confidence: 0.9 },
+        snare: null, hats: null, bass: null, sub: null, chords: null, lead: null,
+      },
+    }
+    const { mix, layers } = renderSection(section, grid, { layers: ['kick'], mix: false })
+    expect(Object.keys(layers)).toEqual(['kick'])
+    expect(rms(layers.kick)).toBeGreaterThan(0)
+    expect(mix).toBeNull()
+  })
 })
 
 function zeroCrossings(buffer) {

@@ -161,20 +161,37 @@ function chordMidis(symbol) {
  * A whole section: every layer rendered separately, plus their sum.
  *
  * The per-layer buffers are what the hearing check scores; the mix exists so a
- * caller can listen to the result or write it out for inspection.
+ * caller can listen to the result or write it out for inspection. Both are
+ * opt-out, not opt-in: `layers` defaults to every name in `LAYERS` and `mix`
+ * defaults to `true`, so a caller that passes no options gets exactly what
+ * this function always returned.
+ *
+ * `verify-hearing.mjs` is the one caller that needs less: it passes `layers`
+ * restricted to what the section actually carries a loop for, and `mix:
+ * false`, because it never listens to the result. Rendering every layer plus
+ * a mix regardless of what a section carries - the previous, only, behaviour
+ * - allocated six full-length `Float32Array`s and summed them into a seventh
+ * per section, even when a section carries one or two loops; measured at
+ * ~707 MiB transient for a hypothetical ten-minute single section.
  */
-export function renderSection(section, grid, { sampleRate = RESYNTH_SAMPLE_RATE } = {}) {
+export function renderSection(
+  section,
+  grid,
+  { sampleRate = RESYNTH_SAMPLE_RATE, layers: layerSubset = LAYERS, mix: includeMix = true } = {},
+) {
   const frames = Math.round(section.bars * grid.barSeconds * sampleRate)
   const layers = {}
-  for (const layer of LAYERS) {
+  for (const layer of layerSubset) {
     layers[layer] = renderLoop(section.loops?.[layer] ?? null, layer, grid, {
       bars: section.bars,
       sampleRate,
     })
   }
 
+  if (!includeMix) return { mix: null, layers }
+
   const mix = new Float32Array(frames)
-  for (const layer of LAYERS) {
+  for (const layer of layerSubset) {
     const buffer = layers[layer]
     for (let i = 0; i < frames && i < buffer.length; i++) mix[i] += buffer[i]
   }

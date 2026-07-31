@@ -498,9 +498,17 @@ export function verifyHearing(transcription, stemBuffers, { thresholds = HEARING
   const allScores = []
 
   for (const section of transcription.sections) {
-    const { layers: rendered } = renderSection(section, grid)
     const range = sectionRange(grid, section)
     const layers = {}
+
+    // Only render what this section can actually be scored against: a layer
+    // with no loop, or one whose stem never arrived, is marked `null` below
+    // without ever touching `rendered` - so rendering it here would allocate
+    // a full-length buffer this function never reads. See `renderSection`'s
+    // own doc comment for the memory cost of rendering all seven regardless
+    // (plus an unused mix) that this exists to avoid.
+    const neededLayers = LAYERS.filter((layer) => section.loops?.[layer] && stems[LAYER_STEM[layer]])
+    const { layers: rendered } = renderSection(section, grid, { layers: neededLayers, mix: false })
 
     for (const layer of LAYERS) {
       if (!section.loops?.[layer]) {
