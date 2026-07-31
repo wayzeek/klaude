@@ -40,8 +40,8 @@
 import { decodeWav } from '../../decoded-audio.mjs'
 import { ONSET_HOP } from '../../dsp.mjs'
 import { bandEnergy, bandEnergyRise, bandFlatness, bandNovelty, pickBandOnsets } from './bands.mjs'
-import { detectVariation } from './fills.mjs'
-import { foldToLoop, sectionRange, stepAt, stepDrift } from './quantize.mjs'
+import { detectVariation, extractPreFoldImpact } from './fills.mjs'
+import { foldToLoop, sectionRange, stepAt, stepDrift, stepsPerBar } from './quantize.mjs'
 
 /**
  * Onset detectors a role can name. Each takes the decoded audio, the role's
@@ -294,7 +294,14 @@ export function transcribeDrums(wavBuf, grid, sections) {
         symbol: null,
         driftSteps: hit.driftSteps,
       }))
-      const folded = foldToLoop(events, section, grid)
+
+      // A first-downbeat crash has to be pulled out before folding, not
+      // after: `foldToLoop` buckets a drum role purely by step position, so
+      // an ordinary recurring downbeat and one outlier-loud repetition of it
+      // land in the same bucket and are kept or discarded together - see
+      // fills.mjs's `extractPreFoldImpact` doc comment for the full case.
+      const { events: foldable, extracted } = extractPreFoldImpact(events, range.fromStep, stepsPerBar(grid))
+      const folded = foldToLoop(foldable, section, grid)
       if (folded.events.length === 0) return null
 
       // What the fold discarded, reclaimed if (and only if) it is a genuine
@@ -302,7 +309,12 @@ export function transcribeDrums(wavBuf, grid, sections) {
       // `null` when nothing clears it, which is the expected, sanctioned
       // outcome for most sections: #23 asks for the machinery to ship even
       // when it emits nothing, not for a fill on every section.
-      const variation = detectVariation(folded.discarded, folded, section, grid)
+      // `extracted` is re-localised the same way `foldToLoop` localises its
+      // own `discarded` members (absolute step minus the section's own
+      // start) before being folded in, so `detectCrash`'s `step === 0` check
+      // means the same thing for both sources.
+      const discarded = extracted ? [...folded.discarded, { ...extracted, step: extracted.step - range.fromStep }] : folded.discarded
+      const variation = detectVariation(discarded, folded, section, grid)
 
       return {
         loopBars: folded.loopBars,

@@ -59,6 +59,18 @@
  * not a bug to work around; the sanctioned outcome when nothing clears the
  * gate is to ship this machinery emitting nothing and say so, not to lower
  * the gate until something does.
+ *
+ * `detectCrash` only ever sees `foldToLoop`'s own `discarded` array - and for
+ * a drum role (midi/symbol always null), `foldToLoop` buckets purely by
+ * step position, so the section's true first downbeat and every later bar's
+ * *ordinary* downbeat land in the exact same bucket. A bucket is kept or
+ * discarded as a whole (see quantize.mjs's own doc comment); when a downbeat
+ * genuinely recurs - the ordinary case - that bucket clears `KEEP_FRACTION`
+ * and is kept whole, and `mergeBucket` reports its MEDIAN velocity. A single
+ * loud crash stacked on an otherwise-ordinary downbeat is invisible in that
+ * median and never reaches `discarded` at all - `detectCrash` is never even
+ * called with it. `extractPreFoldImpact` (below) exists to catch exactly
+ * this, by acting *before* `foldToLoop` ever buckets anything.
  */
 
 import { stepsPerBar } from './quantize.mjs'
@@ -98,6 +110,49 @@ function mergeDuplicateSteps(events) {
     if (!existing || event.velocity > existing.velocity) byStep.set(event.step, event)
   }
   return [...byStep.values()]
+}
+
+/**
+ * Pull a section's first-downbeat crash out of a role's raw hits BEFORE
+ * `foldToLoop` ever sees them, so it cannot be laundered into a kept
+ * bucket's median (see this file's own module comment for why folding first
+ * hides exactly this case, and `fills.test.mjs`'s own `detectCrash` fixture
+ * for the shape that cannot arise from a real fold - a kept and a discarded
+ * event sharing one step - once this runs upstream of it).
+ *
+ * `events` and `fromStep` are absolute, grid-relative steps - the same
+ * convention `transcribeDrums` already reads hits in - so this has to
+ * localise on its own rather than assume the caller already did; `perBar`
+ * is `stepsPerBar(grid)`, the same bar width `foldToLoop` measures
+ * repetitions against.
+ *
+ * The comparison basis is deliberately narrower than `detectCrash`'s own
+ * (the loudest event anywhere in the *folded* loop): before folding, the
+ * loop's own kept events do not exist yet to compare against. The other
+ * bar-aligned downbeats of the same role in this section - the same phase
+ * `foldToLoop` would itself go on to bucket this hit's later repetitions
+ * against - are the only evidence available at this point, and are an
+ * apples-to-apples comparison (same phase, different repetition) rather
+ * than a looser one. A section with no other bar to compare against (one
+ * bar total, or a role silent on every other downbeat) yields no
+ * extraction - there is nothing to call "louder than usual" without at
+ * least one usual to compare to.
+ *
+ * Returns the input array unchanged (and `extracted: null`) whenever
+ * nothing is pulled out, so a section with no crash costs nothing beyond
+ * this function's own two filters and behaves byte-for-byte as it did
+ * before this existed.
+ */
+export function extractPreFoldImpact(events, fromStep, perBar) {
+  const atFirstDownbeat = events.filter((event) => event.step === fromStep)
+  const otherDownbeats = events.filter((event) => event.step > fromStep && (event.step - fromStep) % perBar === 0)
+  if (!atFirstDownbeat.length || !otherDownbeats.length) return { events, extracted: null }
+
+  const loudestOther = Math.max(...otherDownbeats.map((event) => event.velocity))
+  const impact = atFirstDownbeat.reduce((max, event) => (event.velocity > max.velocity ? event : max))
+  if (impact.velocity <= loudestOther * CRASH_VELOCITY_RATIO) return { events, extracted: null }
+
+  return { events: events.filter((event) => event !== impact), extracted: impact }
 }
 
 /**

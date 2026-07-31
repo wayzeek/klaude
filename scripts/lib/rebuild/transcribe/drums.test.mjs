@@ -327,5 +327,51 @@ describe('transcribeDrums', () => {
       // bar's own recurring hit (step 0).
       expect(kick.variation.events.map((e) => e.step)).toEqual([12, 14, 15])
     })
+
+    it('attaches a real crash detected from actual audio, end to end through transcribeDrums', () => {
+      // Regression for an independent review finding: `foldToLoop` buckets a
+      // drum role purely by step position, so a section's genuine first-bar
+      // crash sitting on an otherwise-ordinary, every-bar-recurring downbeat
+      // used to land in the exact same bucket as that downbeat's other
+      // repetitions - kept whole, at its MEDIAN velocity, and never offered
+      // to `detectCrash` at all. Four bars, one kick each on the downbeat -
+      // three ordinary, one (the section's own first bar) much louder - is
+      // exactly that shape: `foldToLoop` alone would fold all four into one
+      // kept bucket and report an empty `discarded`, so this only passes
+      // once the crash is pulled out before folding (see fills.mjs's
+      // `extractPreFoldImpact`).
+      const beatSeconds = 60 / BPM
+      const leadInBars = 2
+      const totalBars = leadInBars + 4
+      const frames = Math.ceil(totalBars * 4 * beatSeconds * SAMPLE_RATE)
+      const out = new Float32Array(frames)
+      const addKick = (bar, gain) => {
+        const at = (leadInBars + bar) * 4 * beatSeconds
+        const start = Math.floor(at * SAMPLE_RATE)
+        const attackFrames = Math.floor(0.01 * SAMPLE_RATE)
+        for (let i = 0; i < SAMPLE_RATE * 0.12 && start + i < frames; i++) {
+          const env = Math.exp(-i / (SAMPLE_RATE * 0.03))
+          const ramp = i < attackFrames ? 0.5 * (1 - Math.cos((Math.PI * i) / attackFrames)) : 1
+          out[start + i] += gain * env * ramp * Math.sin((2 * Math.PI * 55 * i) / SAMPLE_RATE)
+        }
+      }
+      // Bar 0 of the section (the section's own first downbeat) rings out
+      // much louder than the ordinary downbeats in bars 1-3.
+      addKick(0, 0.95)
+      addKick(1, 0.4)
+      addKick(2, 0.4)
+      addKick(3, 0.4)
+
+      const buf = writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
+      const sections = [
+        { index: 0, startBar: 0, bars: leadInBars, label: 'lead-in', sameAs: null },
+        { index: 1, startBar: leadInBars, bars: 4, label: 'mid', sameAs: null },
+      ]
+      const kick = transcribeDrums(buf, grid, sections).kick[1]
+      expect(kick.variation).not.toBeNull()
+      expect(kick.variation.kind).toBe('crash')
+      expect(kick.variation.bar).toBe(0)
+      expect(kick.variation.events[0].velocity).toBeCloseTo(1, 1) // the loud bar-0 hit, not a median
+    })
   })
 })

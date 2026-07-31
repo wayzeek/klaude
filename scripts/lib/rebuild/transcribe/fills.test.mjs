@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectCrash, detectFill, detectVariation } from './fills.mjs'
+import { detectCrash, detectFill, detectVariation, extractPreFoldImpact } from './fills.mjs'
 import { foldToLoop, gridFromJson } from './quantize.mjs'
 
 // 120 BPM, 4/4, downbeat at 0 - a plain grid, since fills.mjs's own arithmetic
@@ -153,6 +153,53 @@ describe('detectCrash', () => {
 
   it('still rejects when even the louder of two duplicate-step detections is not loud enough', () => {
     expect(detectCrash([ev(0, 0.4), ev(0, 0.45)], loop)).toBeNull()
+  })
+})
+
+describe('extractPreFoldImpact', () => {
+  const PER_BAR = 16
+
+  it('extracts nothing when there is no other downbeat to compare against', () => {
+    const events = [ev(0, 0.9)]
+    const result = extractPreFoldImpact(events, 0, PER_BAR)
+    expect(result).toEqual({ events, extracted: null })
+  })
+
+  it('extracts nothing when the first downbeat is not louder than the other downbeats', () => {
+    const events = [ev(0, 0.6), ev(16, 0.9), ev(32, 0.9), ev(48, 0.9)]
+    const result = extractPreFoldImpact(events, 0, PER_BAR)
+    expect(result.extracted).toBeNull()
+    expect(result.events).toBe(events) // unchanged, same reference
+  })
+
+  it('extracts nothing when the first downbeat exactly ties the loudest other one', () => {
+    // Ties do not count as "louder" - the same strict inequality
+    // detectCrash's own gate uses.
+    const events = [ev(0, 0.9), ev(16, 0.9), ev(32, 0.9)]
+    expect(extractPreFoldImpact(events, 0, PER_BAR).extracted).toBeNull()
+  })
+
+  it('extracts the first downbeat once it is louder than every other downbeat', () => {
+    // Repeated ordinary downbeats (0.9) plus one first-bar outlier (1.8) -
+    // the exact shape a real crash-on-a-recurring-downbeat produces.
+    const events = [ev(0, 1.8), ev(16, 0.9), ev(32, 0.9), ev(48, 0.9)]
+    const result = extractPreFoldImpact(events, 0, PER_BAR)
+    expect(result.extracted).toEqual(ev(0, 1.8))
+    expect(result.events).toEqual([ev(16, 0.9), ev(32, 0.9), ev(48, 0.9)])
+  })
+
+  it('localises against the section\'s own start, not the grid\'s absolute step 0', () => {
+    const events = [ev(64, 1.8), ev(80, 0.9), ev(96, 0.9)]
+    const result = extractPreFoldImpact(events, 64, PER_BAR)
+    expect(result.extracted).toEqual(ev(64, 1.8))
+    expect(result.events).toEqual([ev(80, 0.9), ev(96, 0.9)])
+  })
+
+  it('picks the loudest of several raw detections at the exact first downbeat before comparing', () => {
+    const events = [ev(0, 0.5), ev(0, 1.8), ev(16, 0.9), ev(32, 0.9)]
+    const result = extractPreFoldImpact(events, 0, PER_BAR)
+    expect(result.extracted).toEqual(ev(0, 1.8))
+    expect(result.events).toEqual([ev(0, 0.5), ev(16, 0.9), ev(32, 0.9)])
   })
 })
 
