@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { detectKey } from '../dsp.mjs'
-import { ALBRECHT_SHANAHAN_MAJOR_PROFILE, ALBRECHT_SHANAHAN_MINOR_PROFILE, detectKeyFromNotes, pitchClassHistogram } from './key.mjs'
+import { ALBRECHT_SHANAHAN_MAJOR_PROFILE, ALBRECHT_SHANAHAN_MINOR_PROFILE, NOTE_KEY_MIN_CONFIDENCE, detectKeyFromNotes, pitchClassHistogram } from './key.mjs'
 
 const note = (midi, startSec, dur, velocity = 0.8) => ({ startSec, endSec: startSec + dur, midi, velocity })
 
@@ -53,6 +53,37 @@ describe('detectKeyFromNotes', () => {
 
   it('returns null when every note has zero duration', () => {
     expect(detectKeyFromNotes([], [note(60, 0, 0)])).toBeNull()
+  })
+
+  describe('evidence floors (a single spurious note must not decide the key)', () => {
+    it('rejects a single spurious note outright, regardless of its duration', () => {
+      // The exact demonstrated bug: one 10ms note used to return "C major"
+      // at confidence 0.0199. A single note can never clear MIN_NOTE_COUNT
+      // on its own, however long it is held.
+      expect(detectKeyFromNotes([], [note(60, 0, 0.01)])).toBeNull()
+      expect(detectKeyFromNotes([], [note(60, 0, 30)])).toBeNull()
+    })
+
+    it('rejects a short artifact - a handful of notes with almost no combined duration', () => {
+      const notes = [note(60, 0, 0.05), note(64, 0.05, 0.05), note(67, 0.1, 0.05)]
+      expect(detectKeyFromNotes([], notes)).toBeNull()
+    })
+
+    it('rejects many notes on a single pitch class (a held drone) for lacking diversity, not duration or count', () => {
+      // Duration and note count alone cannot catch this: twenty notes and
+      // ten seconds of combined duration clear both those floors easily,
+      // but every one of them is the same pitch class, which is exactly
+      // the shape the diversity floor exists to reject.
+      const notes = Array.from({ length: 20 }, (_, i) => note(60, i * 0.5, 0.4))
+      expect(detectKeyFromNotes([], notes)).toBeNull()
+    })
+
+    it('accepts real evidence once all three floors clear - a small but genuine repeating triad', () => {
+      const notes = scaleNotes([0, 4, 7], [0.3, 0.3, 0.3], { reps: 3 }) // 9 notes, 3 pitch classes, 2.7s
+      const result = detectKeyFromNotes([], notes)
+      expect(result).not.toBeNull()
+      expect(result.name).toBe('C major')
+    })
   })
 
   it('names C major for a C major scale that leans on the tonic and fifth', () => {
@@ -173,6 +204,24 @@ describe('detectKeyFromNotes', () => {
       expect(result.name).toBe('C major')
       expect(result.runnerUp).toBe('A minor')
       expect(result.tiebreak).toBeNull()
+    })
+  })
+
+  describe('NOTE_KEY_MIN_CONFIDENCE calibration', () => {
+    it('sits below a genuinely tonal eight-note diatonic scale run', () => {
+      const notes = [0, 2, 4, 5, 7, 9, 11, 12].map((deg, i) => note(60 + deg, i * 0.4, 0.35))
+      const result = detectKeyFromNotes([], notes)
+      expect(result.confidence).toBeGreaterThan(NOTE_KEY_MIN_CONFIDENCE)
+    })
+
+    it('sits above a maximally ambiguous fixture spread evenly across all twelve pitch classes', () => {
+      // Comfortably clears every evidence floor (24 notes, 12 pitch classes,
+      // several seconds of duration) but describes no key at all - the
+      // confidence gate, not the evidence floors, is what has to reject it.
+      const notes = Array.from({ length: 24 }, (_, i) => note(60 + (i % 12), i * 0.3, 0.25))
+      const result = detectKeyFromNotes([], notes)
+      expect(result).not.toBeNull()
+      expect(result.confidence).toBeLessThan(NOTE_KEY_MIN_CONFIDENCE)
     })
   })
 })

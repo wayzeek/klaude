@@ -18,7 +18,7 @@ import { detectDynamics, dynamicsForEmission } from './lib/rebuild/dynamics.mjs'
 import { emitTrack, resolveSounds } from './lib/rebuild/emit.mjs'
 import { UnsupportedSourceError, resolveSource } from './lib/rebuild/fetch.mjs'
 import { LowConfidenceGridError, detectGrid } from './lib/rebuild/grid.mjs'
-import { detectKeyFromNotes } from './lib/rebuild/key.mjs'
+import { NOTE_KEY_MIN_CONFIDENCE, detectKeyFromNotes } from './lib/rebuild/key.mjs'
 import { lookupTrack, parseArtistTitle, reconcileKey } from './lib/rebuild/metadata.mjs'
 import { contentHash, ensureRunDir, stagingDir } from './lib/rebuild/paths.mjs'
 import { profileReference } from './lib/rebuild/profile.mjs'
@@ -238,27 +238,38 @@ async function main() {
   // and percussion into one pitch-class estimate, and Krumhansl-Kessler's
   // own profiles are documented to fit minor keys worse than major - see
   // key.mjs's doc comment for both. `detectKeyFromNotes` returns `null` when
-  // there is nothing to detect from (no tool, or a bass+other pair with no
-  // usable pitched content), in which case `key` is left exactly as the
-  // chroma-reconciled value computed above. When it does find something, it
-  // goes through the same `reconcileKey` disagreement handling the chroma
-  // path already went through, so a metadata mismatch is surfaced the same
-  // way regardless of which detector produced the disagreeing answer.
+  // there is nothing to detect from (no tool, a bass+other pair with no
+  // usable pitched content, or not enough of it to be worth correlating at
+  // all - see its own doc comment on the evidence floors), in which case
+  // `key` is left exactly as the chroma-reconciled value computed above.
   const noteKey = detectKeyFromNotes(bassNotes ?? [], otherNotes ?? [])
   if (noteKey) {
-    key = reconcileKey(noteKey, knownKey)
-    // The raw detection, not just the reconciled outcome - mirrors
-    // `result.profile.key` (the chroma path's own raw detection, which stays
-    // on `result` unconditionally). Without this, a 'disagreement' result
-    // (which zeroes `key.name` - see reconcileKey's own doc comment) would
-    // leave `reference.json` with no record of what the note-based detector
-    // actually found, only that it disagreed with something.
+    // The raw detection, not just whatever the override decision below does
+    // with it - mirrors `result.profile.key` (the chroma path's own raw
+    // detection, which stays on `result` unconditionally). Kept on the
+    // record even when the confidence gate just below rejects it: a
+    // detector output the pipeline chose not to trust is still worth seeing.
     result.noteKey = noteKey
-    result.metadata.keyAgreement = key.agreement
-    result.metadata.keySource = 'notes'
+    // Clearing `detectKeyFromNotes`' own evidence floors (enough notes,
+    // enough duration, enough pitch-class diversity) proves there was
+    // something to correlate, not that the correlation itself is
+    // trustworthy - a short, genuinely ambiguous passage can clear all
+    // three and still describe no key confidently. Only a note-based
+    // answer that also clears `NOTE_KEY_MIN_CONFIDENCE` (see key.mjs's own
+    // doc comment for how that number was measured) is trusted enough to
+    // replace the chroma-reconciled key above; below it, chroma's answer
+    // stands, and the note-based one goes through the same `reconcileKey`
+    // disagreement handling the chroma path already went through, so a
+    // metadata mismatch is surfaced the same way regardless of which
+    // detector produced the disagreeing answer.
+    if (noteKey.confidence >= NOTE_KEY_MIN_CONFIDENCE) {
+      key = reconcileKey(noteKey, knownKey)
+      result.metadata.keyAgreement = key.agreement
+      result.metadata.keySource = 'notes'
+    }
     await fs.promises.writeFile(path.join(dirs.root, 'reference.json'), `${JSON.stringify(result, null, 2)}\n`)
   }
-  say(`  key: ${key.name ?? '(disagreement - see metadata)'} (confidence ${key.confidence.toFixed(3)}, ${key.agreement}, from ${noteKey ? 'notes' : 'chroma'})`)
+  say(`  key: ${key.name ?? '(disagreement - see metadata)'} (confidence ${key.confidence.toFixed(3)}, ${key.agreement}, from ${result.metadata.keySource})`)
 
   // Measured against the reference track's 462-event ground truth: a
   // note-derived chord read (`transcribeHarmonyFromNotes`) beats the

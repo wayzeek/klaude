@@ -99,6 +99,68 @@ export function pitchClassHistogram(...noteLists) {
   return histogram
 }
 
+/** How many notes across any number of note lists have positive duration -
+ *  the same filter `pitchClassHistogram` applies, kept separate because a
+ *  count and a duration answer different questions (see the evidence floors
+ *  below, which need both). */
+function countUsableNotes(...noteLists) {
+  let count = 0
+  for (const notes of noteLists) {
+    if (!notes) continue
+    for (const note of notes) if (note.endSec - note.startSec > 0) count++
+  }
+  return count
+}
+
+/**
+ * Minimum combined sounding duration (seconds), note count, and distinct
+ * pitch classes before there is enough symbolic evidence to correlate
+ * against a key profile at all.
+ *
+ * The only prior gate was total duration greater than zero, which a single
+ * spurious note clears trivially - measured directly: a lone 10ms note
+ * returned "C major" at confidence 0.0199. Duration and count alone are
+ * each independently insufficient: many notes all sharing one pitch class
+ * (a monophonic pedal tone) can rack up any amount of duration and count
+ * while still describing no key at all - measured directly on a synthetic
+ * 20-note, single-pitch-class fixture, which reaches the identical 0.0199
+ * confidence the one spurious note does, regardless of its duration or
+ * count. Requiring pitch-class diversity too closes that gap. None of these
+ * three is tuned to a hard boundary case; they are sized to the smallest
+ * evidence a real chord or melodic phrase - not a single note or a held
+ * drone - would produce, and the real reference track's combined bass+other
+ * notes clear all three by two orders of magnitude.
+ */
+const MIN_TOTAL_DURATION_SECONDS = 2
+const MIN_NOTE_COUNT = 8
+const MIN_PITCH_CLASS_DIVERSITY = 3
+
+/**
+ * Minimum confidence a note-based key must reach before it is trusted
+ * enough to REPLACE the chroma-based key computed earlier in the pipeline
+ * (see `rebuild.mjs`) - clearing the evidence floors above proves there was
+ * something to correlate, not that the correlation is trustworthy. A short,
+ * genuinely ambiguous passage can clear all three floors and still
+ * correlate weakly against every key profile at once.
+ *
+ * Measured directly, on top of the 0.0199 the evidence floors above already
+ * reject on their own:
+ *   - A synthetic 24-note fixture spread evenly across all twelve pitch
+ *     classes (maximally ambiguous, but comfortably clearing every evidence
+ *     floor) scores 0.099 - genuinely atonal material, not spurious, and
+ *     still not confident.
+ *   - A plain eight-note diatonic scale run (unambiguously tonal, modest
+ *     evidence) scores 0.194.
+ *   - The real reference track's full combined bass+other notes score
+ *     0.283, agreeing independently with its own chroma-detected key.
+ *   - A clean, repeating eight-note synthetic triad scores 0.400.
+ * 0.15 sits between the ambiguous-but-real (0.099) and diatonic (0.194)
+ * measurements - the same single-recording caveat this pipeline's other
+ * calibrated constants (`HEARING_THRESHOLDS`, `MARGIN_THRESHOLD`) already
+ * carry openly.
+ */
+export const NOTE_KEY_MIN_CONFIDENCE = 0.15
+
 /** The pitch-class index of a key name in this module's own output, e.g.
  *  "F minor" -> 5. Only ever called on names this file itself generated
  *  (`${PITCH_NAMES[tonic]} major/minor`), so an exact match against
@@ -199,15 +261,23 @@ function breakRelativeTie(best, runnerUp, bassNotes) {
  * metadata disagreement is surfaced the same way regardless of which
  * detector produced the disagreeing answer.
  *
- * `null` when there is nothing to detect from - no notes in either stem, or
- * every note has zero/negative duration - which every caller must treat as
- * "fall back to the chroma-based key," identically to how a missing Basic
- * Pitch binary is handled everywhere else in this pipeline.
+ * `null` when there is nothing to detect from - no notes in either stem,
+ * every note has zero/negative duration, or the combined evidence does not
+ * clear `MIN_TOTAL_DURATION_SECONDS`/`MIN_NOTE_COUNT`/
+ * `MIN_PITCH_CLASS_DIVERSITY` (see that constant's own doc comment) - which
+ * every caller must treat as "fall back to the chroma-based key," identically
+ * to how a missing Basic Pitch binary is handled everywhere else in this
+ * pipeline. Clearing those floors is necessary, not sufficient, for a caller
+ * to actually trust the answer - see `NOTE_KEY_MIN_CONFIDENCE`'s own doc
+ * comment for the separate bar `rebuild.mjs` applies before using this to
+ * replace the chroma-based key.
  */
 export function detectKeyFromNotes(bassNotes, otherNotes) {
   const histogram = pitchClassHistogram(bassNotes, otherNotes)
   const total = histogram.reduce((a, b) => a + b, 0)
-  if (!(total > 0)) return null
+  const noteCount = countUsableNotes(bassNotes, otherNotes)
+  const diversity = histogram.filter((value) => value > 0).length
+  if (total < MIN_TOTAL_DURATION_SECONDS || noteCount < MIN_NOTE_COUNT || diversity < MIN_PITCH_CLASS_DIVERSITY) return null
   const normalized = histogram.map((value) => value / total)
 
   const scored = []
