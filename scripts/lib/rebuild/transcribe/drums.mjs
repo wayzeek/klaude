@@ -301,7 +301,21 @@ export function transcribeDrums(wavBuf, grid, sections) {
       // land in the same bucket and are kept or discarded together - see
       // fills.mjs's `extractPreFoldImpact` doc comment for the full case.
       const { events: foldable, extracted } = extractPreFoldImpact(events, range.fromStep, stepsPerBar(grid))
-      const folded = foldToLoop(foldable, section, grid)
+      // Extracting the impact can shave just enough agreement off the loop's
+      // own downbeat bucket to push an otherwise genuinely repeating pattern
+      // below foldToLoop's own agreement gate (four ordinary-looking
+      // repetitions minus the one now-extracted crash score 3/4 = 0.75,
+      // under the 0.9 the gate wants) - which would fold to a needlessly
+      // long loop instead of the compact one the pattern actually is. The
+      // natural loop length is determined from the UNMODIFIED events first,
+      // then the real fold is forced to that exact length: `foldToLoop` with
+      // a single candidate always returns that candidate's own fold, bypassing
+      // the agreement gate entirely (see `foldAgainstCandidates`'s own
+      // fallback), which is correct here - the length is already trusted,
+      // only the bucket contents (now missing the extracted outlier) need
+      // re-scoring.
+      const naturalLoopBars = extracted ? foldToLoop(events, section, grid).loopBars : null
+      const folded = foldToLoop(foldable, section, grid, naturalLoopBars ? { candidates: [naturalLoopBars] } : undefined)
       if (folded.events.length === 0) return null
 
       // What the fold discarded, reclaimed if (and only if) it is a genuine

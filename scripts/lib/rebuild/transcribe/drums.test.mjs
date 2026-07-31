@@ -368,6 +368,10 @@ describe('transcribeDrums', () => {
         { index: 1, startBar: leadInBars, bars: 4, label: 'mid', sameAs: null },
       ]
       const kick = transcribeDrums(buf, grid, sections).kick[1]
+      // The pattern is a genuine one-bar loop - extracting the crash must
+      // not force it into a needlessly long fold just because the natural
+      // downbeat bucket lost one of its four repetitions.
+      expect(kick.loopBars).toBe(1)
       expect(kick.variation).not.toBeNull()
       expect(kick.variation.kind).toBe('crash')
       expect(kick.variation.bar).toBe(0)
