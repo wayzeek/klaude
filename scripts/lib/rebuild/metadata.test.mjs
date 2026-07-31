@@ -376,6 +376,76 @@ describe('lookupTrack', () => {
       await fs.rm(cacheDir, { recursive: true, force: true })
     })
 
+    it('treats a cache file with a non-numeric bpmMatchConfidence as corrupt, not as a hit', async () => {
+      // A hand-edited or corrupted cache carrying a non-numeric
+      // bpmMatchConfidence must not pass the shape guard: `reconcileTempo`'s
+      // gate (`(known.matchConfidence ?? 1) < MIN_MATCH_CONFIDENCE`) would
+      // otherwise compare a string against a number, silently evaluate to
+      // `false`, and treat the corrupted cache as having cleared the
+      // confidence bar it was never actually measured against.
+      const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-badcache-'))
+      const corruptResult = {
+        bpm: 999,
+        key: 'C major',
+        source: 'deezer+acousticbrainz',
+        matchConfidence: 0.95,
+        bpmMatchConfidence: 'garbage',
+        keyMatchConfidence: 0.95,
+      }
+      await fs.writeFile(
+        path.join(cacheDir, 'metadata-lookup.json'),
+        JSON.stringify({ query: { artist: 'Bicep', title: 'Glue', duration: 285 }, result: corruptResult }),
+      )
+      const fetchImpl = vi.fn(
+        makeFetch([
+          ['deezer.com/search', jsonResponse(DEEZER_SEARCH_GLUE)],
+          ['deezer.com/track/389034231', jsonResponse(DEEZER_TRACK_GLUE)],
+          ['musicbrainz.org', jsonResponse({ recordings: [] })],
+        ]),
+      )
+      const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 285 }, { fetchImpl, cacheDir })
+      // The corrupt cache must be bypassed - a fresh lookup runs instead, and
+      // its real result (Glue's actual bpm, not the cache's poisoned 999)
+      // comes back.
+      expect(fetchImpl).toHaveBeenCalled()
+      expect(result.bpm).toBe(130.01)
+
+      await fs.rm(cacheDir, { recursive: true, force: true })
+    })
+
+    it('treats a cache file with a non-numeric keyMatchConfidence as corrupt, not as a hit', async () => {
+      // The symmetric case to the bpmMatchConfidence test above -
+      // `reconcileKey` gates on `keyMatchConfidence` the same way
+      // `reconcileTempo` gates on `bpmMatchConfidence` (see `rebuild.mjs`),
+      // and the two are checked by two separate clauses in the shape guard -
+      // a corrupt `bpmMatchConfidence` alone does not exercise this one.
+      const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-badcache-key-'))
+      const corruptResult = {
+        bpm: 999,
+        key: 'C major',
+        source: 'deezer+acousticbrainz',
+        matchConfidence: 0.95,
+        bpmMatchConfidence: 0.9,
+        keyMatchConfidence: 'garbage',
+      }
+      await fs.writeFile(
+        path.join(cacheDir, 'metadata-lookup.json'),
+        JSON.stringify({ query: { artist: 'Bicep', title: 'Glue', duration: 285 }, result: corruptResult }),
+      )
+      const fetchImpl = vi.fn(
+        makeFetch([
+          ['deezer.com/search', jsonResponse(DEEZER_SEARCH_GLUE)],
+          ['deezer.com/track/389034231', jsonResponse(DEEZER_TRACK_GLUE)],
+          ['musicbrainz.org', jsonResponse({ recordings: [] })],
+        ]),
+      )
+      const result = await lookupTrack({ artist: 'Bicep', title: 'Glue', duration: 285 }, { fetchImpl, cacheDir })
+      expect(fetchImpl).toHaveBeenCalled()
+      expect(result.bpm).toBe(130.01)
+
+      await fs.rm(cacheDir, { recursive: true, force: true })
+    })
+
     it('does not cache across different run directories', async () => {
       const dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-a-'))
       const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'moltek-metadata-b-'))

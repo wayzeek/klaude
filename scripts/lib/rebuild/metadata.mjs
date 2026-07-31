@@ -311,7 +311,19 @@ function looksLikeResult(value) {
     // unreachable network - see `reconcileKey`'s fallback for the same field.
     (value.keyConfidence === undefined || value.keyConfidence === null || typeof value.keyConfidence === 'number') &&
     (value.source === null || typeof value.source === 'string') &&
-    typeof value.matchConfidence === 'number'
+    typeof value.matchConfidence === 'number' &&
+    // No `undefined` grandfather clause for these two, unlike `keyConfidence`
+    // above: they are what the confidence-laundering fix (9ac6726) actually
+    // introduced, and `reconcileTempo`/`reconcileKey` gate on them directly
+    // (see `rebuild.mjs`). A cache written before they existed predates that
+    // fix and must not be trusted as-is; without this, `bpmMatchConfidence:
+    // "garbage"` (or simply absent) would pass this guard, and the gate
+    // `(known.matchConfidence ?? 1) < MIN_MATCH_CONFIDENCE` would then compare
+    // a non-number and silently evaluate to `false` - a corrupted or
+    // hand-edited cache clearing the confidence bar it was never actually
+    // measured against.
+    typeof value.bpmMatchConfidence === 'number' &&
+    typeof value.keyMatchConfidence === 'number'
   )
 }
 
