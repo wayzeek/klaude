@@ -266,6 +266,90 @@ function sweepChain(sweepLpf, outerSlow, sectionBars) {
 }
 
 /**
+ * A loop's one-off fill/crash (`fills.mjs`'s `variation`), expanded to
+ * absolute section-relative steps with the same gain/length clamps the
+ * emitted `.superimpose` pattern actually applies.
+ *
+ * Shared by `variationChain` below (which builds the pattern from it) and
+ * `verify-emission.mjs` (which has to expect exactly what was built), so the
+ * two can never independently drift on how a variation's gain or length is
+ * computed - the same reason `effectiveGain` itself is exported rather than
+ * recomputed per caller.
+ */
+export function expandVariation(loop, perBar, base) {
+  if (!loop?.variation) return []
+  return loop.variation.events
+    .filter((event) => event.step >= 0 && event.step < perBar)
+    .map((event) => ({
+      step: loop.variation.bar * perBar + event.step,
+      midi: event.midi ?? null,
+      symbol: event.symbol ?? null,
+      length: Math.max(1, Math.min(event.length, perBar - event.step)),
+      gain: round2(base * (event.velocity ?? 0.8)),
+    }))
+}
+
+/**
+ * A fill or crash, layered on top of the loop's own closing bar (fill) or
+ * opening bar (crash) via `.lastOf`/`.every` - the idiom tracks/MINUIT
+ * already uses for last-cycle variation (`kick.lastOf(8, x => x.ply(...))`,
+ * `hats.lastOf(4, x => x.degradeBy(...))`), not a split `arrange()` entry.
+ *
+ * `.lastOf`/`.every` count cycles of the pattern they are attached to, so
+ * every OTHER layer in the same section is completely unaffected regardless
+ * of which one carries a variation - where splitting the section's own
+ * `arrange()` entry in two would reset every co-occurring layer's own
+ * multi-bar loop back to ITS cycle zero at the split point, misaligning any
+ * loop whose `loopBars` does not happen to divide the split evenly. That
+ * failure mode is the same mechanism `layerExpression`'s own comment
+ * documents for a constant control applied after `.slow()` - checked
+ * directly against the runtime there, not assumed - so this file avoids it
+ * by construction rather than re-deriving it: a variation decorates the
+ * layer that has one, in place, and never touches the arrangement.
+ *
+ * Must sit AFTER `tail` (the loop's own `.gain()`/`.slow()`), never before:
+ * `.lastOf`/`.every` need to count bars of the OUTPUT timeline, and applying
+ * them before an inner `.slow(loopBars)` would count cycles of the
+ * unslowed pattern instead, which then stretches by `loopBars` right along
+ * with everything else - landing the variation on the wrong bar entirely.
+ *
+ * `chainExtra` - the same `soundMatch`/dynamics/sweep string
+ * `layerExpression` already spliced onto the main pattern - is passed
+ * through and applied here too, in the same slot (after the dry sound's
+ * suffix, before `.gain()`). Found by independent review, verified directly
+ * against the real runtime before fixing: without it, a kick's fill/crash
+ * hits carried only `.bank(...)`/`.gain(...)` while the loop's own hits also
+ * carried room, pan and `.duckorbit()`/`.duckdepth()`/`.duckattack()` - the
+ * fill played dry and never drove the section's own sidechain, an audible
+ * inconsistency `verify-emission.mjs` cannot see (it only compares timing,
+ * pitch, length and gain). A sweep's own `saw.range(...).slow(...)` is a
+ * pure function of query time, so a second, independent instance of it here
+ * evaluates identically to the main pattern's at whatever cycle the
+ * variation actually plays - reusing the string is safe, not just convenient.
+ */
+function variationChain(loop, layer, perBar, { flats, soundMatch, anchor, sectionBars, chainExtra }) {
+  if (!loop.variation) return ''
+  const sound = SOUNDS[layer]
+  const base = effectiveGain(layer, soundMatch)
+  const expanded = expandVariation(loop, perBar, base)
+  const barStart = loop.variation.bar * perBar
+  const slots = new Array(perBar).fill(null)
+  for (const event of expanded) {
+    const localStep = event.step - barStart
+    if (localStep < 0 || localStep >= perBar) continue
+    slots[localStep] = { token: tokenFor(event, layer, { flats }), length: event.length, gain: event.gain }
+  }
+  const mini = barToMini(slots)
+  const gains = barToGains(slots, base)
+  let extraLayer
+  if (sound.kind === 'sample') extraLayer = `s(\`${mini}\`)${sound.suffix}${chainExtra}.gain(\`${gains}\`)`
+  else if (sound.kind === 'chord') extraLayer = `chord(\`${mini}\`).anchor("${anchor}").mode("above")${sound.suffix}${chainExtra}.gain(\`${gains}\`)`
+  else extraLayer = `note(\`${mini}\`)${sound.suffix}${chainExtra}.gain(\`${gains}\`)`
+  const wrapper = loop.variation.kind === 'crash' ? 'every' : 'lastOf'
+  return `.${wrapper}(${sectionBars}, x => x.superimpose(() => ${extraLayer}))`
+}
+
+/**
  * The wrapper around a layer's mini-notation. Template literals rather than
  * quoted strings throughout, so a wrapped (multi-line) pattern is still
  * valid JS - and so a short, unwrapped one costs nothing by using the same
@@ -296,11 +380,12 @@ function layerExpression(loop, layer, perBar, { flats, anchor, soundMatch, dynam
   // forces two sections with different dynamics to never share one const.
   const extra = (soundMatch?.[layer]?.chain ?? '') + (dynamics?.layers?.[layer]?.chain ?? '') + sweepChain(dynamics?.layers?.[layer]?.sweepLpf, slow, sectionBars)
   const tail = `.gain(\`${wrappedGains}\`)${slow > 1 ? `.slow(${slow})` : ''}`
-  if (sound.kind === 'sample') return `s(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}`
+  const variation = variationChain(loop, layer, perBar, { flats, soundMatch, anchor, sectionBars, chainExtra: extra })
+  if (sound.kind === 'sample') return `s(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}${variation}`
   if (sound.kind === 'chord') {
-    return `chord(\`${wrappedMini}\`).anchor("${anchor}").mode("above")${sound.suffix}${extra}${tail}`
+    return `chord(\`${wrappedMini}\`).anchor("${anchor}").mode("above")${sound.suffix}${extra}${tail}${variation}`
   }
-  return `note(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}`
+  return `note(\`${wrappedMini}\`)${sound.suffix}${extra}${tail}${variation}`
 }
 
 /**
@@ -374,6 +459,8 @@ export function emitTrack(transcription, { title = null, source = null, soundMat
     if (dyn?.summary) lines.push(`//   ${dyn.summary}`)
     for (const layer of present) {
       const name = `s${section.index}_${layer}`
+      const note = section.loops[layer].variation?.note
+      if (note) lines.push(`//   ${layer} ${section.loops[layer].variation.kind}: ${note}`)
       lines.push(`const ${name} = ${layerExpression(section.loops[layer], layer, perBar, { flats, anchor, soundMatch, dynamics: dyn, sectionBars: section.bars })}`)
       emitted.add(name)
     }
@@ -479,6 +566,39 @@ function sameLoops(a, b, soundMatch) {
       // for both sections, silencing the ghost hit's dynamics entirely.
       if (round2(base * (x.velocity ?? 0.8)) !== round2(base * (y.velocity ?? 0.8))) return false
     }
+    if (!sameVariation(left.variation, right.variation, base)) return false
+  }
+  return true
+}
+
+/**
+ * Do two loops carry the same fill/crash, or both carry none? Reuse must be
+ * lossless output-for-output exactly like the rest of `sameLoops` - a
+ * section whose closing bar carries a real fill and one whose does not are
+ * not the same output, even if every other bar is identical, and must never
+ * share one const (`variationChain` bakes the variation into that const).
+ *
+ * `variation.note` (the emitted comment) is deliberately not compared here.
+ * It is a pure function of exactly the fields this loop already checks
+ * (`kind`, `bar`, and each event's step/velocity - see `detectFill`/
+ * `detectCrash`'s own construction in fills.mjs) plus `loop.events`/
+ * `loopBars`, which `sameLoops` has already required to match before this
+ * ever runs. Two variations that pass every check above cannot have
+ * different notes; adding one would be a redundant comparison of a value
+ * this function has already pinned by other means, not a gap it closes.
+ */
+function sameVariation(a, b, base) {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  if (a.kind !== b.kind || a.bar !== b.bar) return false
+  if (a.events.length !== b.events.length) return false
+  for (let i = 0; i < a.events.length; i++) {
+    const x = a.events[i]
+    const y = b.events[i]
+    if (x.step !== y.step || x.length !== y.length) return false
+    if ((x.midi ?? null) !== (y.midi ?? null)) return false
+    if ((x.symbol ?? null) !== (y.symbol ?? null)) return false
+    if (round2(base * (x.velocity ?? 0.8)) !== round2(base * (y.velocity ?? 0.8))) return false
   }
   return true
 }

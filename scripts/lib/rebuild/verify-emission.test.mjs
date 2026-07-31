@@ -327,6 +327,111 @@ describe('verifyEmission', () => {
     })
   })
 
+  describe('fills and one-off variation (#23)', () => {
+    it('confirms a round trip for a section whose kick carries a real fill', async () => {
+      const t = transcription({
+        ...emptyLoops(),
+        kick: {
+          loopBars: 1,
+          events: [drum(0), drum(4), drum(8), drum(12)],
+          confidence: 0.9,
+          variation: {
+            kind: 'fill',
+            bar: 3,
+            events: [
+              { step: 1, length: 1, velocity: 0.6, confidence: 0.9, midi: null, symbol: null },
+              { step: 3, length: 1, velocity: 0.7, confidence: 0.9, midi: null, symbol: null },
+              { step: 5, length: 1, velocity: 0.8, confidence: 0.9, midi: null, symbol: null },
+            ],
+            note: 'test fill',
+          },
+        },
+      })
+      const result = await verifyEmission(emitTrack(t), t)
+      expect(result.ok).toBe(true)
+      expect(result.defects).toEqual([])
+      // 4 bars x 4 loop hits, plus 3 extra onsets in the closing bar only.
+      expect(result.sections[0].layers.kick.matched).toBe(4 * 4 + 3)
+      expect(result.sections[0].layers.kick.missing).toBe(0)
+      expect(result.sections[0].layers.kick.extra).toBe(0)
+    })
+
+    it('confirms a round trip for a section whose kick carries a crash on the first downbeat', async () => {
+      const t = transcription({
+        ...emptyLoops(),
+        kick: {
+          loopBars: 1,
+          events: [drum(0), drum(4), drum(8), drum(12)],
+          confidence: 0.9,
+          variation: {
+            kind: 'crash',
+            bar: 0,
+            events: [{ step: 0, length: 1, velocity: 0.95, confidence: 0.9, midi: null, symbol: null }],
+            note: 'test crash',
+          },
+        },
+      })
+      const result = await verifyEmission(emitTrack(t), t)
+      expect(result.ok).toBe(true)
+      expect(result.defects).toEqual([])
+      // 4 bars x 4 loop hits, plus one extra impact stacked on bar 0's own
+      // downbeat (the loop already plays a kick at that exact step too).
+      expect(result.sections[0].layers.kick.matched).toBe(4 * 4 + 1)
+    })
+
+    it('reports a defect when the emitted code is missing the fill the transcription describes', async () => {
+      // The contract #23 asks for: a fill present in the transcription but
+      // absent from the code must report as missing, not pass silently.
+      const t = transcription({
+        ...emptyLoops(),
+        kick: {
+          loopBars: 1,
+          events: [drum(0), drum(4), drum(8), drum(12)],
+          confidence: 0.9,
+          variation: {
+            kind: 'fill',
+            bar: 3,
+            events: [
+              { step: 1, length: 1, velocity: 0.6, confidence: 0.9, midi: null, symbol: null },
+              { step: 3, length: 1, velocity: 0.7, confidence: 0.9, midi: null, symbol: null },
+              { step: 5, length: 1, velocity: 0.8, confidence: 0.9, midi: null, symbol: null },
+            ],
+            note: 'test fill',
+          },
+        },
+      })
+      const emitted = emitTrack(t)
+      expect(emitted).toContain('.lastOf(4,')
+      // `.lastOf(...)` is the last thing `layerExpression` appends, so
+      // truncating from it to end-of-line drops exactly the fill and nothing
+      // else - simpler than balancing the nested parens inside `.superimpose`.
+      const broken = emitted.replace(/\.lastOf\(4,.*$/m, '')
+      expect(broken).not.toBe(emitted)
+      const result = await verifyEmission(broken, t)
+      expect(result.ok).toBe(false)
+      expect(result.sections[0].layers.kick.missing).toBe(3)
+    })
+
+    it('reports a defect when the emitted code has a fill the transcription does not describe', async () => {
+      // The reverse of the above: something in the code that the artifact
+      // never claimed must read as spurious extras, not a clean match -
+      // otherwise a fabricated fill could slip through unreported.
+      const t = transcription({
+        ...emptyLoops(),
+        kick: { loopBars: 1, events: [drum(0), drum(4), drum(8), drum(12)], confidence: 0.9 },
+      })
+      const emitted = emitTrack(t)
+      const fabricated = emitted.replace(
+        /const s0_kick = (.*)$/m,
+        'const s0_kick = $1.lastOf(4, x => x.superimpose(() => s(`~@1 bd ~@14`).bank("RolandTR909").gain(`0.5`)))',
+      )
+      expect(fabricated).not.toBe(emitted)
+      const result = await verifyEmission(fabricated, t)
+      expect(result.ok).toBe(false)
+      expect(result.sections[0].layers.kick.extra).toBeGreaterThan(0)
+    })
+  })
+
   describe('sound-match pan on a sustained-note layer', () => {
     // A single held note spanning most of a bar - the shape a real lead/chord
     // line takes, and exactly the shape that exposed the hazard below.

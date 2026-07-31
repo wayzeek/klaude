@@ -493,4 +493,157 @@ describe('emitTrack', () => {
       })
     })
   })
+
+  describe('fills and one-off variation (#23)', () => {
+    const fillLoop = {
+      loopBars: 1,
+      events: [drum(0), drum(4), drum(8), drum(12)],
+      confidence: 0.9,
+      variation: {
+        kind: 'fill',
+        bar: 3,
+        events: [drum(1, 0.6), drum(3, 0.7), drum(5, 0.8)],
+        note: '3 discarded events in bar 3, density 3 vs loop baseline 0',
+      },
+    }
+    const crashLoop = {
+      loopBars: 1,
+      events: [drum(0, 0.5), drum(4, 0.5), drum(8, 0.5), drum(12, 0.5)],
+      confidence: 0.9,
+      variation: {
+        kind: 'crash',
+        bar: 0,
+        events: [drum(0, 0.9)],
+        note: '1 discarded event at bar 0 step 0, velocity 0.90 vs loop max 0.50',
+      },
+    }
+
+    it('emits nothing extra when a loop carries no variation', () => {
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
+      ]))
+      expect(code).not.toContain('.lastOf(')
+      expect(code).not.toContain('.every(')
+      expect(code).not.toContain('.superimpose(')
+    })
+
+    it('emits a fill as a .lastOf(sectionBars, ...) superimposition, after .gain()', () => {
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: fillLoop } },
+      ]))
+      expect(code).toMatch(/\.gain\(`[^`]+`\)\.lastOf\(4, x => x\.superimpose\(\(\) => s\(`[^`]+`\)\.bank\("RolandTR909"\)\.gain\(`[^`]+`\)\)\)/)
+      expect(code).not.toContain('.every(')
+      expect(code).toContain('kick fill: 3 discarded events in bar 3')
+    })
+
+    it('emits a crash as an .every(sectionBars, ...) superimposition, not .lastOf', () => {
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: crashLoop } },
+      ]))
+      expect(code).toMatch(/\.gain\(`[^`]+`\)\.every\(4, x => x\.superimpose\(\(\) => s\(`[^`]+`\)\.bank\("RolandTR909"\)\.gain\(`[^`]+`\)\)\)/)
+      expect(code).not.toContain('.lastOf(')
+      expect(code).toContain('kick crash: 1 discarded event at bar 0 step 0')
+    })
+
+    it('stages the fill\'s gain under the same ceiling as the rest of the layer', () => {
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: crashLoop } },
+      ]))
+      const superimposed = /\.superimpose\(\(\) => s\(`[^`]+`\)\.bank\("RolandTR909"\)\.gain\(`([^`]+)`\)\)/.exec(code)
+      expect(superimposed).not.toBeNull()
+      const values = superimposed[1].split(' ').map((token) => Number(token.split('@')[0]))
+      expect(Math.max(...values)).toBeLessThanOrEqual(SOUNDS.kick.gain)
+    })
+
+    it('carries each fill event\'s own velocity into its gain, not a flat ceiling for every hit', () => {
+      // fillLoop's three events carry distinct velocities (0.6/0.7/0.8) -
+      // a mutation that dropped velocity and always emitted the ceiling gain
+      // would pass the ceiling check above without this, since ceiling is
+      // still an upper bound either way.
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: fillLoop } },
+      ]))
+      const superimposed = /\.superimpose\(\(\) => s\(`[^`]+`\)\.bank\("RolandTR909"\)\.gain\(`([^`]+)`\)\)/.exec(code)
+      const values = superimposed[1].split(' ').map((token) => Number(token.split('@')[0]))
+      expect(new Set(values).size).toBeGreaterThan(1)
+      expect(values).toContain(Math.round(SOUNDS.kick.gain * 0.6 * 100) / 100)
+      expect(values).toContain(Math.round(SOUNDS.kick.gain * 0.8 * 100) / 100)
+    })
+
+    it('places each fill event at its own exact step, not merely somewhere in the closing bar', () => {
+      // Closes a shared-function blind spot found by independent review:
+      // `expandVariation` computes both the emitter's mini-notation slots
+      // and verify-emission.mjs's expected steps, so a bug in its step
+      // arithmetic (e.g. an off-by-one) would be invisible to every round-
+      // trip test - both sides would shift together and still agree. This
+      // reads the emitted mini-notation directly and checks the actual rest
+      // widths, independent of that shared function's own correctness.
+      const code = emitTrack(transcription([
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: fillLoop } },
+      ]))
+      const superimposed = /\.superimpose\(\(\) => s\(`([^`]+)`\)/.exec(code)
+      expect(superimposed).not.toBeNull()
+      const tokens = superimposed[1].trim().split(/\s+/)
+      // fillLoop's variation carries three hits at local steps 1, 3, 5 in a
+      // 16-step bar: rest, hit, rest, hit, rest, hit, then ten rests of gap.
+      expect(tokens).toEqual(['~', 'bd', '~', 'bd', '~', 'bd', '~@10'])
+    })
+
+    it('carries the same sound-match and dynamics chain as the rest of the layer, not a dry/undocked copy', () => {
+      // Found by independent review: without this, a kick's fill/crash hits
+      // carried only `.bank(...)` and `.gain(...)` while the loop's own hits
+      // also carried room, pan and duck controls - the fill played dry and
+      // never drove the section's own sidechain, an audible inconsistency
+      // `verify-emission.mjs` cannot see (it only compares timing, pitch,
+      // length and gain).
+      const soundMatch = { kick: { chain: '.room(0.3)', gainTrim: 1, notes: ['room test'] } }
+      const dynamics = { 0: { layers: { kick: { chain: '.duckorbit(2).duckdepth(0.3).duckattack(0.1)' } }, summary: 'duck: other' } }
+      const code = emitTrack(
+        transcription([
+          { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: crashLoop } },
+        ]),
+        { soundMatch, dynamics },
+      )
+      const superimposed = /\.superimpose\(\(\) => s\(`[^`]+`\)\.bank\("RolandTR909"\)([^]*?)\.gain\(`[^`]+`\)\)\)/.exec(code)
+      expect(superimposed).not.toBeNull()
+      expect(superimposed[1]).toContain('.room(0.3)')
+      expect(superimposed[1]).toContain('.duckorbit(2).duckdepth(0.3).duckattack(0.1)')
+    })
+
+    it('does not reuse a definition when one section carries a fill and the other does not', () => {
+      const sections = [
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: FOUR_ON_THE_FLOOR } },
+        { index: 1, startBar: 4, bars: 4, label: 'mid', sameAs: 0, loops: { ...emptyLoops(), kick: fillLoop } },
+      ]
+      const code = emitTrack(transcription(sections))
+      expect(code).toContain('const s1_kick =')
+      expect(code).toContain('kick: s1_kick')
+    })
+
+    it('does not reuse a definition when two sections carry different fills', () => {
+      const otherFill = {
+        ...fillLoop,
+        variation: { ...fillLoop.variation, events: [drum(2, 0.6), drum(4, 0.7), drum(6, 0.8)] },
+      }
+      const sections = [
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: fillLoop } },
+        { index: 1, startBar: 4, bars: 4, label: 'mid', sameAs: 0, loops: { ...emptyLoops(), kick: otherFill } },
+      ]
+      const code = emitTrack(transcription(sections))
+      expect(code).toContain('const s1_kick =')
+      expect(code).toContain('kick: s1_kick')
+    })
+
+    it('still reuses a definition when both sections carry the identical fill', () => {
+      const sections = [
+        { index: 0, startBar: 0, bars: 4, label: 'mid', sameAs: null, loops: { ...emptyLoops(), kick: fillLoop } },
+        { index: 1, startBar: 4, bars: 4, label: 'mid', sameAs: 0, loops: { ...emptyLoops(), kick: { ...fillLoop } } },
+      ]
+      const code = emitTrack(transcription(sections))
+      expect(code).toContain('const s0_kick =')
+      expect(code).not.toContain('const s1_kick =')
+      const arrangeBlock = code.slice(code.indexOf('arrange('))
+      expect(arrangeBlock).toContain('repeats section 0')
+    })
+  })
 })

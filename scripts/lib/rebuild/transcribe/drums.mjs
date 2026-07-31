@@ -29,11 +29,18 @@
  * role still names its detector and floor rather than a hardcoded branch,
  * because this happened to converge on the same mechanism for all three; it
  * is not assumed to generalise to different material.
+ *
+ * `foldToLoop` (below) drops anything that does not recur often enough to be
+ * part of the loop - by construction, that includes real one-off content
+ * like a fill or a crash. `fills.mjs` looks at exactly what got dropped and
+ * reclaims it when (and only when) it clears a hard gate; see its own doc
+ * comment.
  */
 
 import { decodeWav } from '../../decoded-audio.mjs'
 import { ONSET_HOP } from '../../dsp.mjs'
 import { bandEnergy, bandEnergyRise, bandFlatness, bandNovelty, pickBandOnsets } from './bands.mjs'
+import { detectVariation } from './fills.mjs'
 import { foldToLoop, sectionRange, stepAt, stepDrift } from './quantize.mjs'
 
 /**
@@ -290,12 +297,20 @@ export function transcribeDrums(wavBuf, grid, sections) {
       const folded = foldToLoop(events, section, grid)
       if (folded.events.length === 0) return null
 
+      // What the fold discarded, reclaimed if (and only if) it is a genuine
+      // fill or crash/impact - see fills.mjs's own doc comment for the gate.
+      // `null` when nothing clears it, which is the expected, sanctioned
+      // outcome for most sections: #23 asks for the machinery to ship even
+      // when it emits nothing, not for a fill on every section.
+      const variation = detectVariation(folded.discarded, folded, section, grid)
+
       return {
         loopBars: folded.loopBars,
         events: folded.events,
         // The loop is only as trustworthy as its weakest half: how sure we are
         // of the individual hits, and how well the section actually repeated.
         confidence: meanConfidence * Math.max(folded.agreement, 0.25),
+        variation,
       }
     })
   }

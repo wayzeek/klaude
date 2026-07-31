@@ -10,7 +10,7 @@
  */
 
 import { cachedStrudel, loadStrudel, midiOf, withCapturedLogs } from '../strudel-node.mjs'
-import { SOUNDS, effectiveGain } from './emit.mjs'
+import { SOUNDS, effectiveGain, expandVariation } from './emit.mjs'
 import { CHORD_TEMPLATES } from './transcribe/chords.mjs'
 import { LAYERS, gridFromJson, stepsPerBar } from './transcribe/quantize.mjs'
 
@@ -358,6 +358,13 @@ export async function verifyEmission(code, transcription, { soundMatch = null } 
             })
           }
         }
+        // A one-off fill or crash (`fills.mjs`, `emit.mjs`'s `.lastOf`/`.every`
+        // superimposition) appears exactly once, at its own bar, never
+        // replicated across every repetition the way the loop's own events
+        // are above - `expandVariation` is the same expansion `emit.mjs` used
+        // to build the pattern it emitted, so both sides of this comparison
+        // can never independently drift on how its gain or length is computed.
+        expected.push(...expandVariation(loop, perBar, base))
 
         // `.voicing()` turns one chord into three or four simultaneous notes,
         // so a chord layer's query yields several events per transcribed

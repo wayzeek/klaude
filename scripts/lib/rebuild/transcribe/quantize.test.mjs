@@ -230,6 +230,74 @@ describe('foldToLoop', () => {
     expect(merged.driftSteps).toBeCloseTo(0.25, 6)
   })
 
+  describe('discarded events', () => {
+    // #23 (fills and one-off variation): foldToLoop already buckets every
+    // event by loop position and decides which buckets survive KEEP_FRACTION.
+    // This is the raw material fills.mjs works from, so it is proven here at
+    // the source rather than only through fills.mjs's own tests.
+    it('returns discarded events for a bucket that failed KEEP_FRACTION, with their original absolute step', () => {
+      const events = []
+      for (let bar = 0; bar < 4; bar++) {
+        for (const step of [0, 4, 8, 12]) events.push(ev(bar * 16 + step))
+      }
+      // Two extra hits, only in the final bar - a fill candidate's raw shape.
+      events.push(ev(3 * 16 + 14))
+      events.push(ev(3 * 16 + 15))
+      const folded = foldToLoop(events, section, grid)
+      expect(folded.loopBars).toBe(1)
+      expect(folded.events.map((e) => e.step)).toEqual([0, 4, 8, 12])
+      expect(folded.discarded.map((e) => e.step).sort((a, b) => a - b)).toEqual([62, 63])
+    })
+
+    it('returns an empty discarded array when every bucket is kept', () => {
+      const events = []
+      for (let bar = 0; bar < 4; bar++) {
+        for (const step of [0, 4, 8, 12]) events.push(ev(bar * 16 + step))
+      }
+      const folded = foldToLoop(events, section, grid)
+      expect(folded.discarded).toEqual([])
+    })
+
+    it('never discards anything when the fold falls back to the whole section (reps 1, nothing filtered)', () => {
+      // 3 bars is prime: only the 1-bar candidate divides it, and density
+      // (3/3 = 1.0) clears MIN_FALLBACK_DENSITY, so the whole section becomes
+      // one loop with reps === 1 - the same case quantize.mjs's own
+      // "does not drop a confident section" test exercises. KEEP_FRACTION
+      // never filters anything at reps <= 1, so nothing can be "discarded".
+      const events = [ev(0, 41), ev(16, 43), ev(32, 46)]
+      const folded = foldToLoop(events, { startBar: 0, bars: 3 }, grid)
+      expect(folded.loopBars).toBe(3)
+      expect(folded.discarded).toEqual([])
+    })
+
+    it('never discards a step that a kept event also occupies - a bucket is kept or discarded, never both', () => {
+      const events = []
+      for (let bar = 0; bar < 4; bar++) {
+        for (const step of [0, 4, 8, 12]) events.push(ev(bar * 16 + step))
+      }
+      events.push(ev(3 * 16 + 14))
+      events.push(ev(3 * 16 + 15))
+      const folded = foldToLoop(events, section, grid)
+      const keptPositions = new Set(folded.events.map((e) => e.step % 16))
+      for (const discard of folded.discarded) expect(keptPositions.has(discard.step % 16)).toBe(false)
+    })
+
+    it('CAN discard a step a kept event also occupies, on a pitched layer - the disjointness above is a drums-only property', () => {
+      // Found by independent review: the previous test's guarantee holds
+      // only because drum events carry no midi/symbol, so `position:midi:
+      // symbol` collapses to one bucket per position. A bucket is keyed by
+      // pitch too, so a pitched layer with `oneEventPerStep` can have one
+      // note kept at a step and a DIFFERENT note discarded at that same
+      // step - two different buckets, same position. midi 36 recurs in
+      // every one of four repetitions (kept); midi 48 appears once at the
+      // same step (discarded, 1/4 support).
+      const events = [ev(0, 36), ev(16, 36), ev(32, 36), ev(48, 36), ev(0, 48)]
+      const folded = foldToLoop(events, section, grid, { candidates: [1], oneEventPerStep: true })
+      expect(folded.events.map((e) => ({ step: e.step, midi: e.midi }))).toEqual([{ step: 0, midi: 36 }])
+      expect(folded.discarded.map((e) => ({ step: e.step, midi: e.midi }))).toEqual([{ step: 0, midi: 48 }])
+    })
+  })
+
   describe('oneEventPerStep', () => {
     // The real bug (section 19 of Bicep's "Glue"): a monophonic bass fold
     // produced two events at step 0 - midi 24 and midi 36, an octave apart -

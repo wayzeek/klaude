@@ -158,6 +158,22 @@ export function gridFromJson(json) {
  * octave apart, both confidently supported). Left default (`false`), a
  * caller gets today's behaviour unchanged: this file does not know on its own
  * which layers are single-voice, so it is each transcriber's job to say so.
+ *
+ * The returned `discarded` array is every raw member of a bucket that failed
+ * `KEEP_FRACTION` (empty when `reps <= 1`, since nothing is filtered then) -
+ * real, already-detected events the loop does not explain, kept rather than
+ * thrown away outright so a caller can decide whether any of it is a fill or
+ * a one-off impact worth reclaiming. See `fills.mjs`, the one caller that does.
+ *
+ * A single bucket is kept or discarded as a whole, never both - but a bucket
+ * is keyed by `position:midi:symbol`, not by position alone, so on a
+ * pitched or symbolic layer two different notes at the same step are two
+ * different buckets and can land on opposite sides (one kept, one
+ * discarded). `discarded`'s steps are only guaranteed disjoint from `events`'
+ * steps for a layer whose events carry no midi/symbol - drums, `fills.mjs`'s
+ * only caller - not as a property of this function in general. Confirmed
+ * directly: midi 36 kept in every repetition and midi 48 discarded after one
+ * stray repetition can both report step 0 under `oneEventPerStep`.
  */
 export function foldToLoop(
   events,
@@ -177,7 +193,7 @@ export function foldToLoop(
     .sort((a, b) => a.step - b.step || (a.midi ?? 0) - (b.midi ?? 0))
 
   if (local.length === 0) {
-    return { loopBars: Math.min(section.bars, candidates[candidates.length - 1]), events: [], agreement: 0 }
+    return { loopBars: Math.min(section.bars, candidates[candidates.length - 1]), events: [], agreement: 0, discarded: [] }
   }
 
   // Only candidates that divide the section evenly are usable: a 4-bar loop
@@ -269,10 +285,24 @@ function scoreFold(local, loopBars, perBar, sectionBars, oneEventPerStep = false
   }
   const agreement = reps > 1 && total > 0 ? weighted / (total * reps) : 0
 
+  // Buckets that fail KEEP_FRACTION are not just dropped - their raw members
+  // (still carrying their original, absolute section-relative `step`) are
+  // collected as `discarded`. That is real, already-detected content the
+  // fold decided does not recur often enough to be part of the loop; #23
+  // reclaims the one shape of it that is safe to reclaim - see fills.mjs.
+  // A bucket can only be EITHER kept or discarded, never both - but a
+  // bucket's key includes midi/symbol, not just position, so this only
+  // rules out a discarded step coinciding with a kept one when a layer's
+  // events carry no midi/symbol (drums - see this function's own doc
+  // comment and fills.mjs, its only consumer).
   let survivors = []
+  const discarded = []
   for (const bucket of buckets.values()) {
     const count = Math.min(bucket.members.length, reps)
-    if (count / reps <= KEEP_FRACTION && reps > 1) continue
+    if (count / reps <= KEEP_FRACTION && reps > 1) {
+      discarded.push(...bucket.members)
+      continue
+    }
     survivors.push({ bucket, count })
   }
   if (oneEventPerStep) survivors = resolveStepCollisions(survivors, loopSteps)
@@ -289,7 +319,7 @@ function scoreFold(local, loopBars, perBar, sectionBars, oneEventPerStep = false
   // already promises a layer can't be doing two things at once - a chord or
   // drum layer isn't asking for this and keeps today's behaviour.
   if (oneEventPerStep) clampToNextOnset(kept, loopSteps)
-  return { loopBars, events: kept, agreement }
+  return { loopBars, events: kept, agreement, discarded }
 }
 
 /**

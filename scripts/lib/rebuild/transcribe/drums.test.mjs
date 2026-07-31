@@ -267,4 +267,65 @@ describe('transcribeDrums', () => {
       expect(event.confidence).toBeLessThanOrEqual(1)
     }
   })
+
+  describe('fills and one-off variation (#23)', () => {
+    // #23: fills.mjs reclaims what foldToLoop discards, restricted to drum
+    // roles. `drumClip()`'s four-on-the-floor is uniform by construction -
+    // every bar identical - so it is the "no variation" half of the pair on
+    // real, decoded audio, not just the synthetic-events tests in
+    // fills.test.mjs.
+    it('carries no variation on a uniform four-on-the-floor loop', () => {
+      const kick = transcribeDrums(drumClip(), grid, SECTIONS).kick[0]
+      expect(kick.variation).toBeNull()
+    })
+
+    it('attaches a real fill detected from actual audio, end to end through transcribeDrums', () => {
+      // A busy bar (six kicks) alternating with a sparse one (one kick) -
+      // bars 0/2 share the busy phase, bars 1/3 the sparse one, so the fold
+      // settles on a real 2-bar loop. The section's own closing bar (3)
+      // repeats that one sparse hit, plus three extra kicks nowhere else in
+      // the clip - a real fill, not a synthesised one. A 2-bar silent lead-in
+      // keeps the very first kick off sample zero, where a decaying tone's
+      // own attack transient reads differently to bandEnergyRise than one
+      // with quiet audio ahead of it.
+      const beatSeconds = 60 / BPM
+      const stepSeconds = beatSeconds / 4
+      const leadInBars = 2
+      const totalBars = leadInBars + 4
+      const frames = Math.ceil(totalBars * 4 * beatSeconds * SAMPLE_RATE)
+      const out = new Float32Array(frames)
+      const addKick = (bar, step) => {
+        const at = (leadInBars + bar) * 4 * beatSeconds + step * stepSeconds
+        const start = Math.floor(at * SAMPLE_RATE)
+        const attackFrames = Math.floor(0.01 * SAMPLE_RATE)
+        for (let i = 0; i < SAMPLE_RATE * 0.12 && start + i < frames; i++) {
+          const env = Math.exp(-i / (SAMPLE_RATE * 0.03))
+          const ramp = i < attackFrames ? 0.5 * (1 - Math.cos((Math.PI * i) / attackFrames)) : 1
+          out[start + i] += 0.9 * env * ramp * Math.sin((2 * Math.PI * 55 * i) / SAMPLE_RATE)
+        }
+      }
+      for (const bar of [0, 2]) {
+        for (const step of [0, 2, 4, 6, 8, 10]) addKick(bar, step)
+      }
+      addKick(1, 0)
+      addKick(3, 0)
+      addKick(3, 12)
+      addKick(3, 14)
+      addKick(3, 15)
+
+      const buf = writeWavBuffer({ sampleRate: SAMPLE_RATE, channels: 1, samples: [out] })
+      const sections = [
+        { index: 0, startBar: 0, bars: leadInBars, label: 'lead-in', sameAs: null },
+        { index: 1, startBar: leadInBars, bars: 4, label: 'mid', sameAs: null },
+      ]
+      const kick = transcribeDrums(buf, grid, sections).kick[1]
+      expect(kick.loopBars).toBe(2)
+      expect(kick.variation).not.toBeNull()
+      expect(kick.variation.kind).toBe('fill')
+      expect(kick.variation.bar).toBe(3)
+      // The three onsets nowhere else in the clip, and none of the sparse
+      // bar's own recurring hit (step 0).
+      expect(kick.variation.events.map((e) => e.step)).toEqual([12, 14, 15])
+    })
+  })
 })
