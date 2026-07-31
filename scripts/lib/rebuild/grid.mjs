@@ -514,7 +514,15 @@ const KNOWN_TEMPO_AGREEMENT_CONFIDENCE = 0.9
  * are unit-testable without decoding audio at all.
  */
 export function reconcileTempo(detectedBpm, detectedConfidence, known, gate) {
-  if (!known || known.bpm == null || (known.matchConfidence ?? 1) < MIN_MATCH_CONFIDENCE) {
+  // A missing or non-finite `matchConfidence` is untrusted, not maximally
+  // trusted - `?? 1` used to mean "nothing reported? assume a perfect match,"
+  // which let a syntactically-valid-but-unmeasured cache field elevate a
+  // known tempo to full trust (measured directly: a cached bpm of 200 with
+  // no real confidence behind it beat a detected 104 at confidence 1.0).
+  // `Number.isFinite` also catches an out-of-range value a looser guard
+  // upstream let through, not just `undefined`/`null`.
+  const knownMatchConfidence = Number.isFinite(known?.matchConfidence) ? known.matchConfidence : 0
+  if (!known || known.bpm == null || knownMatchConfidence < MIN_MATCH_CONFIDENCE) {
     return { bpm: detectedBpm, confidence: detectedConfidence, agreement: 'none' }
   }
 
@@ -531,7 +539,7 @@ export function reconcileTempo(detectedBpm, detectedConfidence, known, gate) {
 
   if (detectedConfidence < gate) {
     // No `Math.max(gate, ...)` here: this branch is only reachable once the
-    // guard above has already required `known.matchConfidence >=
+    // guard above has already required `knownMatchConfidence >=
     // MIN_MATCH_CONFIDENCE` (0.6), so the formula below is always >= 0.8 -
     // strictly above every `gate` any real caller passes (`rebuild.mjs`'s
     // default produces 0.26; see `MIN_TEMPO_CONFIDENCE`). A `Math.max` against
@@ -540,7 +548,7 @@ export function reconcileTempo(detectedBpm, detectedConfidence, known, gate) {
     // test's own comment.
     return {
       bpm: known.bpm,
-      confidence: 0.5 + 0.5 * (known.matchConfidence ?? 1),
+      confidence: 0.5 + 0.5 * knownMatchConfidence,
       agreement: 'known',
     }
   }

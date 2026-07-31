@@ -366,6 +366,22 @@ describe('reconcileTempo', () => {
     expect(result.bpm).toBe(120)
   })
 
+  it('treats a known tempo with a missing matchConfidence as untrusted, never as maximally trusted', () => {
+    // `?? 1` used to mean "no confidence reported? assume a perfect match" -
+    // measured directly against this exact shape: a cached bpm of 200 with
+    // no matchConfidence field elevated to confidence 1.0 and beat a
+    // detected 104. It must instead be treated as no known tempo at all.
+    const result = reconcileTempo(104, 0.19, { bpm: 200 }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(104)
+  })
+
+  it('treats a known tempo with a non-finite matchConfidence as untrusted, not as clearing the gate by comparing false', () => {
+    const result = reconcileTempo(104, 0.19, { bpm: 200, matchConfidence: NaN }, GATE)
+    expect(result.agreement).toBe('none')
+    expect(result.bpm).toBe(104)
+  })
+
   it('case 1: agrees within tolerance and raises confidence even over a low raw score', () => {
     // The detector's own confidence (0.05) is a guess; it happens to be
     // right, and agreement with the known tempo is what proves that, not
