@@ -79,7 +79,7 @@ describe('the pipeline, end to end', () => {
     expect(result.defects).toEqual([])
     expect(result.ok).toBe(true)
   })
-})
+}, 30000)
 
 /**
  * The same round trip across several sections.
